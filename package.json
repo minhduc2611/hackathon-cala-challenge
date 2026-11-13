@@ -1,0 +1,13 @@
+{
+  "name": "revealed-thesis-engine",
+  "version": "0.1.0",
+  "description": "Revealed Thesis Engine: deal sourcing from what funds actually invest in, backed by sourced Cala knowledge graph data.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/engine.test.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
