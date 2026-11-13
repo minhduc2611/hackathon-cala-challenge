@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Revealed Thesis Engine: Behaviour-First VC Deal Sourcing</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="masthead">
+    <div class="masthead-inner">
+      <div class="brand-block">
+        <a href="/" class="brand-wordmark">Revealed Thesis</a>
+        <span class="telemetry-line" id="telemetryLine">Loading Cala index...</span>
+      </div>
+      <div class="view-switch" role="radiogroup" aria-label="Workspace view mode">
+        <label class="segment-option">
+          <input type="radio" name="personaView" value="analyst" checked />
+          <span>Analyst workbench</span>
+        </label>
+        <label class="segment-option">
+          <input type="radio" name="personaView" value="partner" />
+          <span>Partner rapid triage</span>
+        </label>
+      </div>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <!-- Immediate Command & Entity Bar -->
+    <section class="command-bar" aria-label="Fund and company selection">
+      <div class="command-top">
+        <div class="title-block">
+          <h1 id="workspaceHeading">Deal sourcing from actual investment behaviour</h1>
+          <p class="subtitle" id="workspaceSubtitle">
+            Select an indexed European fund or enter 3 to 5 admired companies. Every match and reason links directly to a verified Cala source.
+          </p>
+        </div>
+        <div class="mode-switch" role="radiogroup" aria-label="Input mode">
+          <label class="segment-option">
+            <input type="radio" name="inputMode" value="fund" checked />
+            <span>Analyse a fund</span>
+          </label>
+          <label class="segment-option">
+            <input type="radio" name="inputMode" value="companies" />
+            <span>3 to 5 admired companies</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Fund Input Controls -->
+      <div id="fundInputPanel" class="input-panel">
+        <div class="field-group">
+          <label for="fundSelect" class="field-label">Indexed European funds</label>
+          <select id="fundSelect" class="control-select"></select>
+        </div>
+        <div class="field-group search-group">
+          <label for="fundSearchInput" class="field-label">Search Cala fund entity (try "Ventures" for top 3 disambiguation)</label>
+          <div class="search-row">
+            <input
+              id="fundSearchInput"
+              type="search"
+              class="control-input"
+              placeholder="Type a fund name, city, or country..."
+              autocomplete="off"
+            />
+          </div>
+          <div id="disambiguationBox" class="disambiguation-box" hidden></div>
+        </div>
+        <div class="field-group optional-group">
+          <label for="seenCsvInput" class="field-label">Exclude already seen startups (optional comma or line list)</label>
+          <input
+            id="seenCsvInput"
+            type="text"
+            class="control-input"
+            placeholder="e.g. VoltGrid, NordQuant Photonics"
+          />
+        </div>
+        <div class="action-cell">
+          <button id="runAnalysisBtn" type="button" class="primary-btn">Run thesis scan</button>
+        </div>
+      </div>
+
+      <!-- 3 to 5 Admired Companies Controls -->
+      <div id="companiesInputPanel" class="input-panel companies-panel" hidden>
+        <div class="companies-picker-header">
+          <span class="field-label">Select 3 to 5 admired companies or past partner deals (<span id="selectedCompanyCount">0</span> selected)</span>
+          <button id="runProxyBtn" type="button" class="primary-btn">Build proxy thesis</button>
+        </div>
+        <div id="companyChecklist" class="company-checklist" role="group" aria-label="Admired companies"></div>
+      </div>
+
+      <div id="weakProfileNotice" class="inline-alert" hidden>
+        <span id="weakProfileText"></span>
+        <button id="switchToProxyBtn" type="button" class="link-action">Switch to 3 to 5 admired companies</button>
+      </div>
+      <div id="errorBanner" class="inline-alert error-alert" hidden></div>
+    </section>
+
+    <!-- Revealed Thesis & Backtest Sheet -->
+    <section class="thesis-section" aria-label="Revealed thesis profile">
+      <div class="section-header">
+        <h2 id="thesisTitle">Revealed thesis profile</h2>
+        <div class="tab-switch" role="tablist" aria-label="Thesis inspection tabs">
+          <button type="button" role="tab" class="tab-item is-active" data-thesis-tab="revealed" aria-selected="true">
+            Revealed behaviour
+          </button>
+          <button type="button" role="tab" class="tab-item" data-thesis-tab="stated" aria-selected="false">
+            Stated vs. revealed
+          </button>
+          <button type="button" role="tab" class="tab-item" data-thesis-tab="backtest" aria-selected="false">
+            Point-in-time backtest
+          </button>
+        </div>
+      </div>
+
+      <!-- Tab 1: Revealed Behaviour -->
+      <div id="tabRevealed" class="thesis-panel">
+        <div class="summary-strip" id="thesisMetricsStrip"></div>
+        <div class="drift-banner" id="driftBanner"></div>
+        <div class="distributions-grid">
+          <div class="dist-col" id="stageDistCol"></div>
+          <div class="dist-col" id="sectorDistCol"></div>
+          <div class="dist-col" id="geoAndCoInvestorCol"></div>
+        </div>
+      </div>
+
+      <!-- Tab 2: Stated vs Revealed -->
+      <div id="tabStated" class="thesis-panel" hidden>
+        <div class="stated-grid">
+          <div class="stated-col">
+            <h3>Public stated thesis (website text)</h3>
+            <p id="statedThesisCopy" class="body-prose"></p>
+            <div class="override-box">
+              <label for="statedOverrideInput" class="field-label">Paste custom fund website thesis to compare</label>
+              <textarea
+                id="statedOverrideInput"
+                rows="3"
+                class="control-textarea"
+                placeholder="Paste a fund thesis paragraph here to test stated vs. actual deal behaviour..."
+              ></textarea>
+              <button id="compareStatedBtn" type="button" class="secondary-action">Compare against Cala deals</button>
+            </div>
+          </div>
+          <div class="stated-col">
+            <h3>Observed gaps in Cala deal history</h3>
+            <ul id="statedDivergenceList" class="clean-list"></ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 3: Point-in-Time Backtest -->
+      <div id="tabBacktest" class="thesis-panel" hidden>
+        <div id="backtestSummaryBox" class="backtest-summary"></div>
+        <div class="table-scroll">
+          <table class="data-table" id="backtestTable">
+            <thead>
+              <tr>
+                <th>Hidden deal (last 12 mos)</th>
+                <th>Actual round</th>
+                <th>Predicted rank</th>
+                <th>Fit score</th>
+                <th>Pre-cutoff co-investor signal</th>
+              </tr>
+            </thead>
+            <tbody id="backtestBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Layer-2 Refinement & Ranking Controls -->
+    <section class="shortlist-section" aria-label="Ranked startup shortlist">
+      <div class="section-header">
+        <h2 id="shortlistHeading">Ranked startup shortlist</h2>
+        <span class="shortlist-meta" id="shortlistMeta"></span>
+      </div>
+
+      <div id="refinementBar" class="refinement-bar">
+        <div class="refinement-controls">
+          <div class="field-inline">
+            <label for="rankingModeSelect" class="field-label">Scoring focus</label>
+            <select id="rankingModeSelect" class="control-select">
+              <option value="balanced">Balanced fit (30/25/20/15/10)</option>
+              <option value="untapped">Untapped discovery (no co-investor penalty)</option>
+              <option value="warmest">Warmest intro (35% co-investor weight)</option>
+            </select>
+          </div>
+          <div class="field-inline">
+            <label for="regionFilterSelect" class="field-label">Region</label>
+            <select id="regionFilterSelect" class="control-select">
+              <option value="all">All Europe</option>
+              <option value="Nordics">Nordics</option>
+              <option value="DACH">DACH</option>
+              <option value="UK">United Kingdom</option>
+              <option value="Western Europe">Western Europe</option>
+            </select>
+          </div>
+          <div class="field-inline">
+            <label for="excludeSectorSelect" class="field-label">Exclude sector</label>
+            <select id="excludeSectorSelect" class="control-select">
+              <option value="none">No exclusion</option>
+              <option value="Fintech">Exclude Fintech</option>
+              <option value="HealthTech">Exclude HealthTech</option>
+              <option value="Climate Tech">Exclude Climate Tech</option>
+              <option value="B2B SaaS">Exclude B2B SaaS</option>
+              <option value="DeepTech">Exclude DeepTech</option>
+              <option value="AI & ML">Exclude AI & ML</option>
+            </select>
+          </div>
+          <label class="checkbox-inline">
+            <input type="checkbox" id="raisingSoonCheckbox" />
+            <span>Likely raising soon (12 to 24 mos)</span>
+          </label>
+        </div>
+
+        <form id="refineChatForm" class="refine-chat-form">
+          <input
+            id="refineQueryInput"
+            type="text"
+            class="control-input"
+            placeholder='Refine shortlist: "only Nordics", "exclude fintech", or "why not Oura?"'
+          />
+          <button type="submit" class="secondary-action">Apply</button>
+          <button type="button" id="resetFiltersBtn" class="quiet-action">Reset</button>
+        </form>
+        <div id="refineExplanation" class="refine-explanation" hidden></div>
+      </div>
+
+      <!-- Gradual Exposure Shortlist Container -->
+      <div id="shortlistContainer" class="shortlist-container"></div>
+    </section>
+  </main>
+
+  <!-- 10-Minute Full Brief Modal -->
+  <div id="briefModal" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="briefModalTitle">
+    <div class="modal-sheet">
+      <div class="modal-header">
+        <div>
+          <h2 id="briefModalTitle">Startup Brief</h2>
+          <p id="briefModalSub" class="brief-sub"></p>
+        </div>
+        <div class="modal-actions">
+          <button id="exportMemoBtn" type="button" class="secondary-action">Export 1-page memo (.md)</button>
+          <button id="exportCsvBtn" type="button" class="secondary-action">Export CSV</button>
+          <button id="closeBriefBtn" type="button" class="quiet-action">Close</button>
+        </div>
+      </div>
+      <div id="briefModalBody" class="modal-body"></div>
+    </div>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
