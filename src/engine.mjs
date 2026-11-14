@@ -59,11 +59,35 @@ function normalizeDistribution(weightMap) {
     .sort((a, b) => b.sharePct - a.sharePct || b.count - a.count || a.label.localeCompare(b.label));
 }
 
+export function deriveSourceProvenance(source) {
+  if (!source) return { sourceRank: 'PRESS', datePrecision: 'month' };
+  const explicitRank = source.sourceRank || source.source_rank;
+  const hay = `${source.publisher || ''} ${source.title || ''} ${source.name || ''}`.toLowerCase();
+  let sourceRank = explicitRank || 'PRESS';
+  if (!explicitRank) {
+    if (/(prh|trade register|bolagsverket|bronnoy|brønnøysund|virk|companies house|gleif|registry|patent|echa|tax|grant|esa|business finland|vinnova|eic|filing|sec|ytj|regulatory)/.test(hay)) {
+      sourceRank = 'FILING';
+    } else if (/(press release|official|portfolio|announcement|disclosure|company|investor|blog|direct)/.test(hay)) {
+      sourceRank = 'PRIMARY';
+    } else if (/(dealroom|pitchbook|crunchbase|tracxn|cb insights|archive)/.test(hay)) {
+      sourceRank = 'AGGREGATOR';
+    }
+  }
+  const explicitPrec = source.datePrecision || source.date_precision;
+  let datePrecision = explicitPrec || 'month';
+  if (!explicitPrec && typeof source.date === 'string') {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(source.date)) datePrecision = 'day';
+    else if (/^\d{4}-\d{2}$/.test(source.date)) datePrecision = 'month';
+    else if (/^\d{4}$/.test(source.date)) datePrecision = 'year';
+  }
+  return { sourceRank, datePrecision };
+}
+
 export function resolveSources(sourceIds = []) {
   return sourceIds
     .map((id) => SOURCES[id])
     .filter(Boolean)
-    .map((s) => ({ ...s }));
+    .map((s) => ({ ...s, ...deriveSourceProvenance(s) }));
 }
 
 /**

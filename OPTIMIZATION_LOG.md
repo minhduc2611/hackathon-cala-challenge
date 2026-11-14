@@ -88,3 +88,23 @@
   - Deep Dive & Thesis screens: legacy ring header / static distribution bars -> `64x64` logo + `84px` incomplete-circle ring + `#talkSaveCallBtn`/`#talkCopyIntroBtn` in `#panel-talk`, clickable drill-downs in `#panel-thesis` with `#uiToastBanner` feedback
 - **Tests:** PASS (`12/12`, `111.5ms`), hygiene scan `0` hits, Browser Checks verified (`1440x900` & `390x844`, `final_step_881.png`, `final_step_895.png`, `0` console/network errors, `8/8` Cala credits preserved)
 - **Decision:** KEEP
+
+### [2026-11-14 11:30] — Exp 7: Low-Density Progressive-Disclosure Tab Redesign & Cache-First Live Cala Surfaces
+- **Hypothesis:** Replacing dense text walls and open tables inside modal, deep-dive, and thesis screens with 3-4 scannable `.hero-kpi-strip` cards, hiding `.sb-hover-detail` in `Key Signals` default mode, closing all secondary `<details>` accordions on load, and wiring cache-first `⚡ Live Cala` triggers on Search, Modal, and Thesis views maximizes visual clarity and live Cala data utility at `0` redundant API credits.
+- **Files touched:** `public/index.html`, `public/styles.css`, `public/app.js`
+- **Before -> After:**
+  - Modal default depth: `evidence` with 3 verbose open accordions -> `quick` (`Key Signals`) with all 4 `<details>` closed by default (`open === false`) and compact 5-factor bars
+  - Also-screened & network secondary blocks: always expanded -> collapsed `<details>` (`#alsoScreenedCard`, `#networkBridgesDetails`, `#networkPeersDetails`)
+  - Live Cala triggers: deep buried checkbox only -> accessible on Search, Modal header, and auto-cached Fund card on Thesis (`0` live credits)
+- **Tests:** PASS (`11/11` sandboxed unit tests, `80.5ms`), hygiene check `0` violations, Browser Checks verified (`final_step_942.png`, `final_step_948.png`, `final_step_977.png`, `0` console/network errors, `8/8` Cala credits preserved)
+- **Decision:** KEEP
+
+### [2026-11-14 11:45] — Exp 8: Official Cala Field Guide Schema, Slush 2026 Event Graph & AI-Powered Search Copilot
+- **Hypothesis:** Integrating official Cala Field Guide provenance (`source_rank`: `FILING`/`PRIMARY`/`PRESS`/`AGGREGATOR`, `date_precision`), role-filtered `PARTICIPATES_IN_FUNDING_ROUND` (`ISSUER` vs `INVESTOR`), deduplicated `FINANCING_RAISED_OR_FACILITY_ENTERED` filings, `numerical_observations`, `FOUNDED`/`IS_CEO_OF` leadership, `Slush 2026` (`bc844d56-6ab4-452b-96bf-2661e86e592b`) event filtering, and compound natural-language `AI Search` with cited synthesis turns static search into a complete AI sourcing copilot without raising rest-state density.
+- **Files touched:** `public/index.html`, `public/styles.css`, `public/app.js`, `src/calaClient.mjs`, `src/engine.mjs`, `server.mjs`
+- **Before -> After:**
+  - Source citations & rounds: plain year/publisher links -> color-coded `[FILING · day]` / `[PRIMARY]` / `[PRESS]` `source_rank` badges, explicit `ISSUER · EQUITY` round roles, and deduplicated regulatory filing indicators inside closed accordions
+  - Slush 2026 Event integration: absent -> 1-click `#filterSlushBtn` (`17` attendees) + 0-credit `Slush 2026` `Event` entity inspector (`bc844d56-6ab4-452b-96bf-2661e86e592b`)
+  - Search bar: single-keyword filter -> `AI Search` parsing multi-constraint NL prompts (`"Slush 2026 DeepTech raising soon"`) with cited startup chips and 1-click `Ask Live Cala Knowledge` escalation
+- **Tests:** PASS (`11/11` sandboxed unit tests, `76.2ms`), `node --check` pass, hygiene check `0` hits, Browser Checks verified at `1440x900` & `390x844` (`final_step_991.png`, `0` console/network errors, `8/8` Cala credits preserved)
+- **Decision:** KEEP

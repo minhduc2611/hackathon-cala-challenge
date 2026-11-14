@@ -403,7 +403,7 @@
             type="text"
             id="aiSearchInput"
             class="floating-search-input"
-            placeholder="Search a company, investor, city, or industry..."
+            placeholder="Ask AI or search: 'Slush 2026 DeepTech raising soon', 'Why not Oura?', VoltGrid..."
             autocomplete="off"
           />
           <kbd class="search-kbd-hint" id="searchKbdHint" aria-hidden="true">/</kbd>
@@ -411,7 +411,7 @@
             Reset
           </button>
           <button type="submit" class="floating-search-btn" id="aiSearchSubmitBtn">
-            Search
+            AI Search
           </button>
           <div
             id="searchSuggestPopup"
@@ -422,7 +422,7 @@
           ></div>
         </form>
 
-        <!-- QUIET TYPED PROMPT ROW + COLLAPSIBLE FILTERS TOGGLE -->
+        <!-- QUIET TYPED PROMPT ROW + COLLAPSIBLE FILTERS & LIVE CALA -->
         <div class="examples-strip" id="aiExamplesBar">
           <span class="try-label">Try:</span>
           <button type="button" class="example-btn" data-query="VoltGrid">
@@ -436,10 +436,6 @@
           <button type="button" class="example-btn" data-query="Climate Tech">
             <span class="ex-kind">Industry</span>
             <span class="ex-val">Climate Tech</span>
-          </button>
-          <button type="button" class="example-btn" data-query="Helsinki">
-            <span class="ex-kind">City</span>
-            <span class="ex-val">Helsinki</span>
           </button>
           <button type="button" class="example-btn" data-query="Why not Oura?">
             <span class="ex-kind">Ask</span>
@@ -456,6 +452,15 @@
             <span>Filters</span>
             <span class="filter-active-badge num-tabular" id="filterCountPill" hidden>0</span>
             <span aria-hidden="true">&#9662;</span>
+          </button>
+          <button
+            type="button"
+            class="live-cala-pill-btn"
+            id="searchLiveCalaBtn"
+            title="Query live Cala AI entity & knowledge graph"
+          >
+            <span class="cala-bolt" aria-hidden="true">&#9889;</span>
+            <span>Live Cala</span>
           </button>
         </div>
 
@@ -520,12 +525,23 @@
 
         <div class="ai-trace-banner" id="aiTraceBox" aria-live="polite" hidden>
           <div class="trace-main">
-            <span class="trace-badge" id="aiIntentBadge">Filtered</span>
+            <span class="trace-badge" id="aiIntentBadge">AI Search</span>
             <p class="trace-explanation" id="aiExplanationText"></p>
           </div>
           <div class="trace-operations" id="aiAppliedFilters"></div>
+          <div class="ai-trace-citations" id="aiTraceCitations"></div>
         </div>
       </div>
+
+      <!-- LIVE CALA AI ENTITY & KNOWLEDGE LOOKUP RESULT -->
+      <section
+        id="liveCalaSearchCard"
+        class="live-cala-intel-card"
+        hidden
+        aria-label="Live Cala AI entity intelligence"
+      >
+        <div id="liveCalaSearchContent"></div>
+      </section>
 
       <!-- 6-7 STARTUPS A LINE GRID -->
       <div class="grid-toolbar">
@@ -535,6 +551,16 @@
             <span aria-hidden="true">&#9733;</span>
             <span>Call List</span>
             <b class="num-tabular" id="callListCountBadge">0</b>
+          </button>
+          <button
+            type="button"
+            class="call-list-pill slush-filter-pill"
+            id="filterSlushBtn"
+            aria-pressed="false"
+            title="Filter to startups attending Slush 2026 (Cala PARTICIPATES_IN_EVENT · bc844d56-6ab4-452b-96bf-2661e86e592b)"
+          >
+            <span>Slush 2026</span>
+            <b class="num-tabular" id="slushCountBadge">0</b>
           </button>
           <button
             type="button"
@@ -578,11 +604,14 @@
 
       <div class="startup-grid" id="startupGrid" role="list"></div>
 
-      <!-- MERGERO-STYLE "ALSO SCREENED, AND DELIBERATELY EXCLUDED" -->
-      <div class="card also" id="alsoScreenedCard">
-        <h4>Also screened, and deliberately excluded (existing portfolio &amp; direct conflicts)</h4>
-        <div id="alsoScreenedList"></div>
-      </div>
+      <!-- MERGERO-STYLE "ALSO SCREENED, AND DELIBERATELY EXCLUDED" (COLLAPSIBLE) -->
+      <details class="card also also-collapsible" id="alsoScreenedCard">
+        <summary class="also-summary">
+          <span>Also screened &amp; excluded (existing portfolio &amp; direct conflicts)</span>
+          <span class="gradual-hint" id="alsoScreenedCountBadge">4 excluded</span>
+        </summary>
+        <div id="alsoScreenedList" class="also-body"></div>
+      </details>
     </section>
 
     <!-- VIEW 2: FULL-SCREEN 3-COLUMN DEEP DIVE -->
@@ -604,39 +633,59 @@
       hidden
     >
       <button type="button" class="back" data-go="search">&larr; Back to startups to call</button>
-      <h2 id="thesisFundTitle">What Lifeline Ventures actually backs</h2>
-      <p class="sub" id="thesisFundSubtitle">
-        Comparing stated marketing thesis against verified Cala funding rounds, plus a historical point-in-time backtest with zero future data leakage.
-      </p>
+      <div class="thesis-head-row">
+        <div>
+          <h2 id="thesisFundTitle">What Lifeline Ventures actually backs</h2>
+          <p class="sub" id="thesisFundSubtitle" style="margin-bottom: 0">
+            Verified Cala round patterns &amp; point-in-time historical backtest.
+          </p>
+        </div>
+        <button
+          type="button"
+          class="btn sm live-cala-pill-btn"
+          id="thesisVerifyFundBtn"
+          title="Load live Cala Organization relationships & primary source citations"
+        >
+          <span class="cala-bolt" aria-hidden="true">&#9889;</span>
+          <span>Verify Fund in Live Cala</span>
+        </button>
+      </div>
+
+      <div class="hero-kpi-strip thesis-kpi-strip" id="thesisHeroKpis"></div>
+
+      <div id="thesisLiveCalaCard" class="live-cala-intel-card" hidden style="margin-bottom: 18px"></div>
 
       <div id="weakProfileWarning" class="card pilot" style="margin-bottom: 18px" hidden></div>
 
       <div class="scale">
         <div class="card funnel">
-          <h3 class="panel-cap-title">Point-in-time backtest &amp; sector conviction</h3>
-          <div id="scaleFunnelRows"></div>
-
-          <div class="dist-section">
-            <h4>Revealed sector distribution in Cala</h4>
+          <div class="dist-section" style="margin-top: 0">
+            <h4>Revealed sector distribution (click to filter)</h4>
             <div id="sectorDistributionBars"></div>
           </div>
 
           <div class="dist-section">
-            <h4>Revealed stage &amp; geography split</h4>
+            <h4>Revealed stage &amp; geography split (click to filter)</h4>
             <div id="stageDistributionBars"></div>
             <div id="geoDistributionBars" style="margin-top: 10px"></div>
           </div>
+
+          <details class="gradual-block" id="thesisFunnelDetails" style="margin-top: 18px">
+            <summary class="gradual-summary">
+              <span>Point-in-time screening funnel</span>
+              <span class="gradual-hint">4 stages</span>
+            </summary>
+            <div class="gradual-content" style="padding-top: 10px">
+              <div id="scaleFunnelRows"></div>
+            </div>
+          </details>
         </div>
 
         <div>
-          <div class="card why-scale">
-            <ul id="thesisInsightsList"></ul>
-          </div>
-
-          <div class="card pilot">
+          <div class="card pilot" style="margin-top: 0">
             <h3>Historical backtest proof (<span id="backtestHitRate">100%</span> recovery)</h3>
             <p id="backtestSummaryText">
-              Using only rounds announced prior to cutoff, the engine ranked the candidate pool and recovered the fund's subsequent 12-month investments.
+              Ranked using only pre-cutoff Cala rounds to predict subsequent investments.
             </p>
             <div class="badges">
               <span class="badge b-green">Precision: <b id="backtestPrecision">3/3 in Top 15</b></span>
@@ -645,6 +694,18 @@
             </div>
             <div id="backtestHitsList" style="margin-top: 12px"></div>
           </div>
+
+          <details class="gradual-block" id="thesisInsightsDetails" style="margin-top: 16px">
+            <summary class="gradual-summary">
+              <span>Stated vs. revealed thesis &amp; verification notes</span>
+              <span class="gradual-hint">3 notes</span>
+            </summary>
+            <div class="gradual-content" style="padding-top: 12px">
+              <div class="why-scale" style="padding: 0; border: 0; background: transparent">
+                <ul id="thesisInsightsList"></ul>
+              </div>
+            </div>
+          </details>
         </div>
       </div>
     </section>
@@ -682,6 +743,15 @@
             title="Toggle in Call List (S)"
           >
             &#9734; Call List
+          </button>
+          <button
+            type="button"
+            class="btn sm live-cala-pill-btn"
+            id="modalHeaderLiveCalaBtn"
+            title="Enrich this startup live from Cala AI graph"
+          >
+            <span class="cala-bolt" aria-hidden="true">&#9889;</span>
+            <span>Live Cala</span>
           </button>
           <button
             type="button"
@@ -740,34 +810,40 @@
     <div class="drawer-body">
       <div id="drawerPaneBrief" class="drawer-pane">
         <div class="exposure-depth-bar" role="toolbar" aria-label="Reading depth">
-          <span class="depth-label">Gradual exposure</span>
+          <span class="depth-label">Detail level</span>
           <div class="depth-pills">
-            <button type="button" class="depth-pill" data-depth="quick">5s Summary</button>
-            <button type="button" class="depth-pill is-active" data-depth="evidence">1m Evidence</button>
-            <button type="button" class="depth-pill" data-depth="memo">10m Full Brief</button>
+            <button type="button" class="depth-pill is-active" data-depth="quick">Key Signals</button>
+            <button type="button" class="depth-pill" data-depth="evidence">+ Evidence &amp; Rounds</button>
+            <button type="button" class="depth-pill" data-depth="memo">Expand All</button>
           </div>
         </div>
 
+        <div class="hero-kpi-strip" id="drawerHeroKpis"></div>
+
+        <div id="drawerLiveCalaBanner" class="live-cala-intel-card" hidden></div>
+
         <div class="modal-exec-grid">
           <section class="exposure-stage-Quick">
-            <p class="quick-verdict" id="drawerQuickVerdict"></p>
+            <div class="verdict-card">
+              <span class="verdict-kicker">Core Thesis Takeaway</span>
+              <p class="quick-verdict" id="drawerQuickVerdict"></p>
+            </div>
             <div class="quick-pills-row" id="drawerQuickPills"></div>
-            <div class="warm-intro-preview" id="drawerIntroPreviewBox"></div>
           </section>
 
           <section class="drawer-section">
             <div class="drawer-section-head">
-              <h3 class="drawer-section-title">Why this score (Cala 5-factor breakdown)</h3>
+              <h3 class="drawer-section-title">5-Factor Score Profile</h3>
               <span class="Verified-badge" id="drawerConfidenceLabel">Verified</span>
             </div>
             <div class="score-breakdown-list" id="drawerScoreBreakdown"></div>
           </section>
         </div>
 
-        <details class="gradual-block" id="gradualLayer1" open>
+        <details class="gradual-block" id="gradualLayer1">
           <summary class="gradual-summary">
-            <span>Grounded Cala evidence &amp; risks</span>
-            <span class="gradual-hint">Expand / collapse</span>
+            <span>Why it fits &amp; risk checks</span>
+            <span class="gradual-hint" id="gradualBadge1">3 facts · 2 risks</span>
           </summary>
           <div class="gradual-content">
             <h4 class="sub-label">Why it fits</h4>
@@ -777,27 +853,38 @@
           </div>
         </details>
 
+        <details class="gradual-block" id="gradualLayerIntro">
+          <summary class="gradual-summary">
+            <span>Warm intro draft note</span>
+            <span class="gradual-hint" id="gradualBadgeIntro">1-click copy</span>
+          </summary>
+          <div class="gradual-content" style="padding-top: 12px">
+            <div class="warm-intro-preview" id="drawerIntroPreviewBox"></div>
+          </div>
+        </details>
+
         <details class="gradual-block" id="gradualLayer2">
           <summary class="gradual-summary">
-            <span>Funding rounds &amp; portfolio analogues</span>
-            <span class="gradual-hint">Expand / collapse</span>
+            <span>Funding history, leadership &amp; Cala time-series</span>
+            <span class="gradual-hint" id="gradualBadge2">Rounds &amp; filings</span>
           </summary>
           <div class="gradual-content">
-            <h4 class="sub-label">Verified funding history</h4>
+            <h4 class="sub-label">Verified funding history (PARTICIPATES_IN_FUNDING_ROUND · ISSUER)</h4>
             <div class="table-wrap">
               <table class="data-table">
                 <thead>
                   <tr>
                     <th>Date</th>
-                    <th>Round</th>
+                    <th>Round · Role</th>
                     <th>Amount</th>
-                    <th>Investors</th>
-                    <th>Source</th>
+                    <th>Investors &amp; Lead</th>
+                    <th>Source &amp; Filing</th>
                   </tr>
                 </thead>
                 <tbody id="drawerRoundsTableBody"></tbody>
               </table>
             </div>
+            <div class="cala-subgrid" id="drawerTimeSeriesAndLeadership"></div>
             <h4 class="sub-label">Closest portfolio analogues</h4>
             <div id="drawerAnaloguesList"></div>
           </div>
@@ -805,8 +892,8 @@
 
         <details class="gradual-block" id="gradualLayer3">
           <summary class="gradual-summary">
-            <span>Coverage gaps, diligence questions &amp; export</span>
-            <span class="gradual-hint">Expand / collapse</span>
+            <span>Coverage gaps, diligence &amp; live Cala check</span>
+            <span class="gradual-hint" id="gradualBadge3">Audit &amp; export</span>
           </summary>
           <div class="gradual-content">
             <h4 class="sub-label">Explicit coverage gaps ("Not found in Cala")</h4>
@@ -839,11 +926,11 @@
 
       <div id="drawerPaneNetwork" class="drawer-pane" hidden>
         <div class="network-toolbar">
-          <div>
-            <h3 class="drawer-section-title">Warm intro &amp; relationship graph</h3>
-            <p class="note" style="margin: 2px 0 0">
-              Links through 3rd-party founders, angels, and co-investors.
-            </p>
+          <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap">
+            <button type="button" class="btn sm" id="peerBackBtn" hidden>&larr; Back</button>
+            <div>
+              <h3 class="drawer-section-title">Warm intro &amp; relationship graph</h3>
+            </div>
           </div>
           <div class="net-source-switch" role="radiogroup" aria-label="Network source">
             <button type="button" class="net-src-btn is-active" data-net-source="linkedin" id="netSrcLinkedinBtn">
@@ -862,18 +949,25 @@
           <div id="drawerNetworkNodeInspector" class="network-node-inspector" aria-live="polite"></div>
         </div>
 
-        <section class="drawer-section">
-          <h4 class="drawer-section-title" style="margin-bottom: 10px">3rd-party connectors &amp; mutual bridges</h4>
-          <div class="bridge-cards-list" id="linkedinBridgesList"></div>
-        </section>
-
-        <section class="drawer-section">
-          <div class="drawer-section-head">
-            <h4 class="drawer-section-title">Connected startups (click to inspect)</h4>
-            <button type="button" class="btn sm" id="peerBackBtn" hidden>&larr; Back</button>
+        <details class="gradual-block" id="networkBridgesDetails">
+          <summary class="gradual-summary">
+            <span>3rd-party connectors &amp; mutual bridges</span>
+            <span class="gradual-hint" id="networkBridgesBadge">2 bridges</span>
+          </summary>
+          <div class="gradual-content" style="padding-top: 12px">
+            <div class="bridge-cards-list" id="linkedinBridgesList"></div>
           </div>
-          <div class="peer-startups-grid" id="peerStartupsList"></div>
-        </section>
+        </details>
+
+        <details class="gradual-block" id="networkPeersDetails">
+          <summary class="gradual-summary">
+            <span>Connected cluster startups (click to inspect)</span>
+            <span class="gradual-hint" id="networkPeersBadge">Peers</span>
+          </summary>
+          <div class="gradual-content" style="padding-top: 12px">
+            <div class="peer-startups-grid" id="peerStartupsList"></div>
+          </div>
+        </details>
       </div>
     </div>
 

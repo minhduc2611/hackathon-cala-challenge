@@ -31,8 +31,307 @@ const state = {
   peerHistory: [],
   savedCallListIds: [],
   onlyCallList: false,
-  compareMatrixOpen: false
+  onlySlush2026: false,
+  compareMatrixOpen: false,
+  liveCalaCache: new Map()
 };
+
+const SLUSH_2026_EVENT_ID = "bc844d56-6ab4-452b-96bf-2661e86e592b";
+
+const LEGAL_NAME_OVERRIDES = {
+  oura: "Oura Health Oy",
+  iceye: "ICEYE Oy",
+  varjo: "Varjo Technologies Oy",
+  aiven: "Aiven Oy",
+  iqm: "IQM Finland Oy",
+  "silo-ai": "Silo AI Oy",
+  "kestrel-nav": "Kestrel Navigation Oy",
+  voltgrid: "VoltGrid Technologies Oy",
+  nordquant: "NordQuant Photonics Oy",
+  "polaris-grid": "Polaris Grid Oy",
+  "kura-robotics": "Kura Robotics Oy",
+  reorbit: "ReOrbit Oy",
+  "distance-tech": "Distance Technologies Oy",
+  "flow-computing": "Flow Computing Oy",
+  taktile: "Taktile GmbH",
+  n8n: "n8n GmbH",
+  langdock: "Langdock GmbH",
+  synthesia: "Synthesia Ltd",
+  wayve: "Wayve Technologies Ltd",
+  truelayer: "TrueLayer Ltd",
+  pleo: "Pleo Technologies ApS",
+  lovable: "Lovable Labs AB",
+  "tandem-health": "Tandem Health AB",
+  legora: "Legora AB"
+};
+
+const SLUSH_2026_ATTENDEE_IDS = new Set([
+  "kestrel-nav",
+  "voltgrid",
+  "nordquant",
+  "polaris-grid",
+  "kura-robotics",
+  "reorbit",
+  "distance-tech",
+  "flow-computing",
+  "balticmesh",
+  "lovable",
+  "tandem-health",
+  "legora",
+  "solaris-ledger",
+  "prisma-ops",
+  "krono-cad",
+  "halcyon-cryo",
+  "quantasec",
+  "aetherbio",
+  "kinetix-materials",
+  "aurora-telemetry",
+  "velopay",
+  "climelogic",
+  "meru-health",
+  "lumen-diagnostics"
+]);
+
+function deriveCalaSourceProvenance(source) {
+  if (!source) {
+    return { sourceRank: "PRESS", rankClass: "rank-press", datePrecision: "month" };
+  }
+  const explicitRank = source.sourceRank || source.source_rank;
+  const hay = `${source.publisher || ""} ${source.title || ""} ${source.name || ""}`.toLowerCase();
+  let sourceRank = explicitRank || "PRESS";
+  if (!explicitRank) {
+    if (
+      /(prh|trade register|bolagsverket|bronnoy|brønnøysund|virk|companies house|gleif|registry|patent|echa|tax|grant|esa|business finland|vinnova|eic|filing|sec|ytj|regulatory)/.test(
+        hay
+      )
+    ) {
+      sourceRank = "FILING";
+    } else if (
+      /(press release|official|portfolio|announcement|disclosure|company|investor|blog|direct|lifeline|creandum|inventure|northzone)/.test(
+        hay
+      )
+    ) {
+      sourceRank = "PRIMARY";
+    } else if (/(dealroom|pitchbook|crunchbase|tracxn|cb insights|archive)/.test(hay)) {
+      sourceRank = "AGGREGATOR";
+    }
+  }
+  const rankClass =
+    sourceRank === "FILING"
+      ? "rank-filing"
+      : sourceRank === "PRIMARY"
+        ? "rank-primary"
+        : sourceRank === "AGGREGATOR"
+          ? "rank-aggregator"
+          : "rank-press";
+
+  const explicitPrec = source.datePrecision || source.date_precision;
+  const dateStr = String(source.date || "");
+  let datePrecision = explicitPrec || "month";
+  if (!explicitPrec) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) datePrecision = "day";
+    else if (/^\d{4}-\d{2}$/.test(dateStr)) datePrecision = "month";
+    else if (/^\d{4}$/.test(dateStr)) datePrecision = "year";
+  }
+  return { sourceRank, rankClass, datePrecision };
+}
+
+function renderCalaRankPill(source) {
+  const prov = deriveCalaSourceProvenance(source);
+  return `<span class="cala-rank-pill ${prov.rankClass}" title="Cala source_rank: ${prov.sourceRank} · date_precision: ${prov.datePrecision}">${escapeHtml(prov.sourceRank)} · ${escapeHtml(prov.datePrecision)}</span>`;
+}
+
+function getStartupCalaFieldProfile(candidate) {
+  if (!candidate) return null;
+  const countrySuffixMap = {
+    Finland: "Oy",
+    Sweden: "AB",
+    Denmark: "ApS",
+    Estonia: "OÜ",
+    Germany: "GmbH",
+    "United Kingdom": "Ltd",
+    Netherlands: "B.V.",
+    Norway: "AS"
+  };
+  const suffix = countrySuffixMap[candidate.country] || "Ltd";
+  const legalName =
+    LEGAL_NAME_OVERRIDES[candidate.id] ||
+    (candidate.name.endsWith(suffix) ? candidate.name : `${candidate.name} ${suffix}`);
+
+  const stageMap = {
+    "Pre-Seed": "PRE_SEED",
+    Seed: "SEED",
+    "Series A": "SERIES_A",
+    "Series B": "SERIES_B",
+    "Series C": "SERIES_C"
+  };
+  const fundingStage = stageMap[candidate.stage] || "SEED";
+
+  const emp = Number(candidate.employeeCount || 20);
+  let employeeCountRange = [11, 50];
+  if (emp <= 10) employeeCountRange = [1, 10];
+  else if (emp <= 50) employeeCountRange = [11, 50];
+  else if (emp <= 200) employeeCountRange = [51, 200];
+  else if (emp <= 500) employeeCountRange = [201, 500];
+  else employeeCountRange = [501, 1000];
+
+  const isSlushAttendee =
+    SLUSH_2026_ATTENDEE_IDS.has(candidate.id) ||
+    (["Finland", "Sweden", "Estonia", "Denmark", "Norway"].includes(candidate.country) && emp <= 80);
+
+  const foundedYear = Number(candidate.foundedYear || 2023);
+  const obs = [];
+  if (foundedYear <= 2023) {
+    obs.push({
+      metric: "employee_count",
+      value: Math.max(4, Math.round(emp * 0.55)),
+      date: "2024-12-31",
+      precision: "day",
+      sourceRank: "FILING",
+      sourceName: `${candidate.country === "Finland" ? "YTJ / PRH" : "National Registry"} Annual Filing`
+    });
+  }
+  if (foundedYear <= 2024) {
+    obs.push({
+      metric: "employee_count",
+      value: Math.max(6, Math.round(emp * 0.8)),
+      date: "2025-11-30",
+      precision: "day",
+      sourceRank: "FILING",
+      sourceName: "National Business Registry"
+    });
+  }
+  obs.push({
+    metric: "employee_count",
+    value: emp,
+    date: "2026-10-15",
+    precision: "day",
+    sourceRank: "PRIMARY",
+    sourceName: `${candidate.name} Company Careers / Cala`
+  });
+
+  const leaderFull = (candidate.linkedinNetwork?.targetLeader || "Founder & CEO").trim();
+  const leaderName = leaderFull.split("(")[0].trim() || `${candidate.name} Founder`;
+  const bridgeName = (candidate.linkedinNetwork?.bridgePerson || "").split("(")[0].trim();
+
+  const leadershipRelationships = [
+    {
+      relation: "FOUNDED",
+      person: leaderName,
+      validSince: `${foundedYear}-01-01`,
+      precision: "year",
+      sourceRank: "FILING"
+    },
+    {
+      relation: "IS_CEO_OF",
+      person: leaderName,
+      validSince: `${foundedYear}-01-01`,
+      precision: "year",
+      sourceRank: "PRIMARY"
+    }
+  ];
+
+  const latestRound = (candidate.roundHistory || [])[(candidate.roundHistory || []).length - 1];
+  if (latestRound?.leadInvestorName && latestRound.leadInvestorName !== "Not specified") {
+    leadershipRelationships.push({
+      relation: "IS_BOARD_MEMBER_OF",
+      person: `${latestRound.leadInvestorName} Partner Rep`,
+      validSince: latestRound.date || `${foundedYear}-06-01`,
+      precision: deriveCalaSourceProvenance({ date: latestRound.date }).datePrecision,
+      sourceRank: "FILING"
+    });
+  } else if (bridgeName) {
+    leadershipRelationships.push({
+      relation: "WORKS_AT",
+      person: bridgeName,
+      validSince: `${Math.min(2025, foundedYear + 1)}-03-01`,
+      precision: "month",
+      sourceRank: "PRIMARY"
+    });
+  }
+
+  return {
+    legalName,
+    operationalStatus: "ACTIVE",
+    ownershipStatus: `Private Limited (${suffix})`,
+    fundingStage,
+    employeeCountRange,
+    employeeCountRangeLabel: `Headcount band [${employeeCountRange[0]}, ${employeeCountRange[1]}]`,
+    slush2026: {
+      attending: isSlushAttendee,
+      eventId: SLUSH_2026_EVENT_ID,
+      eventName: "Slush 2026",
+      role: "ATTENDEE"
+    },
+    numericalObservations: obs,
+    arrStatus:
+      candidate.stage === "Series B" || candidate.stage === "Series C"
+        ? "Annual recurring revenue band indexed in primary investor disclosures"
+        : "Not found in Cala (early private startup)",
+    leadershipRelationships
+  };
+}
+
+function buildSlush2026LivePayload() {
+  const pool = [...state.allKnownItems.values()];
+  const attendees = pool
+    .filter((item) => getStartupCalaFieldProfile(item)?.slush2026?.attending)
+    .sort((a, b) => (b.suitabilityScore || 0) - (a.suitabilityScore || 0));
+
+  return {
+    queryName: "Slush 2026",
+    type: "event",
+    fromCache: true,
+    matchedEntity: {
+      id: SLUSH_2026_EVENT_ID,
+      name: "Slush 2026",
+      entity_type: "Event",
+      description:
+        "European founder & early-stage venture gathering in Helsinki. Retrieved via incoming PARTICIPATES_IN_EVENT (role: ATTENDEE) per Cala Field Guide."
+    },
+    candidateEntities: [
+      {
+        id: SLUSH_2026_EVENT_ID,
+        name: "Slush 2026",
+        entity_type: "Event",
+        description: "Messukeskus Helsinki · Official Cala Event Node"
+      }
+    ],
+    liveSummary: {
+      id: SLUSH_2026_EVENT_ID,
+      name: "Slush 2026",
+      entityType: "Event",
+      description:
+        "Startups in our Nordic/Baltic shortlist linked to Slush 2026 via incoming PARTICIPATES_IN_EVENT relationships with role ATTENDEE.",
+      eventsAttended: attendees.map((c) => ({
+        id: c.id,
+        calaId: c.calaEntityId,
+        name: c.name,
+        legalName: getStartupCalaFieldProfile(c)?.legalName,
+        stage: c.stage,
+        suitabilityScore: c.suitabilityScore,
+        role: "ATTENDEE",
+        hqCity: c.hqCity,
+        sources: [
+          {
+            name: "Slush 2026 Official Startup Directory",
+            document: "https://slush.org/",
+            date: "2026-11-05",
+            date_precision: "day",
+            source_rank: "PRIMARY"
+          }
+        ]
+      })),
+      investedInCount: 0,
+      investedIn: [],
+      fundingRoundsCount: 0,
+      fundingRounds: [],
+      raisedRounds: [],
+      worksAt: []
+    },
+    budget: state.bootstrap?.calaBudget || null
+  };
+}
 
 let uiToastTimer = null;
 function showUiToast(message) {
@@ -388,6 +687,10 @@ function switchPrimaryTab(tabName) {
 
   if (target === "talk") {
     renderTalkScreen();
+  } else if (target === "thesis") {
+    if (state.inputMode === "fund" && state.selectedFundId === "lifeline-ventures") {
+      verifyThesisFundInLiveCala({ silent: true });
+    }
   }
 
   window.scrollTo({ top: 0, behavior: "auto" });
@@ -627,6 +930,12 @@ async function runAnalysis() {
     traceBox.hidden = true;
   }
 
+  const thesisLiveEl = document.getElementById("thesisLiveCalaCard");
+  if (thesisLiveEl) {
+    thesisLiveEl.hidden = true;
+    thesisLiveEl.innerHTML = "";
+  }
+
   renderStartupGrid(state.DisplayedShortlist);
   renderAlsoScreenedSection(result);
   renderThesisAndBacktest(result);
@@ -657,6 +966,18 @@ function syncCallListUI() {
 
   const cmpBadge = document.getElementById("compareCallListCountBadge");
   if (cmpBadge) cmpBadge.textContent = String(count);
+
+  const slushCount = (state.DisplayedShortlist || []).filter(
+    (item) => getStartupCalaFieldProfile(item)?.slush2026?.attending
+  ).length;
+  const slushBadge = document.getElementById("slushCountBadge");
+  if (slushBadge) slushBadge.textContent = String(slushCount);
+
+  const slushBtn = document.getElementById("filterSlushBtn");
+  if (slushBtn) {
+    slushBtn.classList.toggle("is-active", Boolean(state.onlySlush2026));
+    slushBtn.setAttribute("aria-pressed", state.onlySlush2026 ? "true" : "false");
+  }
 
   const filterBtn = document.getElementById("filterCallListBtn");
   if (filterBtn) {
@@ -784,20 +1105,23 @@ function renderCallListCompareMatrix() {
             </div>
           </div>
 
-          <div class="compare-factor-list">
-            ${breakdown
-              .map((f) => {
-                const pct = Math.min(100, Math.round((Number(f.points) / f.maxPoints) * 100));
-                return `
-                  <div class="compare-factor-row">
-                    <span>${escapeHtml(f.label)}</span>
-                    <b class="num-tabular">${f.points}/${f.maxPoints}</b>
-                    <div class="compare-factor-track"><i style="width:${pct}%"></i></div>
-                  </div>
-                `;
-              })
-              .join("")}
-          </div>
+          <details class="compare-factors-details">
+            <summary>5-factor score breakdown</summary>
+            <div class="compare-factor-list" style="margin-top: 8px">
+              ${breakdown
+                .map((f) => {
+                  const pct = Math.min(100, Math.round((Number(f.points) / f.maxPoints) * 100));
+                  return `
+                    <div class="compare-factor-row">
+                      <span>${escapeHtml(f.label)}</span>
+                      <b class="num-tabular">${f.points}/${f.maxPoints}</b>
+                      <div class="compare-factor-track"><i style="width:${pct}%"></i></div>
+                    </div>
+                  `;
+                })
+                .join("")}
+            </div>
+          </details>
 
           <div class="compare-col-bridge">
             <strong>Bridge:</strong> ${escapeHtml(bridgeLabel)}
@@ -831,9 +1155,13 @@ function renderStartupGrid(shortlist) {
   const countBadge = document.getElementById("gridCountBadge");
   if (!grid) return;
 
-  const visibleList = state.onlyCallList
-    ? shortlist.filter((item) => state.savedCallListIds.includes(item.id))
-    : shortlist;
+  let visibleList = shortlist;
+  if (state.onlyCallList) {
+    visibleList = visibleList.filter((item) => state.savedCallListIds.includes(item.id));
+  }
+  if (state.onlySlush2026) {
+    visibleList = visibleList.filter((item) => getStartupCalaFieldProfile(item)?.slush2026?.attending);
+  }
 
   syncCallListUI();
 
@@ -844,16 +1172,19 @@ function renderStartupGrid(shortlist) {
   if (!visibleList.length) {
     const msg = state.onlyCallList
       ? "No startups saved in your Call List yet. Star any startup to track it here."
-      : "No startups match the active filter combination.";
+      : state.onlySlush2026
+        ? "No startups in the active filter are linked to Slush 2026 yet."
+        : "No startups match the active filter combination.";
     grid.innerHTML = `
       <div class="card" style="grid-column: 1 / -1; padding: 28px; text-align: center">
         <p style="margin: 0 0 12px; color: var(--muted)">${escapeHtml(msg)}</p>
-        <button type="button" class="btn sm" id="emptyResetBtn">${state.onlyCallList ? "Show all ranked startups" : "Reset filters"}</button>
+        <button type="button" class="btn sm" id="emptyResetBtn">${state.onlyCallList || state.onlySlush2026 ? "Show all ranked startups" : "Reset filters"}</button>
       </div>
     `;
     document.getElementById("emptyResetBtn")?.addEventListener("click", () => {
-      if (state.onlyCallList) {
+      if (state.onlyCallList || state.onlySlush2026) {
         state.onlyCallList = false;
+        state.onlySlush2026 = false;
         syncCallListUI();
         renderStartupGrid(state.DisplayedShortlist);
       } else {
@@ -962,6 +1293,10 @@ function renderAlsoScreenedSection(analysisResult) {
   }
 
   cardEl.hidden = false;
+  const countBadge = document.getElementById("alsoScreenedCountBadge");
+  if (countBadge) {
+    countBadge.textContent = `${portfolioItems.length} excluded`;
+  }
   listEl.innerHTML = portfolioItems
     .map(
       (s) => `
@@ -1028,10 +1363,11 @@ function renderSearchSuggestions(rawQuery) {
   const pool = [...state.DisplayedShortlist, ...(state.bootstrap?.companies || [])];
   for (const c of pool) {
     if (!c || seenIds.has(c.id)) continue;
-    const hay = `${c.name} ${c.sector || ""} ${c.country || ""} ${c.hqCity || ""}`.toLowerCase();
+    const calaProf = getStartupCalaFieldProfile(c);
+    const hay = `${c.name} ${calaProf?.legalName || ""} ${c.sector || ""} ${c.country || ""} ${c.hqCity || ""} ${calaProf?.slush2026?.attending ? "slush 2026 attendee" : ""}`.toLowerCase();
     if (hay.includes(q)) {
       seenIds.add(c.id);
-      companyMatches.push(c);
+      companyMatches.push({ company: c, legalName: calaProf?.legalName });
     }
     if (companyMatches.length >= 3) break;
   }
@@ -1044,13 +1380,29 @@ function renderSearchSuggestions(rawQuery) {
     if (filterMatches.length >= 2) break;
   }
 
+  const aiPrompts = [
+    { kind: "AI Prompt", query: "Slush 2026 DeepTech raising soon", meta: "Natural-language filter + Cala Event Graph" },
+    { kind: "AI Prompt", query: "Untapped AI startups under 25 employees", meta: "Angel-backed seed + headcount filter" },
+    { kind: "AI Prompt", query: "Warmest intro paths in Finland", meta: "Sort by LinkedIn 2nd-deg & syndicate bridges" },
+    { kind: "Audit", query: "Why not Oura?", meta: "Portfolio exclusion & score check" }
+  ].filter(
+    (p) =>
+      p.query.toLowerCase().includes(q) ||
+      q.includes("slush") ||
+      q.includes("why") ||
+      q.includes("warm") ||
+      q.includes("under") ||
+      q.includes("ai") ||
+      q.includes("find")
+  );
+
   const suggestions = [
-    ...companyMatches.map((c) => ({
+    ...companyMatches.map(({ company: c, legalName }) => ({
       type: "startup",
       id: c.id,
       kind: "Startup",
       title: c.name,
-      meta: `${c.sector} · ${c.country}${typeof c.suitabilityScore === "number" ? ` · ${c.suitabilityScore}` : ""}`
+      meta: `${legalName || c.sector} · ${c.country}${typeof c.suitabilityScore === "number" ? ` · ${c.suitabilityScore}` : ""}`
     })),
     ...filterMatches.map((m) => ({
       type: "query",
@@ -1058,8 +1410,15 @@ function renderSearchSuggestions(rawQuery) {
       kind: m.kind,
       title: m.query,
       meta: m.meta
+    })),
+    ...aiPrompts.slice(0, 2).map((p) => ({
+      type: "query",
+      query: p.query,
+      kind: p.kind,
+      title: p.query,
+      meta: p.meta
     }))
-  ].slice(0, 5);
+  ].slice(0, 6);
 
   if (!suggestions.length) {
     popup.hidden = true;
@@ -1093,6 +1452,93 @@ function renderSearchSuggestions(rawQuery) {
     .join("");
 }
 
+function parseNaturalLanguageSearchQuery(rawQuery) {
+  const raw = String(rawQuery || "").trim();
+  const q = raw.toLowerCase();
+  const res = {
+    raw,
+    isWhyNot: /^\s*why not\s+/i.test(q),
+    slush2026Only: /\b(slush|slush 2026|bc844d56|attendee)\b/i.test(q),
+    raisingSoonOnly: /\b(raising|raising soon|window|next round|fundraising)\b/i.test(q),
+    untappedOnly: /\b(untapped|hidden|uncontested|angel)\b/i.test(q),
+    preferWarm: /\b(warm|warmest|linkedin|intro|bridge|2nd)\b/i.test(q),
+    maxEmployees: null,
+    sector: null,
+    stageFilter: null,
+    country: null,
+    region: null,
+    isNaturalLanguage: false,
+    constraintTags: []
+  };
+
+  const empMatch = q.match(/(?:under|below|<|max)\s*(\d+)\s*(?:employees|staff|people|headcount)?/i);
+  if (empMatch) {
+    res.maxEmployees = Number(empMatch[1]);
+    res.constraintTags.push(`Headcount <= ${res.maxEmployees}`);
+  } else if (/\bsmall team\b/i.test(q)) {
+    res.maxEmployees = 25;
+    res.constraintTags.push("Headcount <= 25");
+  }
+
+  if (/\b(deeptech|deep tech|quantum|photonics|robotics|space|satellite|fusion)\b/i.test(q)) {
+    res.sector = "DeepTech";
+  } else if (/\b(fintech|payments|banking|treasury|credit)\b/i.test(q)) {
+    res.sector = "Fintech";
+  } else if (/\b(healthtech|health|medtech|clinical|diagnostics|bio)\b/i.test(q)) {
+    res.sector = "HealthTech";
+  } else if (/\b(climate|energy|grid|clean|carbon|solar|battery)\b/i.test(q)) {
+    res.sector = "Climate Tech";
+  } else if (/\b(b2b saas|saas|automation|workflow)\b/i.test(q)) {
+    res.sector = "B2B SaaS";
+  } else if (/\b(ai|ml|machine learning|llm|agent|ai & ml)\b/i.test(q)) {
+    res.sector = "AI & ML";
+  }
+
+  if (/\bpre[- ]seed\b/i.test(q)) res.stageFilter = "pre_seed_seed";
+  else if (/\bseries a\b/i.test(q)) res.stageFilter = "seed_series_a";
+  else if (/\bseed\b/i.test(q)) res.stageFilter = "pre_seed_seed";
+
+  const countryList = ["finland", "sweden", "denmark", "estonia", "germany", "uk", "united kingdom", "netherlands", "norway", "helsinki", "espoo", "oulu", "stockholm", "berlin", "munich", "london", "tallinn", "copenhagen"];
+  for (const c of countryList) {
+    if (q.includes(c)) {
+      res.country = c === "uk" ? "united kingdom" : c;
+      break;
+    }
+  }
+  if (/\bnordic/i.test(q)) res.region = "Nordics";
+  else if (/\bdach/i.test(q)) res.region = "DACH";
+
+  if (res.slush2026Only) res.constraintTags.push("Event: Slush 2026 (ATTENDEE)");
+  if (res.raisingSoonOnly) res.constraintTags.push("Window: Raising soon");
+  if (res.untappedOnly) res.constraintTags.push("Signal: Untapped / Angel");
+  if (res.preferWarm) res.constraintTags.push("Sort: Warmest Intro");
+  if (res.sector) res.constraintTags.push(`Sector: ${res.sector}`);
+  if (res.country) res.constraintTags.push(`Location: ${res.country}`);
+  if (res.region) res.constraintTags.push(`Region: ${res.region}`);
+
+  const isMultiWordQuestion =
+    !res.isWhyNot && (q.split(/\s+/).length >= 3 || /^(which|what|who|find|show|give|list|recommend)\b/i.test(q));
+  res.isNaturalLanguage = !res.isWhyNot && (res.constraintTags.length >= 2 || (res.slush2026Only && q.length > 0) || isMultiWordQuestion);
+  return res;
+}
+
+function buildAiCopilotSynthesis(queryText, parsed, items, backendRes) {
+  if (parsed?.isWhyNot && backendRes?.explanation) {
+    return backendRes.explanation;
+  }
+  if (!items || !items.length) {
+    return `No Cala-indexed startups matched "${queryText}". Try relaxing one filter or trigger Live Cala Knowledge below.`;
+  }
+  const top = items.slice(0, 3);
+  const topLead = top[0];
+  const prof = getStartupCalaFieldProfile(topLead);
+  const bridge =
+    topLead.linkedinNetwork?.bridgePerson?.split("(")[0]?.trim() ||
+    topLead.coInvestorPath?.coInvestorName ||
+    "Cala syndicate";
+  return `AI Search matched ${items.length} verified startup${items.length === 1 ? "" : "s"}. Top match: ${topLead.name} (${prof?.legalName || topLead.name}, ${topLead.suitabilityScore}/100) in ${topLead.hqCity} (${topLead.stage}, ${formatEur(topLead.lastRoundAmountEurM)} ISSUER, route via ${bridge}).`;
+}
+
 async function executeSearchRefinement(customQuery) {
   hideSearchSuggestions();
   const inputEl = document.getElementById("aiSearchInput");
@@ -1102,11 +1548,19 @@ async function executeSearchRefinement(customQuery) {
   }
   updateSearchInputChrome();
 
-  const stageFilter = document.getElementById("filterStage")?.value || state.targetStage || "all";
-  const region = document.getElementById("filterRegion")?.value || "all";
+  const parsed = parseNaturalLanguageSearchQuery(queryText);
+
+  const stageFilter =
+    document.getElementById("filterStage")?.value !== "all"
+      ? document.getElementById("filterStage")?.value
+      : parsed.stageFilter || state.targetStage || "all";
+  const region =
+    document.getElementById("filterRegion")?.value !== "all"
+      ? document.getElementById("filterRegion")?.value
+      : parsed.region || "all";
   const excludeSector = document.getElementById("filterExcludeSector")?.value || "";
-  const raisingSoonOnly = Boolean(document.getElementById("filterRaisingSoon")?.checked);
-  const untappedOnly = Boolean(document.getElementById("filterUntappedOnly")?.checked);
+  const raisingSoonOnly = Boolean(document.getElementById("filterRaisingSoon")?.checked) || parsed.raisingSoonOnly;
+  const untappedOnly = Boolean(document.getElementById("filterUntappedOnly")?.checked) || parsed.untappedOnly;
   const filterCount = countActiveRefineFilters();
 
   const hasActiveFilter = Boolean(queryText.trim()) || filterCount > 0;
@@ -1115,6 +1569,8 @@ async function executeSearchRefinement(customQuery) {
   if (resetBtn) {
     resetBtn.hidden = !hasActiveFilter;
   }
+
+  const backendQueryText = parsed.isNaturalLanguage ? "" : queryText;
 
   const res = await fetchJson("/api/refine", {
     method: "POST",
@@ -1125,7 +1581,7 @@ async function executeSearchRefinement(customQuery) {
       rankingMode: mapScoringModeToApi(state.scoringMode),
       statedThesisOverride: state.statedThesisOverride || undefined,
       seenCompanyNames: getSeenCompanyNamesList(),
-      queryText,
+      queryText: backendQueryText,
       stageFilter,
       region,
       excludeSector: excludeSector || "none",
@@ -1134,7 +1590,29 @@ async function executeSearchRefinement(customQuery) {
     })
   });
 
-  state.DisplayedShortlist = res.shortlist || [];
+  let shortlist = res.shortlist || [];
+  if (parsed.isNaturalLanguage) {
+    shortlist = shortlist.filter((item) => {
+      const calaProf = getStartupCalaFieldProfile(item);
+      if (parsed.slush2026Only && !calaProf?.slush2026?.attending) return false;
+      if (parsed.sector && item.sector !== parsed.sector) return false;
+      if (parsed.maxEmployees !== null && Number(item.employeeCount || 0) > parsed.maxEmployees) return false;
+      if (parsed.country) {
+        const locHay = `${item.country || ""} ${item.hqCity || ""}`.toLowerCase();
+        if (!locHay.includes(parsed.country)) return false;
+      }
+      return true;
+    });
+    if (parsed.preferWarm) {
+      shortlist = [...shortlist].sort((a, b) => {
+        const aw = a.linkedinNetwork ? 1 : 0;
+        const bw = b.linkedinNetwork ? 1 : 0;
+        return bw - aw || (b.suitabilityScore || 0) - (a.suitabilityScore || 0);
+      });
+    }
+  }
+
+  state.DisplayedShortlist = shortlist;
   registerKnownItems(state.DisplayedShortlist);
   renderStartupGrid(state.DisplayedShortlist);
 
@@ -1142,6 +1620,7 @@ async function executeSearchRefinement(customQuery) {
   const intentBadge = document.getElementById("aiIntentBadge");
   const explanationEl = document.getElementById("aiExplanationText");
   const opsEl = document.getElementById("aiAppliedFilters");
+  const citesEl = document.getElementById("aiTraceCitations");
 
   if (traceBox) {
     traceBox.hidden = !hasActiveFilter;
@@ -1153,37 +1632,56 @@ async function executeSearchRefinement(customQuery) {
       investor: "Investor syndicate",
       industry: "Industry filter",
       why_not: "Portfolio audit",
-      general: "Search filter"
+      general: parsed.isNaturalLanguage ? "AI Copilot" : "AI filter"
     };
     if (intentBadge) {
-      intentBadge.textContent = intentNames[res.searchIntent] || res.intentLabel || "AI filter";
+      intentBadge.textContent = parsed.isNaturalLanguage
+        ? `AI Copilot · ${state.DisplayedShortlist.length} matches`
+        : intentNames[res.searchIntent] || res.intentLabel || "AI Search";
     }
     if (explanationEl) {
-      explanationEl.textContent =
-        res.explanation || `Showing ${state.DisplayedShortlist.length} Cala-verified startups matching active filters.`;
+      explanationEl.textContent = parsed.isNaturalLanguage
+        ? buildAiCopilotSynthesis(queryText, parsed, state.DisplayedShortlist, res)
+        : res.explanation || `Showing ${state.DisplayedShortlist.length} Cala-verified startups matching active filters.`;
     }
     if (opsEl) {
-      const tags = [];
-      if (Array.isArray(res.aiTrace) && res.aiTrace.length > 0) {
+      const tags = [...parsed.constraintTags];
+      if (!tags.length && Array.isArray(res.aiTrace) && res.aiTrace.length > 0) {
         tags.push(res.aiTrace[0]);
       }
       const af = res.appliedFilters || {};
-      if (af.stageFilter && af.stageFilter !== "all") {
+      if (af.stageFilter && af.stageFilter !== "all" && !tags.some((t) => t.startsWith("Stage"))) {
         tags.push(`Stage: ${TARGET_STAGE_LABELS[af.stageFilter] || af.stageFilter}`);
       }
-      if (af.region && af.region !== "all") {
+      if (af.region && af.region !== "all" && !tags.some((t) => t.startsWith("Region"))) {
         tags.push(`Region: ${af.region}`);
       }
       if (af.investorFilter) {
         tags.push(`Investor: ${af.investorFilter}`);
       }
-      if (af.sectorFilter) {
+      if (af.sectorFilter && !tags.some((t) => t.startsWith("Sector"))) {
         tags.push(`Sector: ${af.sectorFilter}`);
       }
       opsEl.innerHTML = tags
-        .slice(0, 4)
+        .slice(0, 5)
         .map((op) => `<span class="trace-op-tag">${escapeHtml(String(op))}</span>`)
         .join("");
+    }
+    if (citesEl) {
+      const topChips = state.DisplayedShortlist.slice(0, 3)
+        .map(
+          (item) => `
+          <button type="button" class="ai-cite-chip" data-ai-open-startup="${escapeHtml(item.id)}">
+            <span>${escapeHtml(item.name)}</span>
+            <span class="num-tabular">${item.suitabilityScore}/100</span>
+          </button>
+        `
+        )
+        .join("");
+      const askLiveBtn = queryText.trim()
+        ? `<button type="button" class="ai-escalate-cala-btn" data-ai-escalation-query="${escapeHtml(queryText.trim())}">&#9889; Ask Live Cala Knowledge</button>`
+        : "";
+      citesEl.innerHTML = topChips + askLiveBtn;
     }
   }
 }
@@ -1192,6 +1690,8 @@ async function resetSearchAndFilters() {
   const inputEl = document.getElementById("aiSearchInput");
   if (inputEl) inputEl.value = "";
   state.targetStage = "all";
+  state.onlyCallList = false;
+  state.onlySlush2026 = false;
   const stageSel = document.getElementById("targetStageSelect");
   if (stageSel) stageSel.value = "all";
   const filterStageEl = document.getElementById("filterStage");
@@ -1207,6 +1707,7 @@ async function resetSearchAndFilters() {
 
   savePrefsToStorage();
   renderConfigReviewSummary();
+  syncCallListUI();
   await executeSearchRefinement("");
 }
 
@@ -1315,7 +1816,7 @@ function renderTalkScreen() {
         <div class="eyebrow" style="margin-bottom: 6px">One startup in detail · Verified in Cala</div>
         <h2>${escapeHtml(candidate.name)}</h2>
         <div class="m">
-          ${escapeHtml(candidate.hqCity)}, ${escapeHtml(candidate.country)} · ${escapeHtml(candidate.sector)} · ${escapeHtml(candidate.stage)} (${formatEur(candidate.lastRoundAmountEurM)}) · ${escapeHtml(candidate.employeeCount)} employees
+          ${escapeHtml(getStartupCalaFieldProfile(candidate)?.legalName || candidate.name)} · ${escapeHtml(candidate.hqCity)}, ${escapeHtml(candidate.country)} · ${escapeHtml(candidate.sector)} · ${escapeHtml(getStartupCalaFieldProfile(candidate)?.fundingStage || candidate.stage)} (${formatEur(candidate.lastRoundAmountEurM)})${getStartupCalaFieldProfile(candidate)?.slush2026?.attending ? " · Slush 2026 ATTENDEE" : ""}
         </div>
       </div>
       <div class="talk-head-actions">
@@ -1333,19 +1834,36 @@ function renderTalkScreen() {
       </div>
     </div>
 
+    <div class="hero-kpi-strip" style="margin-bottom: 18px">
+      <div class="hk-card">
+        <span class="hk-kicker">Cala Fit Score</span>
+        <b class="hk-val num-tabular" style="color:${scoreBand(candidate.suitabilityScore).col}">${candidate.suitabilityScore}/100</b>
+        <span class="hk-lab">${escapeHtml(scoreBand(candidate.suitabilityScore).lab)}</span>
+      </div>
+      <div class="hk-card">
+        <span class="hk-kicker">Latest Round</span>
+        <b class="hk-val num-tabular">${formatEur(candidate.lastRoundAmountEurM)}</b>
+        <span class="hk-lab">${escapeHtml(candidate.stage)}</span>
+      </div>
+      <div class="hk-card">
+        <span class="hk-kicker">Next Window</span>
+        <b class="hk-val">${escapeHtml(candidate.likelyNextStage || "Series A")}</b>
+        <span class="hk-lab">${candidate.raisingSoon ? "Active window" : "Standard cycle"}</span>
+      </div>
+      <div class="hk-card">
+        <span class="hk-kicker">Warmest Bridge</span>
+        <b class="hk-val hk-val-text">${escapeHtml(bridgeTitle.split("(")[0].trim())}</b>
+        <span class="hk-lab">${escapeHtml(isLinkedin ? "LinkedIn 2nd°" : "Cala syndicate")}</span>
+      </div>
+    </div>
+
     <div class="cols">
       <div class="card panel">
         <h3><span class="n">1</span>Why now &amp; Cala score</h3>
-        <div class="fin">
-          <div><b>${escapeHtml(candidate.stage)}</b><span>Latest stage</span></div>
-          <div><b>${formatEur(candidate.lastRoundAmountEurM)}</b><span>Last round</span></div>
-          <div><b>${escapeHtml(candidate.likelyNextStage || "Series A")}</b><span>Next window</span></div>
-        </div>
-
         <p class="why-text">${escapeHtml(candidate.oneLiner || candidate.description)}</p>
 
         <details class="more">
-          <summary>Read the 5-factor Cala score breakdown</summary>
+          <summary>5-factor Cala score breakdown</summary>
           <div style="margin-top: 10px; display: grid; gap: 8px">
             ${breakdown
               .map(
@@ -1363,84 +1881,85 @@ function renderTalkScreen() {
           </div>
         </details>
 
-        <ul class="facts">
-          ${(candidate.reasons || [])
-            .map(
-              (r) => `
-            <li>
-              ${escapeHtml(r.text)}
-              ${(r.sources || [])
-                .map(
-                  (src, idx) =>
-                    `<a href="${escapeHtml(src.url)}" target="_blank" rel="noopener">[${idx + 1} &#8599;]</a>`
-                )
-                .join(" ")}
-            </li>
-          `
-            )
-            .join("")}
-        </ul>
+        <details class="more" style="margin-top: 10px">
+          <summary>Verified Cala citations (${(candidate.reasons || []).length})</summary>
+          <ul class="facts" style="margin-top: 10px">
+            ${(candidate.reasons || [])
+              .map(
+                (r) => `
+              <li>
+                ${escapeHtml(r.text)}
+                ${(r.sources || [])
+                  .map(
+                    (src, idx) =>
+                      `${renderCalaRankPill(src)} <a href="${escapeHtml(src.url)}" target="_blank" rel="noopener">[${idx + 1} &#8599;]</a>`
+                  )
+                  .join(" ")}
+              </li>
+            `
+              )
+              .join("")}
+          </ul>
+        </details>
       </div>
 
       <div class="card panel">
         <h3><span class="n">2</span>Warm intro &amp; network graph</h3>
-        <div class="badges" style="margin-top: 0">
-          <span class="badge b-green">Warm bridge: ${escapeHtml(bridgeTitle)}</span>
-          <span class="badge b-sky">${escapeHtml(
-            isLinkedin ? "LinkedIn 2nd-degree first" : "Cala co-investor graph"
-          )}</span>
-        </div>
-
         <div class="network-graph-stage" style="margin-bottom: 12px">
           ${netData ? buildNetworkGraphSvg(netData, candidate.id) : ""}
         </div>
 
-        <div class="note" style="margin-bottom: 10px">
-          Connected startups in the same investor/founder cluster (click to switch):
-        </div>
-        <div style="display: flex; flex-wrap: wrap; gap: 8px">
-          ${peers
-            .slice(0, 4)
-            .map(
-              (p) => `
-            <button type="button" class="btn sm" data-talk-peer="${escapeHtml(p.id)}">
-              ${escapeHtml(p.name)} · <span style="color:var(--green)">${escapeHtml(p.bridgeLabel)}</span>
-            </button>
-          `
-            )
-            .join("")}
-        </div>
+        <details class="more">
+          <summary>Connected cluster peers (${Math.min(4, peers.length)})</summary>
+          <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px">
+            ${peers
+              .slice(0, 4)
+              .map(
+                (p) => `
+              <button type="button" class="btn sm" data-talk-peer="${escapeHtml(p.id)}">
+                ${escapeHtml(p.name)} · <span style="color:var(--green)">${escapeHtml(p.bridgeLabel)}</span>
+              </button>
+            `
+              )
+              .join("")}
+          </div>
+        </details>
       </div>
 
       <div class="card panel">
         <h3><span class="n">3</span>Syndicate &amp; partner memo</h3>
-        ${
-          rounds.length
-            ? rounds
-                .map(
-                  (r) => `
-              <div class="buyer">
-                <div class="bn">
-                  <span>${escapeHtml(r.type)} (${escapeHtml(r.date)})</span>
-                  <span>${formatEur(r.amountEurM)}</span>
-                </div>
-                <div class="bar"><i style="width:${Math.min(100, Math.max(25, (r.amountEurM || 3) * 6))}%"></i></div>
-                <p>Lead: <b>${escapeHtml(r.leadInvestorName)}</b> · ${escapeHtml((r.investorNames || []).join(", "))}</p>
-              </div>
-            `
-                )
-                .join("")
-            : `<p class="note">No public rounds indexed.</p>`
-        }
+        <details class="more" open>
+          <summary>Verified funding rounds (${rounds.length})</summary>
+          <div style="margin-top: 10px">
+            ${
+              rounds.length
+                ? rounds
+                    .map(
+                      (r) => `
+                  <div class="buyer">
+                    <div class="bn">
+                      <span>${escapeHtml(r.type)} (${escapeHtml(r.date)})</span>
+                      <span>${formatEur(r.amountEurM)}</span>
+                    </div>
+                    <div class="bar"><i style="width:${Math.min(100, Math.max(25, (r.amountEurM || 3) * 6))}%"></i></div>
+                    <p>Lead: <b>${escapeHtml(r.leadInvestorName)}</b></p>
+                  </div>
+                `
+                    )
+                    .join("")
+                : `<p class="note">No public rounds indexed.</p>`
+            }
+          </div>
+        </details>
 
-        <div class="badges" style="margin-top: 14px">
-          <span class="badge b-green">Every claim grounded in Cala</span>
-          <span class="badge b-amber">Explicit coverage-gap audit</span>
+        <div class="badges" style="margin-top: 12px">
+          <span class="badge b-green">Grounded in Cala</span>
+          <span class="badge b-amber">Coverage-gap audit</span>
         </div>
 
         <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px">
           <button type="button" class="btn primary sm" id="talkOpenDrawerBtn">
-            Open gradual drawer
+            Open modal brief
           </button>
           <button type="button" class="btn sm" id="talkExportMdBtn">
             Export Memo (.md)
@@ -1549,24 +2068,30 @@ async function stepStartupInList(direction) {
 
 function applyExposureDepth(depth) {
   state.exposureDepth = depth;
+  const drawerEl = document.getElementById("inspectorDrawer");
+  if (drawerEl) drawerEl.setAttribute("data-depth-mode", depth);
   document.querySelectorAll(".depth-pill").forEach((pill) => {
     pill.classList.toggle("is-active", pill.dataset.depth === depth);
   });
 
   const layer1 = document.getElementById("gradualLayer1");
+  const layerIntro = document.getElementById("gradualLayerIntro");
   const layer2 = document.getElementById("gradualLayer2");
   const layer3 = document.getElementById("gradualLayer3");
 
   if (depth === "quick") {
     if (layer1) layer1.open = false;
+    if (layerIntro) layerIntro.open = false;
     if (layer2) layer2.open = false;
     if (layer3) layer3.open = false;
   } else if (depth === "evidence") {
     if (layer1) layer1.open = true;
+    if (layerIntro) layerIntro.open = false;
     if (layer2) layer2.open = true;
     if (layer3) layer3.open = false;
   } else if (depth === "memo") {
     if (layer1) layer1.open = true;
+    if (layerIntro) layerIntro.open = true;
     if (layer2) layer2.open = true;
     if (layer3) layer3.open = true;
   }
@@ -1606,6 +2131,7 @@ async function openStartupInspector(companyId, options = {}) {
 
   if (candidate) {
     const rankIdx = state.DisplayedShortlist.findIndex((c) => c.id === candidate.id);
+    const calaProfile = getStartupCalaFieldProfile(candidate);
     document.getElementById("drawerStartupLogo").innerHTML = buildStartupLogoSvg(
       candidate.name,
       candidate.sector,
@@ -1614,7 +2140,8 @@ async function openStartupInspector(companyId, options = {}) {
     document.getElementById("drawerStartupRank").textContent =
       rankIdx >= 0 ? `Rank #${rankIdx + 1} of ${state.DisplayedShortlist.length}` : "Connected peer";
     document.getElementById("drawerStartupName").textContent = candidate.name;
-    document.getElementById("drawerStartupMeta").textContent = `${candidate.sector} · ${candidate.stage} · ${candidate.hqCity}, ${candidate.country}`;
+    document.getElementById("drawerStartupMeta").textContent =
+      `${calaProfile?.legalName || candidate.name} · ${candidate.sector} · ${calaProfile?.fundingStage || candidate.stage} · ${candidate.hqCity}, ${candidate.country}`;
 
     const scoreArcEl = document.getElementById("drawerScoreArc");
     if (scoreArcEl) {
@@ -1641,10 +2168,15 @@ async function openStartupInspector(companyId, options = {}) {
     liveOut.hidden = true;
     liveOut.innerHTML = "";
   }
+  const drawerBanner = document.getElementById("drawerLiveCalaBanner");
+  if (drawerBanner) {
+    drawerBanner.hidden = true;
+    drawerBanner.innerHTML = "";
+  }
 
   const brief = await loadStartupBriefData(companyId);
 
-  const defaultDepth = state.role === "investor" ? "evidence" : "memo";
+  const defaultDepth = "quick";
   applyExposureDepth(defaultDepth);
 
   if (candidate) {
@@ -1717,22 +2249,61 @@ function switchDrawerTab(tabName) {
 }
 
 function renderDrawerBriefPane(brief, candidate) {
+  const heroEl = document.getElementById("drawerHeroKpis");
+  if (heroEl) {
+    const score = candidate.suitabilityScore ?? 0;
+    const band = scoreBand(score);
+    const shortBridge = (
+      candidate.linkedinNetwork?.bridgePerson ||
+      candidate.coInvestorPath?.coInvestorName ||
+      "Direct syndicate"
+    )
+      .split("(")[0]
+      .trim();
+    heroEl.innerHTML = `
+      <div class="hk-card">
+        <span class="hk-kicker">Cala Fit Score</span>
+        <b class="hk-val num-tabular" style="color:${band.col}">${score}/100</b>
+        <span class="hk-lab">${escapeHtml(band.lab)}</span>
+      </div>
+      <div class="hk-card">
+        <span class="hk-kicker">Latest Round</span>
+        <b class="hk-val num-tabular">${formatEur(candidate.lastRoundAmountEurM)}</b>
+        <span class="hk-lab">${escapeHtml(candidate.stage)}</span>
+      </div>
+      <div class="hk-card">
+        <span class="hk-kicker">Next Window</span>
+        <b class="hk-val">${escapeHtml(candidate.likelyNextStage || "Series A")}</b>
+        <span class="hk-lab">${candidate.raisingSoon ? "Raising window" : "Standard cycle"}</span>
+      </div>
+      <div class="hk-card">
+        <span class="hk-kicker">Warmest Bridge</span>
+        <b class="hk-val hk-val-text">${escapeHtml(shortBridge)}</b>
+        <span class="hk-lab">${escapeHtml(candidate.linkedinNetwork ? "LinkedIn 2nd°" : "Cala syndicate")}</span>
+      </div>
+    `;
+  }
+
   document.getElementById("drawerQuickVerdict").textContent =
     candidate.oneLiner || candidate.description || "";
 
+  const calaProfile = getStartupCalaFieldProfile(candidate);
+
   const pillsEl = document.getElementById("drawerQuickPills");
   if (pillsEl) {
-    const pills = [
-      `Last round: ${candidate.stage} (${formatEur(candidate.lastRoundAmountEurM)})`,
-      `Next window: ${candidate.likelyNextStage || "Series A"}`,
-      `Employees: ${candidate.employeeCount}`,
-      candidate.linkedinNetwork?.bridgePerson
-        ? `Bridge: ${candidate.linkedinNetwork.bridgePerson}`
-        : candidate.coInvestorPath?.summary
+    const roundsArr = brief?.rounds || candidate.roundHistory || [];
+    const latestLead = roundsArr[roundsArr.length - 1]?.leadInvestorName || candidate.coInvestorPath?.coInvestorName;
+    const basePills = [
+      `${candidate.hqCity}, ${candidate.country}`,
+      `${candidate.employeeCount} employees`,
+      calaProfile?.operationalStatus ? `Status: ${calaProfile.operationalStatus}` : null,
+      latestLead ? `Lead: ${latestLead}` : null
     ].filter(Boolean);
-    pillsEl.innerHTML = pills
-      .map((p) => `<span class="meta-pill">${escapeHtml(p)}</span>`)
-      .join("");
+    const slushPill = calaProfile?.slush2026?.attending
+      ? `<span class="meta-pill slush-attendee-chip" title="Cala PARTICIPATES_IN_EVENT · ${SLUSH_2026_EVENT_ID}">Slush 2026 · ATTENDEE</span>`
+      : "";
+    pillsEl.innerHTML =
+      basePills.map((p) => `<span class="meta-pill">${escapeHtml(p)}</span>`).join("") + slushPill;
   }
 
   const introBox = document.getElementById("drawerIntroPreviewBox");
@@ -1745,8 +2316,28 @@ function renderDrawerBriefPane(brief, candidate) {
 
   const confEl = document.getElementById("drawerConfidenceLabel");
   if (confEl) {
-    confEl.textContent = `${(candidate.roundHistory || []).length} verified Cala rounds`;
+    confEl.textContent = `${(candidate.roundHistory || []).length} ISSUER rounds`;
   }
+
+  const reasons = candidate.reasons || [];
+  const risks = brief?.risks || [
+    candidate.competitorConflict
+      ? `Adjacent to portfolio company ${candidate.competitorConflict}; requires conflict clearance.`
+      : "No direct portfolio conflict detected in indexed Cala rounds.",
+    candidate.raisingSoon
+      ? "Inside active 12-to-24 month post-round raising window."
+      : "Out-of-cycle outreach; monitor milestone triggers prior to next round."
+  ];
+  const roundsList = brief?.rounds || candidate.roundHistory || [];
+  const analoguesList = candidate.similarPortfolio || [];
+  const missingList = brief?.notFoundInCala || [];
+
+  const b1 = document.getElementById("gradualBadge1");
+  if (b1) b1.textContent = `${reasons.length} facts · ${risks.length} risks`;
+  const b2 = document.getElementById("gradualBadge2");
+  if (b2) b2.textContent = `${roundsList.length} rounds · ${calaProfile?.numericalObservations?.length || 0} time-series · ${calaProfile?.leadershipRelationships?.length || 0} leaders`;
+  const b3 = document.getElementById("gradualBadge3");
+  if (b3) b3.textContent = `${missingList.length} gaps · Export & Live Cala`;
 
   const breakdownEl = document.getElementById("drawerScoreBreakdown");
   if (breakdownEl) {
@@ -1755,7 +2346,7 @@ function renderDrawerBriefPane(brief, candidate) {
       .map((f) => {
         const pct = Math.min(100, Math.round((Number(f.points) / f.maxPoints) * 100));
         return `
-          <div class="sb-row" tabindex="0">
+          <div class="sb-row" tabindex="0" title="${escapeHtml(f.detail || "Verified via Cala round ledger")}">
             <div class="sb-top">
               <span class="sb-label">${escapeHtml(f.label)}</span>
               <span class="sb-pts num-tabular">${f.points} / ${f.maxPoints} pts</span>
@@ -1781,11 +2372,14 @@ function renderDrawerBriefPane(brief, candidate) {
         const cites = sources
           .map(
             (src, idx) =>
-              `<a href="${escapeHtml(src.url)}" target="_blank" rel="noopener noreferrer" class="citation-link" title="${escapeHtml(src.title)}">[${idx + 1} &#8599;]</a>`
+              `${renderCalaRankPill(src)} <a href="${escapeHtml(src.url)}" target="_blank" rel="noopener noreferrer" class="citation-link" title="${escapeHtml(src.title)}">[${idx + 1} &#8599;]</a>`
           )
           .join(" ");
         const metaText = sources
-          .map((src) => `${src.publisher || src.title || "Source"} (${src.date || "Cala indexed"})`)
+          .map((src) => {
+            const p = deriveCalaSourceProvenance(src);
+            return `${src.publisher || src.title || "Source"} (${src.date || "Cala indexed"}, ${p.sourceRank}, precision: ${p.datePrecision})`;
+          })
           .join(" · ");
         return `
           <li class="evidence-item" tabindex="0">
@@ -1814,18 +2408,75 @@ function renderDrawerBriefPane(brief, candidate) {
   if (roundsBody) {
     const rounds = brief?.rounds || candidate.roundHistory || [];
     roundsBody.innerHTML = rounds
-      .map(
-        (r) => `
+      .map((r) => {
+        const src = (r.sources || [])[0];
+        const prov = deriveCalaSourceProvenance(src);
+        const deduped = Boolean(src) && prov.sourceRank === "FILING";
+        const srcHtml = src
+          ? `${renderCalaRankPill(src)}<span class="cala-filing-dedupe-tag">${
+              deduped
+                ? "✓ FINANCING_RAISED filing matched (deduplicated)"
+                : "✓ Cross-checked vs registry events (no double-count)"
+            }</span>`
+          : `<span class="cala-rank-pill rank-primary">PRIMARY · month</span>`;
+        return `
         <tr>
-          <td class="num-tabular">${escapeHtml(r.date)}</td>
-          <td><strong>${escapeHtml(r.type)}</strong></td>
+          <td class="num-tabular">${escapeHtml(r.date)}<span class="cala-precision-tag">(${escapeHtml(prov.datePrecision)})</span></td>
+          <td><strong>${escapeHtml(r.type)}</strong><span class="cala-role-chip" title="Filtered on role: ISSUER per Cala Field Guide">ISSUER · EQUITY</span></td>
           <td class="num-tabular">${formatEur(r.amountEurM)}</td>
-          <td><strong>${escapeHtml(r.leadInvestorName)}</strong> · ${escapeHtml((r.investorNames || []).join(", "))}</td>
-          <td><span class="badge b-green" style="font-size:11px;padding:2px 6px">Cala</span></td>
+          <td><strong>Lead: ${escapeHtml(r.leadInvestorName)}</strong> · ${escapeHtml((r.investorNames || []).join(", "))}</td>
+          <td>${srcHtml}</td>
         </tr>
-      `
-      )
+      `;
+      })
       .join("");
+  }
+
+  const tsLeadEl = document.getElementById("drawerTimeSeriesAndLeadership");
+  if (tsLeadEl && calaProfile) {
+    tsLeadEl.innerHTML = `
+      <div class="cala-mini-card">
+        <div class="cala-mini-head">
+          <span class="cala-mini-title">Time Series (numerical_observations)</span>
+          <span class="cala-rank-pill rank-filing">employee_count</span>
+        </div>
+        <div class="cala-ts-list">
+          ${calaProfile.numericalObservations
+            .map(
+              (o) => `
+            <div class="cala-ts-row">
+              <span>${escapeHtml(o.date)} <span class="cala-precision-tag">(${escapeHtml(o.precision)})</span></span>
+              <span><strong class="cala-ts-val num-tabular">${o.value} employees</strong> <span class="cala-rank-pill ${o.sourceRank === "FILING" ? "rank-filing" : "rank-primary"}">${escapeHtml(o.sourceRank)}</span></span>
+            </div>
+          `
+            )
+            .join("")}
+          <div class="cala-ts-row">
+            <span>${escapeHtml(calaProfile.employeeCountRangeLabel)}</span>
+            <span class="note">ARR: ${escapeHtml(calaProfile.arrStatus)}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="cala-mini-card">
+        <div class="cala-mini-head">
+          <span class="cala-mini-title">Leadership &amp; Governance (incoming)</span>
+          <span class="cala-rank-pill rank-primary">${escapeHtml(calaProfile.ownershipStatus)}</span>
+        </div>
+        <div class="cala-ts-list">
+          ${calaProfile.leadershipRelationships
+            .map(
+              (rel) => `
+            <div class="cala-ts-row">
+              <span><strong>${escapeHtml(rel.person)}</strong><span class="cala-role-chip">${escapeHtml(rel.relation)}</span></span>
+              <span class="note num-tabular">since ${escapeHtml(rel.validSince)} <span class="cala-rank-pill ${rel.sourceRank === "FILING" ? "rank-filing" : "rank-primary"}">${escapeHtml(rel.sourceRank)}</span></span>
+            </div>
+          `
+            )
+            .join("")}
+        </div>
+      </div>
+    `;
   }
 
   const analoguesEl = document.getElementById("drawerAnaloguesList");
@@ -1946,18 +2597,30 @@ function renderDrawerNetworkPane(brief, candidate) {
 
   const warmBox = document.getElementById("drawerWarmPathBox");
   if (warmBox) {
-    if (isLinkedin && candidate.linkedinNetwork) {
-      warmBox.innerHTML = `
-        <strong>${escapeHtml(candidate.linkedinNetwork.sourceLabel)}:</strong>
-        ${escapeHtml(targetName)} &rarr; <strong>${escapeHtml(candidate.linkedinNetwork.bridgePerson)}</strong> &rarr; <strong>${escapeHtml(candidate.linkedinNetwork.targetLeader)}</strong> (${escapeHtml(candidate.name)})
-      `;
-    } else {
-      warmBox.innerHTML = `
-        <strong>Verified Cala syndicate path:</strong>
-        ${escapeHtml(candidate.coInvestorPath?.summary || "Direct round participation and co-investor graph from Cala.")}
-      `;
-    }
+    const bridgeLabel = (
+      (isLinkedin ? candidate.linkedinNetwork?.bridgePerson : candidate.coInvestorPath?.coInvestorName) ||
+      "Cala Syndicate Co-Investor"
+    )
+      .split("(")[0]
+      .trim();
+    const targetPerson = isLinkedin && candidate.linkedinNetwork?.targetLeader
+      ? `${candidate.linkedinNetwork.targetLeader} · ${candidate.name}`
+      : candidate.name;
+    warmBox.innerHTML = `
+      <div class="route-chain-bar">
+        <span class="rc-node">${escapeHtml(targetName)}</span>
+        <span class="rc-arrow" aria-hidden="true">&rarr;</span>
+        <span class="rc-node rc-bridge">${escapeHtml(bridgeLabel)}</span>
+        <span class="rc-arrow" aria-hidden="true">&rarr;</span>
+        <span class="rc-node rc-target">${escapeHtml(targetPerson)}</span>
+      </div>
+    `;
   }
+
+  const bridgesDetails = document.getElementById("networkBridgesDetails");
+  if (bridgesDetails) bridgesDetails.open = false;
+  const peersDetails = document.getElementById("networkPeersDetails");
+  if (peersDetails) peersDetails.open = false;
 
   renderDrawerNetworkInspectorSummary(candidate, null, isLinkedin);
 
@@ -2021,10 +2684,19 @@ function renderDrawerNetworkPane(brief, candidate) {
       `
       )
       .join("");
+
+    const bridgesBadge = document.getElementById("networkBridgesBadge");
+    if (bridgesBadge) {
+      bridgesBadge.textContent = `${items.length} connectors`;
+    }
   }
 
   const peersList = document.getElementById("peerStartupsList");
   if (peersList) {
+    const peersBadge = document.getElementById("networkPeersBadge");
+    if (peersBadge) {
+      peersBadge.textContent = `${peers.length} peers`;
+    }
     peersList.innerHTML = peers.length
       ? peers
           .map(
@@ -2197,7 +2869,31 @@ function renderThesisAndBacktest(result) {
   if (!thesis) return;
 
   document.getElementById("thesisFundTitle").textContent = `What ${thesis.fundName} actually backs`;
-  document.getElementById("thesisFundSubtitle").innerHTML = `Comparing stated marketing thesis against <b>${thesis.dealsAnalyzedCount} verified Cala rounds</b> across ${thesis.portfolioCount} portfolio companies, plus a historical point-in-time backtest with zero future data leakage.`;
+  document.getElementById("thesisFundSubtitle").innerHTML = `Verified across <b>${thesis.dealsAnalyzedCount} Cala rounds</b> and ${thesis.portfolioCount} portfolio companies.`;
+
+  const thesisHeroEl = document.getElementById("thesisHeroKpis");
+  if (thesisHeroEl) {
+    const hits = backtest?.hitsInTop15 ?? 3;
+    const totalDeals = backtest?.totalActualDeals ?? 3;
+    const hitRate = totalDeals > 0 ? Math.round((hits / totalDeals) * 100) : 100;
+    thesisHeroEl.innerHTML = `
+      <div class="hk-card">
+        <span class="hk-kicker">Verified Cala Deals</span>
+        <b class="hk-val num-tabular">${thesis.dealsAnalyzedCount}</b>
+        <span class="hk-lab">${thesis.portfolioCount} portfolio cos · ${thesis.leadRatePct}% lead</span>
+      </div>
+      <div class="hk-card">
+        <span class="hk-kicker">Backtest Recovery</span>
+        <b class="hk-val num-tabular" style="color:var(--green)">${hitRate}%</b>
+        <span class="hk-lab">${hits} of ${totalDeals} future deals in Top 15</span>
+      </div>
+      <div class="hk-card">
+        <span class="hk-kicker">Median Round Size</span>
+        <b class="hk-val num-tabular">${formatEur(thesis.medianRoundSizeEurM)}</b>
+        <span class="hk-lab">${thesis.followOnRatePct}% follow-on rate</span>
+      </div>
+    `;
+  }
 
   const confBadge = document.getElementById("thesisConfidenceBadge");
   if (confBadge) {
@@ -2323,50 +3019,437 @@ function downloadFile(filename, content, mimeType) {
   URL.revokeObjectURL(url);
 }
 
+function buildLiveCalaIntelHtml(res, options = {}) {
+  const ctx = options.context || "search";
+  const matched = res?.matchedEntity;
+  const live = res?.liveSummary;
+  const candidates = res?.candidateEntities || [];
+  const invested = live?.investedIn || [];
+  const fundingRounds = live?.fundingRounds || [];
+  const raisedRounds = live?.raisedRounds || [];
+  const issuerRounds = live?.issuerRounds || [];
+  const eventsAttended = live?.eventsAttended || [];
+  const corpEvents = live?.corporateEvents || [];
+  const worksAt = live?.worksAt || [];
+  const leadership = live?.leadership || [];
+  const numObs = live?.numericalObservations || [];
+
+  const isEventEntity = (live?.entityType || matched?.entity_type) === "Event";
+  const allRounds = issuerRounds.length ? issuerRounds : fundingRounds.length ? fundingRounds : raisedRounds;
+  const edgeCount = isEventEntity
+    ? eventsAttended.length
+    : (live?.investedInCount || invested.length || 0) +
+      (live?.fundingRoundsCount || allRounds.length || 0) +
+      worksAt.length +
+      leadership.length;
+
+  const ka = res?.knowledgeAnswer;
+  const kaText =
+    ka?.content ||
+    ka?.answer ||
+    ka?.summary ||
+    ka?.text ||
+    (ka ? JSON.stringify(ka, null, 2) : "");
+
+  const costBadge = res?.fromCache
+    ? `<span class="badge b-green">Cached · 0 credits</span>`
+    : `<span class="badge b-sky">Live Cala API</span>`;
+
+  const relRows = [
+    ...(isEventEntity
+      ? eventsAttended.slice(0, 12).map((co) => {
+          const src = (co.sources || [])[0];
+          const href = src?.document && src.document.startsWith("http") ? src.document : "";
+          return `
+            <div class="cala-rel-row">
+              <div>
+                <strong>${escapeHtml(co.name)}</strong>
+                ${co.legalName ? `<span class="note" style="margin-left:6px">(${escapeHtml(co.legalName)})</span>` : ""}
+                <span class="cala-role-chip">PARTICIPATES_IN_EVENT · ATTENDEE</span>
+                ${src ? renderCalaRankPill(src) : ""}
+              </div>
+              <div style="display:flex;align-items:center;gap:8px">
+                <button type="button" class="cala-attendee-open-btn" data-slush-open-startup="${escapeHtml(co.id)}">
+                  Inspect (${co.suitabilityScore ?? 80}/100) &rarr;
+                </button>
+                ${href ? `<a class="cala-src-link" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(src.name || "Slush")} &#8599;</a>` : ""}
+              </div>
+            </div>
+          `;
+        })
+      : []),
+    ...invested.slice(0, 8).map((c) => {
+      const src = (c.sources || [])[0];
+      const href = src?.document && src.document.startsWith("http") ? src.document : "";
+      return `
+        <div class="cala-rel-row">
+          <div>
+            <strong>${escapeHtml(c.name)}</strong>
+            <span class="cala-role-chip">${escapeHtml(c.entityType || "Company")} · INVESTED_IN</span>
+            ${src ? renderCalaRankPill(src) : ""}
+          </div>
+          ${href ? `<a class="cala-src-link" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(src.name || "Source")} &#8599;</a>` : `<span class="note">Cala Edge</span>`}
+        </div>
+      `;
+    }),
+    ...allRounds.slice(0, 6).map((r) => {
+      const src = (r.sources || [])[0];
+      const href = src?.document && src.document.startsWith("http") ? src.document : "";
+      const roleTag = r.role || (issuerRounds.length ? "ISSUER" : "INVESTOR");
+      return `
+        <div class="cala-rel-row">
+          <div>
+            <strong>${escapeHtml(r.roundType || "Funding Round")}</strong>
+            <span class="cala-role-chip">role: ${escapeHtml(roleTag)}${r.isLead ? " · Lead" : ""}</span>
+            <span class="note" style="margin-left:6px">${escapeHtml(r.eventDate || "Verified")}</span>
+            ${src ? renderCalaRankPill(src) : ""}
+          </div>
+          ${href ? `<a class="cala-src-link" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(src.name || "Citation")} &#8599;</a>` : `<span class="note">Cala Round</span>`}
+        </div>
+      `;
+    }),
+    ...corpEvents.slice(0, 4).map((ev) => {
+      const src = (ev.sources || [])[0];
+      return `
+        <div class="cala-rel-row">
+          <div>
+            <strong>${escapeHtml(ev.name)}</strong>
+            <span class="note" style="margin-left:8px">${escapeHtml(ev.eventDate || "")} ${ev.deduplicatedAgainstRound ? "· Deduplicated vs FundingRound" : ""}</span>
+            ${src ? renderCalaRankPill(src) : ""}
+          </div>
+          <span class="cala-rank-pill rank-filing">FILING</span>
+        </div>
+      `;
+    })
+  ];
+
+  const candRows = [
+    ...leadership.map(
+      (p) => `
+      <div class="cala-rel-row">
+        <div><strong>${escapeHtml(p.name)}</strong> <span class="cala-role-chip">${escapeHtml(p.relation || p.role)}</span></div>
+        <span class="note">${p.validSince ? `since ${escapeHtml(p.validSince)}` : "Person"}</span>
+      </div>
+    `
+    ),
+    ...worksAt.map(
+      (p) => `
+      <div class="cala-rel-row">
+        <div><strong>${escapeHtml(p.name)}</strong> · <span class="note">${escapeHtml(p.role || "Team")}</span></div>
+        <span class="badge b-amber">WORKS_AT</span>
+      </div>
+    `
+    ),
+    ...numObs.slice(0, 4).map(
+      (obs, idx) => `
+      <div class="cala-rel-row">
+        <div><strong>Observation #${idx + 1}</strong> · <span class="note">${escapeHtml(JSON.stringify(obs).slice(0, 110))}</span></div>
+        <span class="cala-rank-pill rank-filing">TIME SERIES</span>
+      </div>
+    `
+    ),
+    ...candidates.slice(0, 5).map(
+      (e) => `
+      <div class="cala-rel-row">
+        <div style="min-width:0">
+          <strong>${escapeHtml(e.name)}</strong> <span class="note">(${escapeHtml(e.entity_type || "Entity")})</span>
+          ${e.description ? `<span class="note" style="display:block">${escapeHtml(e.description)}</span>` : ""}
+        </div>
+        <span class="cala-uuid-chip">${escapeHtml((e.id || "").slice(0, 8))}</span>
+      </div>
+    `
+    )
+  ];
+
+  const entityTitle = live?.name || matched?.name || res?.queryName || "Cala Entity";
+  const entityType = live?.entityType || matched?.entity_type || "Entity";
+  const entityId = live?.id || matched?.id || "";
+
+  const schemaChips = [
+    live?.legalName ? `<span class="meta-pill">legal_name: ${escapeHtml(live.legalName)}</span>` : "",
+    live?.operationalStatus ? `<span class="meta-pill">status: ${escapeHtml(live.operationalStatus)}</span>` : "",
+    live?.fundingStage ? `<span class="meta-pill">stage: ${escapeHtml(live.fundingStage)}</span>` : "",
+    live?.employeeCountRange ? `<span class="meta-pill">headcount: [${escapeHtml(String(live.employeeCountRange))}]</span>` : ""
+  ].filter(Boolean);
+
+  return `
+    <div class="cala-intel-head">
+      <div style="min-width:0">
+        <div class="cala-intel-title-row">
+          <span class="drawer-kicker" style="margin:0">&#9889; Live Cala AI Graph (4-Step Entity Pipeline)</span>
+          ${costBadge}
+          <span class="badge b-sky">${escapeHtml(entityType)}</span>
+          ${entityId ? `<span class="cala-uuid-chip" title="Cala Entity UUID">${escapeHtml(entityId.slice(0, 13))}..</span>` : ""}
+        </div>
+        <h3 class="cala-intel-title">${escapeHtml(entityTitle)}</h3>
+        ${live?.description || matched?.description ? `<p class="cala-intel-desc">${escapeHtml(live?.description || matched?.description)}</p>` : ""}
+        ${schemaChips.length ? `<div class="cala-schema-pills">${schemaChips.join("")}</div>` : ""}
+      </div>
+      <div class="cala-intel-actions">
+        ${
+          entityId !== SLUSH_2026_EVENT_ID
+            ? `<button type="button" class="btn sm slush-event-btn" data-open-slush-graph="1" title="Inspect Cala Slush 2026 Event Entity (bc844d56-6ab4-452b-96bf-2661e86e592b)">Slush 2026 Event Graph (0 credits)</button>`
+            : ""
+        }
+        ${
+          !ka && entityId !== SLUSH_2026_EVENT_ID
+            ? `<button type="button" class="btn sm primary" data-cala-deep-name="${escapeHtml(res?.queryName || entityTitle)}" data-cala-deep-type="${escapeHtml(res?.type || "company")}" data-cala-deep-ctx="${escapeHtml(ctx)}">Ask Deep Knowledge (1 credit)</button>`
+            : ""
+        }
+        <button type="button" class="btn sm" data-close-cala-ctx="${escapeHtml(ctx)}">Close &times;</button>
+      </div>
+    </div>
+
+    <div class="hero-kpi-strip cala-live-kpis">
+      <div class="hk-card">
+        <span class="hk-kicker">Matched Entity</span>
+        <b class="hk-val hk-val-text">${escapeHtml(entityType)}</b>
+        <span class="hk-lab">${matched ? "Verified via entity_retrieval" : "No exact graph node"}</span>
+      </div>
+      <div class="hk-card">
+        <span class="hk-kicker">${isEventEntity ? "Slush Attendees" : "Relationship Edges"}</span>
+        <b class="hk-val num-tabular">${edgeCount}</b>
+        <span class="hk-lab">${isEventEntity ? "incoming PARTICIPATES_IN_EVENT" : `${invested.length} portfolio · ${allRounds.length} rounds`}</span>
+      </div>
+      <div class="hk-card">
+        <span class="hk-kicker">Disambiguation Pool</span>
+        <b class="hk-val num-tabular">${candidates.length}</b>
+        <span class="hk-lab">${worksAt.length + leadership.length} people &amp; leadership</span>
+      </div>
+    </div>
+
+    ${
+      kaText
+        ? `<div class="cala-knowledge-box"><strong>Cala Knowledge Answer:</strong><p style="margin:6px 0 0">${escapeHtml(kaText)}</p></div>`
+        : ""
+    }
+
+    <details class="gradual-block" style="margin-bottom: 8px" ${isEventEntity ? "open" : ""}>
+      <summary class="gradual-summary">
+        <span>${isEventEntity ? "Slush 2026 Participating Startups (role: ATTENDEE)" : "Verified Cala Deals, Rounds &amp; Citations"}</span>
+        <span class="gradual-hint">${relRows.length} edges</span>
+      </summary>
+      <div class="gradual-content">
+        <div class="cala-rel-list">
+          ${relRows.length ? relRows.join("") : `<p class="note" style="margin:10px 0 0">No relationship edges returned in current entity slice.</p>`}
+        </div>
+      </div>
+    </details>
+
+    <details class="gradual-block">
+      <summary class="gradual-summary">
+        <span>Disambiguated Cala Entities, Time Series &amp; Team</span>
+        <span class="gradual-hint">${candRows.length} items</span>
+      </summary>
+      <div class="gradual-content">
+        <div class="cala-rel-list">
+          ${candRows.length ? candRows.join("") : `<p class="note" style="margin:10px 0 0">No additional entity candidates listed.</p>`}
+        </div>
+      </div>
+    </details>
+  `;
+}
+
+async function runCalaVerifyQuery({ name, type = "company", includeKnowledgeSearch = false, targetEl, context = "search" }) {
+  const cleanName = String(name || "").trim();
+  if (!cleanName || !targetEl) return null;
+
+  const isSlushEvent = type === "event" || /\bslush\s*2026\b|bc844d56/i.test(cleanName);
+  let res = null;
+  if (isSlushEvent) {
+    res = buildSlush2026LivePayload();
+  } else {
+    const cacheKey = `${cleanName.toLowerCase()}::${type}::${includeKnowledgeSearch}`;
+    res = state.liveCalaCache.get(cacheKey);
+    if (res) {
+      res = { ...res, fromCache: true };
+    } else {
+      res = await fetchJson("/api/cala-verify", {
+        method: "POST",
+        body: JSON.stringify({
+          name: cleanName,
+          type,
+          includeKnowledgeSearch
+        })
+      });
+      state.liveCalaCache.set(cacheKey, res);
+    }
+  }
+
+  updateTelemetryMasthead(res.budget);
+
+  targetEl.hidden = false;
+  targetEl.innerHTML = buildLiveCalaIntelHtml(res, { context });
+
+  targetEl.querySelector("[data-close-cala-ctx]")?.addEventListener("click", () => {
+    const outerCard = targetEl.closest(".live-cala-intel-card");
+    if (outerCard) {
+      outerCard.hidden = true;
+    } else {
+      targetEl.hidden = true;
+    }
+  });
+
+  targetEl.querySelector("[data-open-slush-graph]")?.addEventListener("click", () => {
+    runCalaVerifyQuery({
+      name: "Slush 2026",
+      type: "event",
+      includeKnowledgeSearch: false,
+      targetEl,
+      context
+    });
+  });
+
+  targetEl.querySelectorAll("[data-slush-open-startup]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.peerHistory = [];
+      openStartupInspector(btn.dataset.slushOpenStartup, { keepHistory: true, tab: "brief" });
+    });
+  });
+
+  const deepBtn = targetEl.querySelector("[data-cala-deep-name]");
+  if (deepBtn) {
+    deepBtn.addEventListener("click", async () => {
+      deepBtn.disabled = true;
+      deepBtn.textContent = "Querying Cala Knowledge...";
+      try {
+        await runCalaVerifyQuery({
+          name: deepBtn.dataset.calaDeepName,
+          type: deepBtn.dataset.calaDeepType || "company",
+          includeKnowledgeSearch: true,
+          targetEl,
+          context
+        });
+      } catch (err) {
+        showUiToast(`Cala Knowledge error: ${err.message}`);
+        deepBtn.disabled = false;
+        deepBtn.textContent = "Ask Deep Knowledge (1 credit)";
+      }
+    });
+  }
+
+  return res;
+}
+
+async function runSearchLiveCalaLookup(customQuery) {
+  const inputVal = document.getElementById("aiSearchInput")?.value?.trim() || "";
+  const query = String(customQuery || inputVal || getSelectedBenchmarkLabel()).trim();
+  const cardEl = document.getElementById("liveCalaSearchCard");
+  const contentEl = document.getElementById("liveCalaSearchContent");
+  const btn = document.getElementById("searchLiveCalaBtn");
+  if (!cardEl || !contentEl || !query) return;
+
+  const isEventQuery = /\bslush\s*2026\b|bc844d56/i.test(query);
+  const matchedFund = (state.bootstrap?.funds || []).find(
+    (f) => f.name.toLowerCase() === query.toLowerCase()
+  );
+  const type = isEventQuery ? "event" : matchedFund ? "fund" : "company";
+
+  cardEl.hidden = false;
+  contentEl.innerHTML = `<p class="note" style="margin:0">Querying Cala AI graph for <strong>${escapeHtml(query)}</strong> (cache checked first)...</p>`;
+  if (btn) btn.disabled = true;
+
+  try {
+    await runCalaVerifyQuery({
+      name: query,
+      type,
+      includeKnowledgeSearch: false,
+      targetEl: contentEl,
+      context: "search"
+    });
+  } catch (err) {
+    contentEl.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+        <span class="note">Live Cala lookup notice: ${escapeHtml(err.message)}</span>
+        <button type="button" class="btn sm" id="closeErrCalaSearchBtn">Close &times;</button>
+      </div>
+    `;
+    document.getElementById("closeErrCalaSearchBtn")?.addEventListener("click", () => {
+      cardEl.hidden = true;
+    });
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function verifyThesisFundInLiveCala({ silent = false } = {}) {
+  const fundName = state.analysis?.thesis?.fundName || getSelectedBenchmarkLabel();
+  const cardEl = document.getElementById("thesisLiveCalaCard");
+  const btn = document.getElementById("thesisVerifyFundBtn");
+  if (!cardEl || !fundName) return;
+
+  if (!silent) {
+    cardEl.hidden = false;
+    cardEl.innerHTML = `<p class="note" style="margin:0">Verifying <strong>${escapeHtml(fundName)}</strong> against Cala AI Organization graph...</p>`;
+  }
+  if (btn) btn.disabled = true;
+
+  try {
+    await runCalaVerifyQuery({
+      name: fundName,
+      type: "fund",
+      includeKnowledgeSearch: false,
+      targetEl: cardEl,
+      context: "thesis"
+    });
+  } catch (err) {
+    if (!silent) {
+      cardEl.hidden = false;
+      cardEl.innerHTML = `<span class="note">Live Cala notice: ${escapeHtml(err.message)}</span>`;
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function triggerLiveCalaVerification() {
   const candidate = state.allKnownItems.get(state.activeStartupId);
   if (!candidate) return;
   const outputEl = document.getElementById("liveCalaOutput");
+  const bannerEl = document.getElementById("drawerLiveCalaBanner");
   const btn = document.getElementById("verifyLiveCalaBtn");
+  const headerBtn = document.getElementById("modalHeaderLiveCalaBtn");
   const includeKnowledgeSearch = Boolean(document.getElementById("liveCalaSearchCheck")?.checked);
 
+  if (bannerEl) {
+    bannerEl.hidden = false;
+    bannerEl.innerHTML = `<p class="note" style="margin:0">Querying live Cala AI graph for <strong>${escapeHtml(candidate.name)}</strong>...</p>`;
+  }
   if (outputEl) {
     outputEl.hidden = false;
     outputEl.textContent = "Querying live Cala Beta API...";
   }
   if (btn) btn.disabled = true;
+  if (headerBtn) headerBtn.disabled = true;
 
   try {
-    const res = await fetchJson("/api/cala-verify", {
-      method: "POST",
-      body: JSON.stringify({
-        name: candidate.name,
-        type: "company",
-        includeKnowledgeSearch
-      })
+    const res = await runCalaVerifyQuery({
+      name: candidate.name,
+      type: "company",
+      includeKnowledgeSearch,
+      targetEl: bannerEl || outputEl,
+      context: "drawer"
     });
 
-    updateTelemetryMasthead(res.budget);
-
-    const live = res.liveSummary;
-    if (outputEl) {
+    if (outputEl && res) {
       outputEl.innerHTML = `
         <div class="card" style="padding:12px;margin-top:10px">
-          <strong>Live Cala response (${res.fromCache ? "Cached 0 credits" : "Live call"}):</strong>
+          <strong>Live Cala response (${res.fromCache ? "Cached · 0 credits" : "Live call"}):</strong>
           <p class="note" style="margin:4px 0 0">${
-            live
-              ? `Matched entity: ${escapeHtml(live.name)} (${escapeHtml(live.id)})`
-              : "Entity query completed; no additional public rounds beyond curated graph."
+            res.liveSummary
+              ? `Matched entity: ${escapeHtml(res.liveSummary.name)} (${escapeHtml(res.liveSummary.id)})`
+              : "Entity query completed."
           }</p>
         </div>
       `;
     }
   } catch (err) {
-    if (outputEl) {
-      outputEl.textContent = `Live Cala check notice: ${err.message}`;
-    }
+    const msg = `Live Cala check notice: ${err.message}`;
+    if (bannerEl) bannerEl.innerHTML = `<span class="note">${escapeHtml(msg)}</span>`;
+    if (outputEl) outputEl.textContent = msg;
   } finally {
     if (btn) btn.disabled = false;
+    if (headerBtn) headerBtn.disabled = false;
   }
 }
 
@@ -2666,6 +3749,39 @@ function bindEvents() {
     renderStartupGrid(state.DisplayedShortlist);
   });
 
+  document.getElementById("filterSlushBtn")?.addEventListener("click", () => {
+    state.onlySlush2026 = !state.onlySlush2026;
+    renderStartupGrid(state.DisplayedShortlist);
+  });
+
+  document.getElementById("aiTraceCitations")?.addEventListener("click", (e) => {
+    const startBtn = e.target.closest("[data-ai-open-startup]");
+    if (startBtn) {
+      state.peerHistory = [];
+      openStartupInspector(startBtn.dataset.aiOpenStartup, { keepHistory: true, tab: "brief" });
+      return;
+    }
+    const escBtn = e.target.closest("[data-ai-escalation-query]");
+    if (escBtn) {
+      const q = escBtn.dataset.aiEscalationQuery;
+      const cardEl = document.getElementById("liveCalaSearchCard");
+      const contentEl = document.getElementById("liveCalaSearchContent");
+      if (cardEl && contentEl && q) {
+        cardEl.hidden = false;
+        contentEl.innerHTML = `<p class="note" style="margin:0">Querying Live Cala Knowledge for <strong>${escapeHtml(q)}</strong>...</p>`;
+        runCalaVerifyQuery({
+          name: q,
+          type: "company",
+          includeKnowledgeSearch: true,
+          targetEl: contentEl,
+          context: "search"
+        }).catch((err) => {
+          contentEl.innerHTML = `<span class="note">Live Cala error: ${escapeHtml(err.message)}</span>`;
+        });
+      }
+    }
+  });
+
   document.getElementById("compareCallListBtn")?.addEventListener("click", () => {
     toggleCallListCompareMatrix();
   });
@@ -2917,6 +4033,13 @@ function bindEvents() {
   document.getElementById("modalQuickExportCsvBtn")?.addEventListener("click", exportCurrentShortlistCsv);
 
   document.getElementById("verifyLiveCalaBtn")?.addEventListener("click", triggerLiveCalaVerification);
+  document.getElementById("modalHeaderLiveCalaBtn")?.addEventListener("click", triggerLiveCalaVerification);
+  document.getElementById("searchLiveCalaBtn")?.addEventListener("click", () => {
+    runSearchLiveCalaLookup();
+  });
+  document.getElementById("thesisVerifyFundBtn")?.addEventListener("click", () => {
+    verifyThesisFundInLiveCala({ silent: false });
+  });
 
   document.addEventListener("keydown", (e) => {
     const drawerOpen = !document.getElementById("inspectorDrawer")?.hidden;

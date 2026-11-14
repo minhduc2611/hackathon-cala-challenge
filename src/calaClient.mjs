@@ -145,6 +145,16 @@ export function createCalaClient(options = {}) {
     return request('GET', `/v1/entities?${params.toString()}`, null);
   }
 
+  async function calaEntityLookup(params = {}) {
+    const searchParams = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && String(v).trim() !== '') {
+        searchParams.set(k, String(v).trim());
+      }
+    }
+    return request('GET', `/v1/entities/lookup?${searchParams.toString()}`, null);
+  }
+
   async function calaIntrospect(entityId) {
     return request('GET', `/v1/entities/${encodeURIComponent(entityId)}/introspection`, null);
   }
@@ -164,6 +174,7 @@ export function createCalaClient(options = {}) {
   return {
     getBudgetStatus,
     calaEntitySearch,
+    calaEntityLookup,
     calaIntrospect,
     calaRetrieveEntity,
     calaKnowledgeSearch

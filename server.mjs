@@ -36,6 +36,7 @@ function pickBestCalaEntity(entities = [], preferredType = 'Organization') {
 
 function summarizeLiveCalaEntity(entityData) {
   if (!entityData) return null;
+  const props = entityData.properties || {};
   const outgoing = entityData.relationships?.outgoing || {};
   const incoming = entityData.relationships?.incoming || {};
 
@@ -46,9 +47,24 @@ function summarizeLiveCalaEntity(entityData) {
     sources: (c.properties?.sources || []).slice(0, 2)
   }));
 
-  const fundingRounds = (outgoing.PARTICIPATES_IN_FUNDING_ROUND || []).map((r) => ({
+  const rawPartRounds = outgoing.PARTICIPATES_IN_FUNDING_ROUND || [];
+  const issuerRounds = rawPartRounds
+    .filter((r) => !r.properties?.role || r.properties.role === 'ISSUER')
+    .map((r) => ({
+      id: r.id,
+      roundType: r.name,
+      role: r.properties?.role || 'ISSUER',
+      isLead: Boolean(r.properties?.is_lead),
+      eventDate: r.properties?.event_date || null,
+      transactionValue: r.properties?.transaction_value ?? null,
+      transactionValueUnits: r.properties?.transaction_value_units || null,
+      sources: (r.properties?.sources || []).slice(0, 2)
+    }));
+
+  const fundingRounds = rawPartRounds.map((r) => ({
     id: r.id,
     roundType: r.name,
+    role: r.properties?.role || 'INVESTOR',
     isLead: Boolean(r.properties?.is_lead),
     eventDate: r.properties?.event_date || null,
     sources: (r.properties?.sources || []).slice(0, 2)
@@ -57,9 +73,46 @@ function summarizeLiveCalaEntity(entityData) {
   const raisedRounds = (incoming.PARTICIPATES_IN_FUNDING_ROUND || outgoing.HAS_FUNDING_ROUND || []).map((r) => ({
     id: r.id,
     roundType: r.name,
+    role: r.properties?.role || 'ISSUER',
     eventDate: r.properties?.event_date || null,
     sources: (r.properties?.sources || []).slice(0, 2)
   }));
+
+  const corpEvents = (outgoing.PARTICIPATES_IN_CORPORATE_EVENT || []).map((ev) => {
+    const evDate = ev.properties?.event_date || null;
+    const matchedIssuer = issuerRounds.some((r) => r.eventDate && evDate && r.eventDate.slice(0, 7) === evDate.slice(0, 7));
+    return {
+      id: ev.id,
+      name: ev.name,
+      role: ev.properties?.role || null,
+      eventDate: evDate,
+      deduplicatedAgainstRound: matchedIssuer,
+      sources: (ev.properties?.sources || []).slice(0, 2)
+    };
+  });
+
+  const eventsAttended = [
+    ...(outgoing.PARTICIPATES_IN_EVENT || []).map((ev) => ({
+      id: ev.id,
+      name: ev.name,
+      role: ev.properties?.role || 'ATTENDEE',
+      sources: (ev.properties?.sources || []).slice(0, 2)
+    })),
+    ...(incoming.PARTICIPATES_IN_EVENT || []).map((co) => ({
+      id: co.id,
+      name: co.name,
+      entityType: co.entity_type,
+      role: co.properties?.role || 'ATTENDEE',
+      sources: (co.properties?.sources || []).slice(0, 2)
+    }))
+  ];
+
+  const leadership = [
+    ...(incoming.FOUNDED || []).map((p) => ({ id: p.id, name: p.name, relation: 'FOUNDED', role: 'Founder', validSince: p.properties?.valid_since || null })),
+    ...(incoming.IS_CEO_OF || []).map((p) => ({ id: p.id, name: p.name, relation: 'IS_CEO_OF', role: 'CEO', validSince: p.properties?.valid_since || null, validUntil: p.properties?.valid_until || null })),
+    ...(incoming.IS_CTO_OF || []).map((p) => ({ id: p.id, name: p.name, relation: 'IS_CTO_OF', role: 'CTO', validSince: p.properties?.valid_since || null, validUntil: p.properties?.valid_until || null })),
+    ...(incoming.IS_BOARD_MEMBER_OF || []).map((p) => ({ id: p.id, name: p.name, relation: 'IS_BOARD_MEMBER_OF', role: 'Board Member', validSince: p.properties?.valid_since || null }))
+  ];
 
   const worksAt = (incoming.WORKS_AT || []).map((p) => ({
     id: p.id,
@@ -67,20 +120,41 @@ function summarizeLiveCalaEntity(entityData) {
     role: p.properties?.role || 'Team member'
   }));
 
+  const numericalObservations = Array.isArray(entityData.numerical_observations)
+    ? entityData.numerical_observations.slice(0, 12)
+    : [];
+
   return {
     id: entityData.id,
     name: entityData.name,
+    legalName: props.legal_name?.value || null,
+    legalNameSources: (props.legal_name?.sources || []).slice(0, 2),
     entityType: entityData.entity_type,
     description: entityData.description,
-    website: entityData.properties?.website?.value || null,
-    address: entityData.properties?.registered_address?.value || null,
+    website: props.website?.value || null,
+    address: props.registered_address?.value || props.headquarters_address?.value || null,
+    operationalStatus: props.operational_status?.value || null,
+    ownershipStatus: props.company_ownership_status?.value || null,
+    fundingStage: props.funding_stage?.value || null,
+    foundingDate: props.founding_date?.value || null,
+    foundingDatePrecision: props.founding_date?.sources?.[0]?.date_precision || null,
+    employeeCountRange: props.employee_count_range?.value || null,
+    totalFunding: props.total_funding?.value ?? null,
+    totalFundingUnits: props.total_funding_units?.value || null,
+    totalFundingExcludingDebt: props.total_funding_excluding_debt?.value ?? null,
     investedInCount: investedIn.length,
     investedIn: investedIn.slice(0, 12),
     fundingRoundsCount: fundingRounds.length,
+    issuerRoundsCount: issuerRounds.length,
     leadRoundsCount: fundingRounds.filter((r) => r.isLead).length,
+    issuerRounds: issuerRounds.slice(0, 10),
     fundingRounds: fundingRounds.slice(0, 12),
     raisedRounds: raisedRounds.slice(0, 10),
-    worksAt: worksAt.slice(0, 6)
+    corporateEvents: corpEvents.slice(0, 8),
+    eventsAttended: eventsAttended.slice(0, 25),
+    leadership: leadership.slice(0, 10),
+    worksAt: worksAt.slice(0, 8),
+    numericalObservations
   };
 }
 
@@ -224,16 +298,17 @@ export function createAppServer(options = {}) {
       if (req.method === 'POST' && pathname === '/api/cala-verify') {
         const body = await readJsonBody(req);
         const name = String(body.name || '').trim();
-        const type = body.type === 'company' ? 'company' : 'fund';
+        const type = body.type === 'company' ? 'company' : body.type === 'event' ? 'event' : 'fund';
         const includeKnowledgeSearch = Boolean(body.includeKnowledgeSearch);
         if (!name) {
           sendJson(res, 400, { error: 'Missing required field: name.' });
           return;
         }
 
-        const searchRes = await calaClient.calaEntitySearch(name, 5);
+        const searchTypes = type === 'event' ? ['Event'] : [];
+        const searchRes = await calaClient.calaEntitySearch(name, 5, searchTypes);
         const candidates = searchRes.data?.entities || [];
-        const preferredType = type === 'fund' ? 'Organization' : 'Company';
+        const preferredType = type === 'event' ? 'Event' : type === 'fund' ? 'Organization' : 'Company';
         const matched = pickBestCalaEntity(candidates, preferredType);
 
         let introRes = null;
@@ -249,12 +324,16 @@ export function createAppServer(options = {}) {
           }
           const incomingMap = {};
           for (const rel of introRes.data?.relationships?.incoming || []) {
-            incomingMap[rel] = { limit: 20, offset: 0 };
+            incomingMap[rel] = { limit: type === 'event' ? 100 : 20, offset: 0 };
           }
-          entityRes = await calaClient.calaRetrieveEntity(matched.id, {
+          const retrieveBody = {
             properties: introRes.data?.properties || ['name', 'description'],
             relationships: { outgoing: outgoingMap, incoming: incomingMap }
-          });
+          };
+          if (Array.isArray(introRes.data?.numerical_observations) && introRes.data.numerical_observations.length > 0) {
+            retrieveBody.numerical_observations = introRes.data.numerical_observations;
+          }
+          entityRes = await calaClient.calaRetrieveEntity(matched.id, retrieveBody);
           liveSummary = summarizeLiveCalaEntity(entityRes.data);
         }
 
