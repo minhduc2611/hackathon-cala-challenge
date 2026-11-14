@@ -1,12 +1,13 @@
 /**
- * Revealed Thesis Engine · Mergero Front-Door UI Controller
- * 4-Screen Story: 1 Why & setup · 2 Startups to call · 3 Deep dive & network · 4 Thesis & backtest
- * Plus Temporary Overlap Inspector Drawer with Gradual Exposure & LinkedIn/Cala Graph
+ * Revealed Thesis Engine · Full-Screen 3-Step Setup & Clean Floating Search UI
+ * Step 1: How it works (Cala data reliability) -> Step 2: Role -> Step 3: Investor config
+ * Followed by Startups to Call with a floating rounded search bar and 1 single Option Button
  */
 
 const state = {
   bootstrap: null,
-  activeTab: "config",
+  isOnboarding: true,
+  activeTab: "search",
   configStep: 1,
   role: "analyst",
   inputMode: "fund",
@@ -14,6 +15,8 @@ const state = {
   selectedCompanyIds: ["oura", "iceye", "aiven"],
   scoringMode: "balanced",
   networkSource: "linkedin",
+  statedThesisOverride: "",
+  seenCompaniesRaw: "",
   analysis: null,
   DisplayedShortlist: [],
   allKnownItems: new Map(),
@@ -25,7 +28,7 @@ const state = {
   peerHistory: []
 };
 
-const STEPS_ORDER = ["config", "search", "talk", "thesis"];
+const WORKSPACE_VIEWS = ["search", "talk", "thesis"];
 
 const WEIGHT_PROFILES = {
   balanced: {
@@ -207,64 +210,92 @@ function registerKnownItems(items) {
 }
 
 /* ==========================================================================
-   4-SCREEN FRONT-DOOR NAVIGATION (STEPS BAR + KEYBOARD ARROWS)
+   FULL-SCREEN ONBOARDING VS WORKSPACE NAVIGATION
    ========================================================================== */
 
-function switchPrimaryTab(tabName) {
-  if (!STEPS_ORDER.includes(tabName)) return;
+function enterOnboarding(step = 1) {
+  state.isOnboarding = true;
+  document.body.classList.add("is-onboarding");
+  closeOptionsPopover();
+  setConfigStep(step);
+  window.scrollTo({ top: 0, behavior: "auto" });
+}
 
-  if (tabName === "talk" && !state.activeStartupId && state.DisplayedShortlist.length > 0) {
+function exitOnboardingAndOpenWorkspace(targetView = "search") {
+  state.isOnboarding = false;
+  document.body.classList.remove("is-onboarding");
+  switchPrimaryTab(targetView);
+}
+
+function switchPrimaryTab(tabName) {
+  if (tabName === "config") {
+    enterOnboarding(1);
+    return;
+  }
+
+  if (state.isOnboarding) {
+    state.isOnboarding = false;
+    document.body.classList.remove("is-onboarding");
+  }
+
+  const target = WORKSPACE_VIEWS.includes(tabName) ? tabName : "search";
+  if (target === "talk" && !state.activeStartupId && state.DisplayedShortlist.length > 0) {
     state.activeStartupId = state.DisplayedShortlist[0].id;
   }
 
-  state.activeTab = tabName;
-  const activeIdx = STEPS_ORDER.indexOf(tabName);
-
-  document.querySelectorAll(".steps .step").forEach((btn) => {
-    const stepId = btn.dataset.tab;
-    const idx = STEPS_ORDER.indexOf(stepId);
-    const isCurrent = stepId === tabName;
-    const isDone = idx >= 0 && idx < activeIdx;
-
-    btn.classList.toggle("on", isCurrent);
-    btn.classList.toggle("done", isDone);
-    btn.setAttribute("aria-selected", isCurrent ? "true" : "false");
-
-    const numEl = btn.querySelector(".n");
-    if (numEl) {
-      numEl.textContent = isDone ? "✓" : String(idx + 1);
-    }
-  });
+  state.activeTab = target;
 
   document.querySelectorAll(".workspace-panel").forEach((panel) => {
-    const isTarget = panel.id === `panel-${tabName}`;
-    panel.hidden = !isTarget;
+    panel.hidden = panel.id !== `panel-${target}`;
   });
 
-  if (tabName === "talk") {
+  document.querySelectorAll(".pop-nav-btn").forEach((btn) => {
+    btn.classList.toggle("is-active", btn.dataset.go === target);
+  });
+
+  closeOptionsPopover();
+
+  if (target === "talk") {
     renderTalkScreen();
   }
 
   window.scrollTo({ top: 0, behavior: "auto" });
 }
 
+function toggleOptionsPopover() {
+  const pop = document.getElementById("optionsMenuPopover");
+  const btn = document.getElementById("optionsMenuBtn");
+  if (!pop || !btn) return;
+  const nextHidden = !pop.hidden;
+  pop.hidden = nextHidden;
+  btn.setAttribute("aria-expanded", nextHidden ? "false" : "true");
+}
+
+function closeOptionsPopover() {
+  const pop = document.getElementById("optionsMenuPopover");
+  const btn = document.getElementById("optionsMenuBtn");
+  if (pop) pop.hidden = true;
+  if (btn) btn.setAttribute("aria-expanded", "false");
+}
+
 function setConfigStep(stepNum) {
   state.configStep = stepNum;
-  document.querySelectorAll(".wiz-step-btn").forEach((el) => {
+  document.querySelectorAll(".onb-step-pill").forEach((el) => {
     const s = Number(el.dataset.stepTarget);
     el.classList.toggle("is-active", s === stepNum);
     el.classList.toggle("is-done", s < stepNum);
-    const wn = el.querySelector(".wn");
-    if (wn) {
-      wn.textContent = s < stepNum ? "✓" : String(s);
+    const numEl = el.querySelector(".onb-num");
+    if (numEl) {
+      numEl.textContent = s < stepNum ? "✓" : String(s);
     }
   });
 
-  document.querySelectorAll(".config-step-pane").forEach((pane) => {
+  document.querySelectorAll(".onboarding-stage").forEach((pane) => {
     pane.hidden = Number(pane.dataset.stepPane) !== stepNum;
   });
 
   renderConfigReviewSummary();
+  window.scrollTo({ top: 0, behavior: "auto" });
 }
 
 function renderWeightPreview() {
@@ -297,6 +328,11 @@ function syncInlineCalibrationStrip() {
   const labelEl = document.getElementById("activeBenchmarkLabel");
   if (labelEl) labelEl.textContent = label;
 
+  const roleBadge = document.getElementById("activeRoleBadge");
+  if (roleBadge) {
+    roleBadge.textContent = state.role === "investor" ? "Investor" : "Analyst";
+  }
+
   const searchTitle = document.getElementById("searchFundTitle");
   if (searchTitle) searchTitle.textContent = label;
 
@@ -306,13 +342,6 @@ function syncInlineCalibrationStrip() {
   document.querySelectorAll("[data-quick-role]").forEach((btn) => {
     btn.classList.toggle("is-active", btn.dataset.quickRole === state.role);
   });
-
-  const wizLive = document.getElementById("wizLiveSummary");
-  if (wizLive) {
-    const roleLabel = state.role === "investor" ? "Investor" : "Analyst";
-    const netLabel = state.networkSource === "linkedin" ? "LinkedIn first" : "Cala graph";
-    wizLive.textContent = `${roleLabel} · ${label} · ${netLabel}`;
-  }
 }
 
 function renderConfigReviewSummary() {
@@ -322,7 +351,7 @@ function renderConfigReviewSummary() {
   const roleLabel = state.role === "investor" ? "Investor (GP / Partner)" : "Analyst";
   const targetLabel = getSelectedBenchmarkLabel();
   const focusLabel = WEIGHT_PROFILES[state.scoringMode]?.label || "Balanced fit";
-  const netLabel = state.networkSource === "linkedin" ? "LinkedIn first" : "Cala graph first";
+  const netLabel = state.networkSource === "linkedin" ? "LinkedIn 2nd° first" : "Cala graph first";
 
   box.innerHTML = `
     <div class="cr-item">
@@ -330,11 +359,11 @@ function renderConfigReviewSummary() {
       <span class="cr-val">${escapeHtml(roleLabel)}</span>
     </div>
     <div class="cr-item">
-      <span class="cr-label">Benchmark</span>
+      <span class="cr-label">Investor benchmark</span>
       <span class="cr-val">${escapeHtml(targetLabel)}</span>
     </div>
     <div class="cr-item">
-      <span class="cr-label">Scoring focus</span>
+      <span class="cr-label">Scoring priority</span>
       <span class="cr-val">${escapeHtml(focusLabel)}</span>
     </div>
     <div class="cr-item">
@@ -364,6 +393,12 @@ function renderFundQuickPicks() {
       `;
     })
     .join("");
+
+  const statedInput = document.getElementById("statedThesisInput");
+  const activeFund = state.bootstrap.funds.find((f) => f.id === state.selectedFundId);
+  if (statedInput && activeFund && !state.statedThesisOverride) {
+    statedInput.placeholder = activeFund.statedThesis || "Backing Nordic and European founders from Seed to Series A...";
+  }
 }
 
 function renderSeedCompanyChips() {
@@ -389,12 +424,25 @@ function renderSeedCompanyChips() {
    ANALYSIS EXECUTION & SHORTLIST GRID (6-7 PER LINE + ALSO EXCLUDED)
    ========================================================================== */
 
+function getSeenCompanyNamesList() {
+  const raw = document.getElementById("seenCompaniesInput")?.value || state.seenCompaniesRaw || "";
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 async function runAnalysis() {
+  const statedRaw = document.getElementById("statedThesisInput")?.value?.trim() || "";
+  state.statedThesisOverride = statedRaw;
+
   const payload = {
     mode: state.inputMode,
     fundId: state.selectedFundId,
     companyIds: state.selectedCompanyIds,
-    rankingMode: mapScoringModeToApi(state.scoringMode)
+    rankingMode: mapScoringModeToApi(state.scoringMode),
+    statedThesisOverride: statedRaw || undefined,
+    seenCompanyNames: getSeenCompanyNamesList()
   };
 
   const result = await fetchJson("/api/analyze", {
@@ -438,7 +486,7 @@ function syncScoringModeButtons() {
   document.querySelectorAll(".mode-pill-sm").forEach((btn) => {
     btn.classList.toggle("is-active", btn.dataset.mode === state.scoringMode);
   });
-  document.querySelectorAll(".focus-pill").forEach((card) => {
+  document.querySelectorAll(".focus-pill[data-focus-card]").forEach((card) => {
     const input = card.querySelector("input");
     const match = input && input.value === state.scoringMode;
     card.classList.toggle("is-selected", Boolean(match));
@@ -593,6 +641,8 @@ async function executeSearchRefinement(customQuery) {
       fundId: state.selectedFundId,
       companyIds: state.selectedCompanyIds,
       rankingMode: mapScoringModeToApi(state.scoringMode),
+      statedThesisOverride: state.statedThesisOverride || undefined,
+      seenCompanyNames: getSeenCompanyNamesList(),
       queryText,
       region,
       excludeSector: excludeSector || "none",
@@ -622,9 +672,13 @@ async function executeSearchRefinement(customQuery) {
       explanationEl.textContent = res.explanation || "Filtered shortlist using Cala graph signals.";
     }
     if (opsEl) {
-      const ops = res.appliedFilters || [];
-      opsEl.innerHTML = ops
-        .map((op) => `<span class="trace-op-tag">${escapeHtml(op)}</span>`)
+      const rawOps = Array.isArray(res.appliedFilters)
+        ? res.appliedFilters
+        : Array.isArray(res.queryTrace?.operations)
+        ? res.queryTrace.operations
+        : [];
+      opsEl.innerHTML = rawOps
+        .map((op) => `<span class="trace-op-tag">${escapeHtml(String(op))}</span>`)
         .join("");
     }
   }
@@ -646,7 +700,7 @@ async function resetSearchAndFilters() {
 }
 
 /* ==========================================================================
-   STARTUP BRIEF LOADER & SCREEN 3 (`vTalk` 3-COLUMN DEEP DIVE)
+   STARTUP BRIEF LOADER & 3-COLUMN DEEP DIVE
    ========================================================================== */
 
 async function loadStartupBriefData(companyId) {
@@ -693,7 +747,7 @@ function renderTalkScreen() {
     list[0];
 
   if (!candidate) {
-    container.innerHTML = `<p class="sub">Select a startup in Step 2 to inspect its deep dive.</p>`;
+    container.innerHTML = `<p class="sub">Select a startup to inspect its deep dive.</p>`;
     return;
   }
 
@@ -712,7 +766,7 @@ function renderTalkScreen() {
     <div class="head">
       ${scoreRingHtml(candidate.suitabilityScore)}
       <div class="t">
-        <div class="eyebrow" style="margin-bottom: 6px">Step 3 · One startup in detail</div>
+        <div class="eyebrow" style="margin-bottom: 6px">One startup in detail · Verified in Cala</div>
         <h2>${escapeHtml(candidate.name)}</h2>
         <div class="m">
           ${escapeHtml(candidate.hqCity)}, ${escapeHtml(candidate.country)} · ${escapeHtml(candidate.sector)} · ${escapeHtml(candidate.stage)} (${formatEur(candidate.lastRoundAmountEurM)}) · ${escapeHtml(candidate.employeeCount)} employees
@@ -725,7 +779,6 @@ function renderTalkScreen() {
     </div>
 
     <div class="cols">
-      <!-- Column 1: Why now & Cala score -->
       <div class="card panel">
         <h3><span class="n">1</span>Why now &amp; Cala score</h3>
         <div class="fin">
@@ -774,7 +827,6 @@ function renderTalkScreen() {
         </ul>
       </div>
 
-      <!-- Column 2: Network & warm intro graph -->
       <div class="card panel">
         <h3><span class="n">2</span>Warm intro &amp; network graph</h3>
         <div class="badges" style="margin-top: 0">
@@ -805,7 +857,6 @@ function renderTalkScreen() {
         </div>
       </div>
 
-      <!-- Column 3: Co-investors, rounds & memo export -->
       <div class="card panel">
         <h3><span class="n">3</span>Syndicate &amp; partner memo</h3>
         ${
@@ -1357,7 +1408,7 @@ function buildNetworkGraphSvg(graphObj, selectedStartupId) {
 }
 
 /* ==========================================================================
-   SCREEN 4 · AT SCALE / REVEALED THESIS & POINT-IN-TIME BACKTEST (`vScale`)
+   THESIS & BACKTEST VIEW
    ========================================================================== */
 
 function renderDistributionBars(containerId, items = []) {
@@ -1405,7 +1456,6 @@ function renderThesisAndBacktest(result) {
     }
   }
 
-  // Funnel rows on left of Screen 4 (Mergero .frow style)
   const funnelEl = document.getElementById("scaleFunnelRows");
   if (funnelEl) {
     const poolSize = state.bootstrap?.coverageStats?.companiesIndexed || 48;
@@ -1433,7 +1483,6 @@ function renderThesisAndBacktest(result) {
   renderDistributionBars("stageDistributionBars", thesis.stageMix);
   renderDistributionBars("geoDistributionBars", thesis.geographyMix);
 
-  // Right column: Why-scale icon list
   const insightsEl = document.getElementById("thesisInsightsList");
   if (insightsEl) {
     const diffLine = (thesis.statedVsRevealed || [])[0] || thesis.driftSummary || "";
@@ -1568,7 +1617,35 @@ function bindEvents() {
     if (goBtn) {
       e.preventDefault();
       switchPrimaryTab(goBtn.dataset.go);
+      return;
     }
+
+    const optWrap = document.querySelector(".options-dropdown-wrap");
+    if (optWrap && !optWrap.contains(e.target)) {
+      closeOptionsPopover();
+    }
+  });
+
+  document.getElementById("optionsMenuBtn")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleOptionsPopover();
+  });
+
+  document.getElementById("editSetupBtn")?.addEventListener("click", () => {
+    enterOnboarding(1);
+  });
+
+  document.getElementById("skipToWorkspaceBtn")?.addEventListener("click", () => {
+    exitOnboardingAndOpenWorkspace("search");
+  });
+
+  document.getElementById("toggleFiltersBtn")?.addEventListener("click", () => {
+    const strip = document.getElementById("collapsibleFilterStrip");
+    const btn = document.getElementById("toggleFiltersBtn");
+    if (!strip || !btn) return;
+    const nextHidden = !strip.hidden;
+    strip.hidden = nextHidden;
+    btn.setAttribute("aria-expanded", nextHidden ? "false" : "true");
   });
 
   document.querySelectorAll("[data-quick-role]").forEach((btn) => {
@@ -1585,7 +1662,7 @@ function bindEvents() {
     });
   });
 
-  document.querySelectorAll(".wiz-step-btn").forEach((btn) => {
+  document.querySelectorAll(".onb-step-pill").forEach((btn) => {
     btn.addEventListener("click", () => {
       setConfigStep(Number(btn.dataset.stepTarget));
     });
@@ -1598,7 +1675,7 @@ function bindEvents() {
 
   document.getElementById("launchDashboardBtn")?.addEventListener("click", async () => {
     await runAnalysis();
-    switchPrimaryTab("search");
+    exitOnboardingAndOpenWorkspace("search");
   });
 
   document.querySelectorAll("[data-role-card]").forEach((card) => {
@@ -1857,38 +1934,29 @@ function bindEvents() {
 
   document.addEventListener("keydown", (e) => {
     const drawerOpen = !document.getElementById("inspectorDrawer")?.hidden;
+    const popOpen = !document.getElementById("optionsMenuPopover")?.hidden;
     const tag = document.activeElement?.tagName;
     const inInput = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 
-    if (e.key === "Escape" && drawerOpen) {
-      closeStartupInspector();
+    if (e.key === "Escape") {
+      if (drawerOpen) closeStartupInspector();
+      if (popOpen) closeOptionsPopover();
       return;
     }
 
-    if (e.key === "/" && !inInput && state.activeTab === "search") {
+    if (e.key === "/" && !inInput && !state.isOnboarding && state.activeTab === "search") {
       e.preventDefault();
       document.getElementById("aiSearchInput")?.focus();
       return;
     }
 
-    if (!inInput) {
-      if (drawerOpen) {
-        if (e.key === "ArrowDown" || e.key === "ArrowRight") {
-          e.preventDefault();
-          stepStartupInList(1);
-        } else if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
-          e.preventDefault();
-          stepStartupInList(-1);
-        }
-      } else {
-        const curIdx = STEPS_ORDER.indexOf(state.activeTab);
-        if (e.key === "ArrowRight" && curIdx < STEPS_ORDER.length - 1) {
-          e.preventDefault();
-          switchPrimaryTab(STEPS_ORDER[curIdx + 1]);
-        } else if (e.key === "ArrowLeft" && curIdx > 0) {
-          e.preventDefault();
-          switchPrimaryTab(STEPS_ORDER[curIdx - 1]);
-        }
+    if (!inInput && drawerOpen) {
+      if (e.key === "ArrowDown" || e.key === "ArrowRight") {
+        e.preventDefault();
+        stepStartupInList(1);
+      } else if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
+        e.preventDefault();
+        stepStartupInList(-1);
       }
     }
   });
@@ -1925,7 +1993,7 @@ async function init() {
   renderConfigReviewSummary();
 
   await runAnalysis();
-  switchPrimaryTab("config");
+  enterOnboarding(1);
 }
 
 init().catch((err) => {
