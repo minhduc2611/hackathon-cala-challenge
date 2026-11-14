@@ -4,6 +4,8 @@
  * Followed by Startups to Call with a floating rounded search bar and 1 single Option Button
  */
 
+const PREFS_STORAGE_KEY = "rte_user_prefs_v1";
+
 const state = {
   bootstrap: null,
   isOnboarding: true,
@@ -13,6 +15,7 @@ const state = {
   inputMode: "fund",
   selectedFundId: "lifeline-ventures",
   selectedCompanyIds: ["oura", "iceye", "aiven"],
+  targetStage: "all",
   scoringMode: "balanced",
   networkSource: "linkedin",
   statedThesisOverride: "",
@@ -27,6 +30,57 @@ const state = {
   exposureDepth: "evidence",
   peerHistory: []
 };
+
+const TARGET_STAGE_LABELS = {
+  all: "All stages",
+  pre_seed_seed: "Pre-Seed & Seed",
+  seed_series_a: "Seed & Series A",
+  series_a_plus: "Series A+"
+};
+
+function savePrefsToStorage() {
+  try {
+    localStorage.setItem(
+      PREFS_STORAGE_KEY,
+      JSON.stringify({
+        role: state.role,
+        inputMode: state.inputMode,
+        selectedFundId: state.selectedFundId,
+        selectedCompanyIds: state.selectedCompanyIds,
+        targetStage: state.targetStage,
+        scoringMode: state.scoringMode,
+        networkSource: state.networkSource
+      })
+    );
+  } catch {
+    // Ignore storage errors in restricted contexts
+  }
+}
+
+function loadPrefsFromStorage() {
+  try {
+    const raw = localStorage.getItem(PREFS_STORAGE_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (saved.role === "analyst" || saved.role === "investor") state.role = saved.role;
+    if (saved.inputMode === "fund" || saved.inputMode === "companies") state.inputMode = saved.inputMode;
+    if (typeof saved.selectedFundId === "string" && saved.selectedFundId) {
+      state.selectedFundId = saved.selectedFundId;
+    }
+    if (Array.isArray(saved.selectedCompanyIds) && saved.selectedCompanyIds.length >= 3) {
+      state.selectedCompanyIds = saved.selectedCompanyIds.slice(0, 5);
+    }
+    if (typeof saved.targetStage === "string" && TARGET_STAGE_LABELS[saved.targetStage]) {
+      state.targetStage = saved.targetStage;
+    }
+    if (WEIGHT_PROFILES[saved.scoringMode]) state.scoringMode = saved.scoringMode;
+    if (saved.networkSource === "linkedin" || saved.networkSource === "cala") {
+      state.networkSource = saved.networkSource;
+    }
+  } catch {
+    // Ignore malformed saved state
+  }
+}
 
 const WORKSPACE_VIEWS = ["search", "talk", "thesis"];
 
@@ -280,14 +334,15 @@ function closeOptionsPopover() {
 
 function setConfigStep(stepNum) {
   state.configStep = stepNum;
-  document.querySelectorAll(".onb-step-pill").forEach((el) => {
+  const counterEl = document.getElementById("onbStepCounter");
+  if (counterEl) {
+    counterEl.textContent = `Step ${stepNum} of 3`;
+  }
+
+  document.querySelectorAll(".onb-seg").forEach((el) => {
     const s = Number(el.dataset.stepTarget);
     el.classList.toggle("is-active", s === stepNum);
     el.classList.toggle("is-done", s < stepNum);
-    const numEl = el.querySelector(".onb-num");
-    if (numEl) {
-      numEl.textContent = s < stepNum ? "✓" : String(s);
-    }
   });
 
   document.querySelectorAll(".onboarding-stage").forEach((pane) => {
@@ -325,16 +380,31 @@ function getSelectedBenchmarkLabel() {
 
 function syncInlineCalibrationStrip() {
   const label = getSelectedBenchmarkLabel();
+  const isInvestor = state.role === "investor";
   const labelEl = document.getElementById("activeBenchmarkLabel");
   if (labelEl) labelEl.textContent = label;
 
   const roleBadge = document.getElementById("activeRoleBadge");
   if (roleBadge) {
-    roleBadge.textContent = state.role === "investor" ? "Investor" : "Analyst";
+    roleBadge.textContent = isInvestor ? "Investor" : "Analyst";
   }
 
   const searchTitle = document.getElementById("searchFundTitle");
   if (searchTitle) searchTitle.textContent = label;
+
+  const heroSub = document.getElementById("searchHeroSub");
+  if (heroSub) {
+    heroSub.textContent = isInvestor
+      ? "Ranked by 5-second thesis fit, raising timing, and warmest 2nd-degree intro paths."
+      : "Ranked by verified Cala rounds, syndicate overlap, and primary source citations.";
+  }
+
+  const gridHint = document.getElementById("gridRoleHint");
+  if (gridHint) {
+    gridHint.textContent = isInvestor
+      ? "Tap any startup for 5-second fit score & warmest intro route"
+      : "Tap any startup for Cala round audit, coverage gaps & network graph";
+  }
 
   const statFund = document.getElementById("statFundName");
   if (statFund) statFund.textContent = label;
@@ -342,36 +412,39 @@ function syncInlineCalibrationStrip() {
   document.querySelectorAll("[data-quick-role]").forEach((btn) => {
     btn.classList.toggle("is-active", btn.dataset.quickRole === state.role);
   });
+
+  const quickSelect = document.getElementById("quickFundSelect");
+  if (quickSelect && quickSelect.value !== state.selectedFundId && state.inputMode === "fund") {
+    quickSelect.value = state.selectedFundId;
+  }
+
+  const filterStageEl = document.getElementById("filterStage");
+  if (filterStageEl && filterStageEl.value !== state.targetStage) {
+    filterStageEl.value = state.targetStage;
+  }
 }
 
 function renderConfigReviewSummary() {
   const box = document.getElementById("configReviewSummary");
-  if (!box) return;
-
-  const roleLabel = state.role === "investor" ? "Investor (GP / Partner)" : "Analyst";
-  const targetLabel = getSelectedBenchmarkLabel();
-  const focusLabel = WEIGHT_PROFILES[state.scoringMode]?.label || "Balanced fit";
-  const netLabel = state.networkSource === "linkedin" ? "LinkedIn 2nd° first" : "Cala graph first";
-
-  box.innerHTML = `
-    <div class="cr-item">
-      <span class="cr-label">Role</span>
-      <span class="cr-val">${escapeHtml(roleLabel)}</span>
-    </div>
-    <div class="cr-item">
-      <span class="cr-label">Investor benchmark</span>
-      <span class="cr-val">${escapeHtml(targetLabel)}</span>
-    </div>
-    <div class="cr-item">
-      <span class="cr-label">Scoring priority</span>
-      <span class="cr-val">${escapeHtml(focusLabel)}</span>
-    </div>
-    <div class="cr-item">
-      <span class="cr-label">Network source</span>
-      <span class="cr-val">${escapeHtml(netLabel)}</span>
-    </div>
-  `;
+  if (box) {
+    const roleLabel = state.role === "investor" ? "Investor (GP)" : "Analyst";
+    const targetLabel = getSelectedBenchmarkLabel();
+    const stageLabel = TARGET_STAGE_LABELS[state.targetStage] || "All stages";
+    const focusLabel = WEIGHT_PROFILES[state.scoringMode]?.label || "Balanced fit";
+    box.innerHTML = `<b>${escapeHtml(roleLabel)}</b> · ${escapeHtml(targetLabel)} · ${escapeHtml(stageLabel)} · ${escapeHtml(focusLabel)}`;
+  }
   syncInlineCalibrationStrip();
+}
+
+function renderQuickFundDropdown() {
+  const select = document.getElementById("quickFundSelect");
+  if (!select || !state.bootstrap?.funds) return;
+  select.innerHTML = state.bootstrap.funds
+    .map(
+      (fund) =>
+        `<option value="${escapeHtml(fund.id)}" ${fund.id === state.selectedFundId ? "selected" : ""}>${escapeHtml(fund.name)} (${escapeHtml(fund.hqCity)})</option>`
+    )
+    .join("");
 }
 
 function renderFundQuickPicks() {
@@ -388,7 +461,7 @@ function renderFundQuickPicks() {
           data-fund-id="${escapeHtml(fund.id)}"
         >
           <span class="fp-name">${escapeHtml(fund.name)}</span>
-          <span class="fp-meta">${escapeHtml(fund.hqCity)}, ${escapeHtml(fund.country)}</span>
+          <span class="fp-meta">${escapeHtml(fund.hqCity)}, ${escapeHtml(fund.country)} · ${escapeHtml(fund.teamSize)} partners</span>
         </button>
       `;
     })
@@ -399,6 +472,7 @@ function renderFundQuickPicks() {
   if (statedInput && activeFund && !state.statedThesisOverride) {
     statedInput.placeholder = activeFund.statedThesis || "Backing Nordic and European founders from Seed to Series A...";
   }
+  renderQuickFundDropdown();
 }
 
 function renderSeedCompanyChips() {
@@ -524,22 +598,32 @@ function renderStartupGrid(shortlist) {
 
       const bridgePerson = item.linkedinNetwork?.bridgePerson?.split("(")[0]?.trim();
       const coInvestor = item.coInvestorPath?.coInvestorName;
+      const roundCount = (item.roundHistory || []).length;
 
       let primarySignal = `${item.stage} · ${formatEur(item.lastRoundAmountEurM)}`;
       let signalClass = "";
 
-      if (state.networkSource === "linkedin" && bridgePerson) {
-        primarySignal = `Via ${bridgePerson}`;
-        signalClass = "is-warm";
-      } else if (coInvestor) {
-        primarySignal = `Via ${coInvestor}`;
-        signalClass = "is-warm";
-      } else if (item.raisingSoon) {
-        primarySignal = "Raising window";
-        signalClass = "is-raising";
-      } else if (item.untappedSignal) {
-        primarySignal = "Untapped deal";
-        signalClass = "is-untapped";
+      if (state.role === "analyst") {
+        if (roundCount > 0) {
+          primarySignal = `${roundCount} Cala round${roundCount === 1 ? "" : "s"} · ${item.stage}`;
+        } else if (bridgePerson && state.networkSource === "linkedin") {
+          primarySignal = `Via ${bridgePerson}`;
+          signalClass = "is-warm";
+        }
+      } else {
+        if (state.networkSource === "linkedin" && bridgePerson) {
+          primarySignal = `Via ${bridgePerson}`;
+          signalClass = "is-warm";
+        } else if (coInvestor) {
+          primarySignal = `Via ${coInvestor}`;
+          signalClass = "is-warm";
+        } else if (item.raisingSoon) {
+          primarySignal = "Raising window";
+          signalClass = "is-raising";
+        } else if (item.untappedSignal) {
+          primarySignal = "Untapped deal";
+          signalClass = "is-untapped";
+        }
       }
 
       return `
@@ -610,24 +694,52 @@ function renderAlsoScreenedSection(analysisResult) {
    AI SEARCH & INSTANT FILTER REFINEMENT
    ========================================================================== */
 
+function countActiveRefineFilters() {
+  const stage = document.getElementById("filterStage")?.value || "all";
+  const region = document.getElementById("filterRegion")?.value || "all";
+  const excludeSector = document.getElementById("filterExcludeSector")?.value || "";
+  const raisingSoonOnly = Boolean(document.getElementById("filterRaisingSoon")?.checked);
+  const untappedOnly = Boolean(document.getElementById("filterUntappedOnly")?.checked);
+  let count = 0;
+  if (stage !== "all") count += 1;
+  if (region !== "all") count += 1;
+  if (excludeSector) count += 1;
+  if (raisingSoonOnly) count += 1;
+  if (untappedOnly) count += 1;
+
+  const badge = document.getElementById("filterCountPill");
+  if (badge) {
+    badge.textContent = String(count);
+    badge.hidden = count === 0;
+  }
+  return count;
+}
+
+function updateSearchInputChrome() {
+  const inputEl = document.getElementById("aiSearchInput");
+  const kbdHint = document.getElementById("searchKbdHint");
+  if (kbdHint && inputEl) {
+    const focused = document.activeElement === inputEl;
+    kbdHint.hidden = focused || Boolean(inputEl.value.trim());
+  }
+}
+
 async function executeSearchRefinement(customQuery) {
   const inputEl = document.getElementById("aiSearchInput");
   const queryText = typeof customQuery === "string" ? customQuery : inputEl?.value || "";
   if (inputEl && typeof customQuery === "string") {
     inputEl.value = customQuery;
   }
+  updateSearchInputChrome();
 
+  const stageFilter = document.getElementById("filterStage")?.value || state.targetStage || "all";
   const region = document.getElementById("filterRegion")?.value || "all";
   const excludeSector = document.getElementById("filterExcludeSector")?.value || "";
   const raisingSoonOnly = Boolean(document.getElementById("filterRaisingSoon")?.checked);
   const untappedOnly = Boolean(document.getElementById("filterUntappedOnly")?.checked);
+  const filterCount = countActiveRefineFilters();
 
-  const hasActiveFilter =
-    Boolean(queryText.trim()) ||
-    region !== "all" ||
-    Boolean(excludeSector) ||
-    raisingSoonOnly ||
-    untappedOnly;
+  const hasActiveFilter = Boolean(queryText.trim()) || filterCount > 0;
 
   const resetBtn = document.getElementById("aiSearchResetBtn");
   if (resetBtn) {
@@ -644,6 +756,7 @@ async function executeSearchRefinement(customQuery) {
       statedThesisOverride: state.statedThesisOverride || undefined,
       seenCompanyNames: getSeenCompanyNamesList(),
       queryText,
+      stageFilter,
       region,
       excludeSector: excludeSector || "none",
       raisingSoonOnly,
@@ -665,19 +778,40 @@ async function executeSearchRefinement(customQuery) {
   }
 
   if (hasActiveFilter) {
+    const intentNames = {
+      company: "Company lookup",
+      investor: "Investor syndicate",
+      industry: "Industry filter",
+      why_not: "Portfolio audit",
+      general: "Search filter"
+    };
     if (intentBadge) {
-      intentBadge.textContent = res.intentLabel || "AI filter";
+      intentBadge.textContent = intentNames[res.searchIntent] || res.intentLabel || "AI filter";
     }
     if (explanationEl) {
-      explanationEl.textContent = res.explanation || "Filtered shortlist using Cala graph signals.";
+      explanationEl.textContent =
+        res.explanation || `Showing ${state.DisplayedShortlist.length} Cala-verified startups matching active filters.`;
     }
     if (opsEl) {
-      const rawOps = Array.isArray(res.appliedFilters)
-        ? res.appliedFilters
-        : Array.isArray(res.queryTrace?.operations)
-        ? res.queryTrace.operations
-        : [];
-      opsEl.innerHTML = rawOps
+      const tags = [];
+      if (Array.isArray(res.aiTrace) && res.aiTrace.length > 0) {
+        tags.push(res.aiTrace[0]);
+      }
+      const af = res.appliedFilters || {};
+      if (af.stageFilter && af.stageFilter !== "all") {
+        tags.push(`Stage: ${TARGET_STAGE_LABELS[af.stageFilter] || af.stageFilter}`);
+      }
+      if (af.region && af.region !== "all") {
+        tags.push(`Region: ${af.region}`);
+      }
+      if (af.investorFilter) {
+        tags.push(`Investor: ${af.investorFilter}`);
+      }
+      if (af.sectorFilter) {
+        tags.push(`Sector: ${af.sectorFilter}`);
+      }
+      opsEl.innerHTML = tags
+        .slice(0, 4)
         .map((op) => `<span class="trace-op-tag">${escapeHtml(String(op))}</span>`)
         .join("");
     }
@@ -687,6 +821,11 @@ async function executeSearchRefinement(customQuery) {
 async function resetSearchAndFilters() {
   const inputEl = document.getElementById("aiSearchInput");
   if (inputEl) inputEl.value = "";
+  state.targetStage = "all";
+  const stageSel = document.getElementById("targetStageSelect");
+  if (stageSel) stageSel.value = "all";
+  const filterStageEl = document.getElementById("filterStage");
+  if (filterStageEl) filterStageEl.value = "all";
   const regionEl = document.getElementById("filterRegion");
   if (regionEl) regionEl.value = "all";
   const excludeEl = document.getElementById("filterExcludeSector");
@@ -696,6 +835,8 @@ async function resetSearchAndFilters() {
   const untappedEl = document.getElementById("filterUntappedOnly");
   if (untappedEl) untappedEl.checked = false;
 
+  savePrefsToStorage();
+  renderConfigReviewSummary();
   await executeSearchRefinement("");
 }
 
@@ -905,10 +1046,11 @@ function renderTalkScreen() {
     openStartupInspector(candidate.id, { keepHistory: true });
   });
   document.getElementById("talkExportMdBtn")?.addEventListener("click", () => {
-    if (brief?.markdownMemo) {
+    const md = brief?.memoMarkdown || brief?.markdownMemo;
+    if (md) {
       downloadFile(
         `${candidate.name.toLowerCase().replace(/\s+/g, "-")}-memo.md`,
-        brief.markdownMemo,
+        md,
         "text/markdown;charset=utf-8"
       );
     }
@@ -1004,6 +1146,7 @@ async function openStartupInspector(companyId, options = {}) {
   const backdrop = document.getElementById("drawerBackdrop");
   if (drawer) drawer.hidden = false;
   if (backdrop) backdrop.hidden = false;
+  document.body.classList.add("has-drawer-open");
 
   const candidate =
     state.allKnownItems.get(companyId) ||
@@ -1059,6 +1202,7 @@ function closeStartupInspector() {
   const backdrop = document.getElementById("drawerBackdrop");
   if (drawer) drawer.hidden = true;
   if (backdrop) backdrop.hidden = true;
+  document.body.classList.remove("has-drawer-open");
 }
 
 function switchDrawerTab(tabName) {
@@ -1635,7 +1779,12 @@ function bindEvents() {
     enterOnboarding(1);
   });
 
-  document.getElementById("skipToWorkspaceBtn")?.addEventListener("click", () => {
+  document.getElementById("skipToWorkspaceBtn")?.addEventListener("click", async () => {
+    savePrefsToStorage();
+    await runAnalysis();
+    if (state.targetStage !== "all") {
+      await executeSearchRefinement("");
+    }
     exitOnboardingAndOpenWorkspace("search");
   });
 
@@ -1649,7 +1798,7 @@ function bindEvents() {
   });
 
   document.querySelectorAll("[data-quick-role]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
+    btn.addEventListener("click", () => {
       state.role = btn.dataset.quickRole;
       document.querySelectorAll("[data-role-card]").forEach((c) => {
         const input = c.querySelector("input");
@@ -1657,12 +1806,30 @@ function bindEvents() {
         c.classList.toggle("is-selected", isMatch);
         if (input) input.checked = isMatch;
       });
+      savePrefsToStorage();
       renderConfigReviewSummary();
-      await runAnalysis();
+      renderStartupGrid(state.DisplayedShortlist);
+      if (!document.getElementById("inspectorDrawer")?.hidden) {
+        applyExposureDepth(state.role === "investor" ? "evidence" : "memo");
+      }
+      closeOptionsPopover();
     });
   });
 
-  document.querySelectorAll(".onb-step-pill").forEach((btn) => {
+  document.getElementById("quickFundSelect")?.addEventListener("change", async (e) => {
+    state.inputMode = "fund";
+    state.selectedFundId = e.target.value;
+    savePrefsToStorage();
+    renderFundQuickPicks();
+    renderConfigReviewSummary();
+    await runAnalysis();
+    if (countActiveRefineFilters() > 0 || document.getElementById("aiSearchInput")?.value?.trim()) {
+      await executeSearchRefinement();
+    }
+    closeOptionsPopover();
+  });
+
+  document.querySelectorAll(".onb-seg").forEach((btn) => {
     btn.addEventListener("click", () => {
       setConfigStep(Number(btn.dataset.stepTarget));
     });
@@ -1674,19 +1841,36 @@ function bindEvents() {
   document.getElementById("step3BackBtn")?.addEventListener("click", () => setConfigStep(2));
 
   document.getElementById("launchDashboardBtn")?.addEventListener("click", async () => {
+    savePrefsToStorage();
     await runAnalysis();
+    if (countActiveRefineFilters() > 0 || document.getElementById("aiSearchInput")?.value?.trim()) {
+      await executeSearchRefinement();
+    }
     exitOnboardingAndOpenWorkspace("search");
   });
 
   document.querySelectorAll("[data-role-card]").forEach((card) => {
-    card.addEventListener("click", async () => {
+    card.addEventListener("click", () => {
       state.role = card.dataset.roleCard;
       document.querySelectorAll("[data-role-card]").forEach((c) => {
-        c.classList.toggle("is-selected", c.dataset.roleCard === state.role);
+        const input = c.querySelector("input");
+        const match = c.dataset.roleCard === state.role;
+        c.classList.toggle("is-selected", match);
+        if (input) input.checked = match;
       });
+      savePrefsToStorage();
       renderConfigReviewSummary();
-      await runAnalysis();
+      renderStartupGrid(state.DisplayedShortlist);
     });
+  });
+
+  document.getElementById("targetStageSelect")?.addEventListener("change", (e) => {
+    state.targetStage = e.target.value || "all";
+    const filterStageEl = document.getElementById("filterStage");
+    if (filterStageEl) filterStageEl.value = state.targetStage;
+    countActiveRefineFilters();
+    savePrefsToStorage();
+    renderConfigReviewSummary();
   });
 
   document.querySelectorAll("[data-input-mode]").forEach((btn) => {
@@ -1803,11 +1987,11 @@ function bindEvents() {
   });
 
   document.querySelectorAll("[data-focus-card]").forEach((card) => {
-    card.addEventListener("click", async () => {
+    card.addEventListener("click", () => {
       state.scoringMode = card.dataset.focusCard;
       syncScoringModeButtons();
+      savePrefsToStorage();
       renderConfigReviewSummary();
-      await runAnalysis();
     });
   });
 
@@ -1818,10 +2002,16 @@ function bindEvents() {
         c.classList.toggle("is-selected", c.dataset.networkCard === state.networkSource);
       });
       syncNetworkSourceButtons();
+      savePrefsToStorage();
       renderConfigReviewSummary();
       renderStartupGrid(state.DisplayedShortlist);
     });
   });
+
+  const aiSearchInput = document.getElementById("aiSearchInput");
+  aiSearchInput?.addEventListener("focus", updateSearchInputChrome);
+  aiSearchInput?.addEventListener("blur", updateSearchInputChrome);
+  aiSearchInput?.addEventListener("input", updateSearchInputChrome);
 
   document.getElementById("aiSearchForm")?.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -1838,9 +2028,16 @@ function bindEvents() {
     await executeSearchRefinement(pill.dataset.query);
   });
 
-  ["filterRegion", "filterExcludeSector", "filterRaisingSoon", "filterUntappedOnly"].forEach(
+  ["filterStage", "filterRegion", "filterExcludeSector", "filterRaisingSoon", "filterUntappedOnly"].forEach(
     (id) => {
       document.getElementById(id)?.addEventListener("change", () => {
+        if (id === "filterStage") {
+          state.targetStage = document.getElementById("filterStage")?.value || "all";
+          const targetSel = document.getElementById("targetStageSelect");
+          if (targetSel) targetSel.value = state.targetStage;
+          savePrefsToStorage();
+          renderConfigReviewSummary();
+        }
         executeSearchRefinement();
       });
     }
@@ -1916,10 +2113,11 @@ function bindEvents() {
   });
 
   document.getElementById("exportMarkdownBtn")?.addEventListener("click", () => {
-    if (!state.activeBrief?.markdownMemo) return;
+    const md = state.activeBrief?.memoMarkdown || state.activeBrief?.markdownMemo;
+    if (!md) return;
     const candidate = state.allKnownItems.get(state.activeStartupId);
     const slug = (candidate?.name || "startup").toLowerCase().replace(/[^a-z0-9]+/g, "-");
-    downloadFile(`${slug}-investment-memo.md`, state.activeBrief.markdownMemo, "text/markdown;charset=utf-8");
+    downloadFile(`${slug}-investment-memo.md`, md, "text/markdown;charset=utf-8");
   });
 
   document.getElementById("exportCsvBtn")?.addEventListener("click", () => {
@@ -1975,24 +2173,57 @@ function syncNetworkSourceButtons() {
 }
 
 async function init() {
+  loadPrefsFromStorage();
   bindEvents();
-  renderWeightPreview();
 
   const bootstrap = await fetchJson("/api/bootstrap");
   state.bootstrap = bootstrap;
+
   if (bootstrap.funds?.length) {
-    state.selectedFundId = bootstrap.funds[0].id;
+    const validFund = bootstrap.funds.some((f) => f.id === state.selectedFundId);
+    if (!validFund) {
+      state.selectedFundId = bootstrap.funds[0].id;
+    }
   }
   if (bootstrap.companies?.length >= 3) {
-    state.selectedCompanyIds = bootstrap.companies.slice(0, 3).map((c) => c.id);
+    const validIds = new Set(bootstrap.companies.map((c) => c.id));
+    state.selectedCompanyIds = state.selectedCompanyIds.filter((id) => validIds.has(id));
+    if (state.selectedCompanyIds.length < 3) {
+      state.selectedCompanyIds = bootstrap.companies.slice(0, 3).map((c) => c.id);
+    }
   }
 
+  document.querySelectorAll("[data-role-card]").forEach((c) => {
+    const input = c.querySelector("input");
+    const match = c.dataset.roleCard === state.role;
+    c.classList.toggle("is-selected", match);
+    if (input) input.checked = match;
+  });
+  document.querySelectorAll("[data-input-mode]").forEach((b) => {
+    b.classList.toggle("is-active", b.dataset.inputMode === state.inputMode);
+  });
+  const fundSec = document.getElementById("fundInputSection");
+  const compSec = document.getElementById("companiesInputSection");
+  if (fundSec) fundSec.hidden = state.inputMode !== "fund";
+  if (compSec) compSec.hidden = state.inputMode !== "companies";
+  const stageSel = document.getElementById("targetStageSelect");
+  if (stageSel) stageSel.value = state.targetStage;
+  const filterStageEl = document.getElementById("filterStage");
+  if (filterStageEl) filterStageEl.value = state.targetStage;
+
+  syncScoringModeButtons();
+  syncNetworkSourceButtons();
   updateTelemetryMasthead(bootstrap.coverageStats?.calaBudget);
   renderFundQuickPicks();
   renderSeedCompanyChips();
   renderConfigReviewSummary();
+  countActiveRefineFilters();
+  updateSearchInputChrome();
 
   await runAnalysis();
+  if (state.targetStage !== "all") {
+    await executeSearchRefinement("");
+  }
   enterOnboarding(1);
 }
 

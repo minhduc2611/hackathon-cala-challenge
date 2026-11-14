@@ -56,6 +56,21 @@ test('HTTP API endpoints handle bootstrap, search, analyze, brief, refine, and e
     const refined = await refineRes.json();
     assert.match(refined.explanation, /existing portfolio/i);
 
+    // 5b. Stage filter & free-text city refine
+    const cityStageRes = await fetch(`${baseUrl}/api/refine`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'fund',
+        fundId: 'lifeline-ventures',
+        queryText: 'Helsinki',
+        stageFilter: 'pre_seed_seed'
+      })
+    });
+    assert.equal(cityStageRes.status, 200);
+    const cityStageData = await cityStageRes.json();
+    assert.ok(Array.isArray(cityStageData.shortlist));
+
     // 6. Error cases (unknown fund -> 404, missing startupId -> 400)
     const err404 = await fetch(`${baseUrl}/api/analyze`, {
       method: 'POST',
