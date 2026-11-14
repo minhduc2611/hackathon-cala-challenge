@@ -536,6 +536,17 @@
             <span>Call List</span>
             <b class="num-tabular" id="callListCountBadge">0</b>
           </button>
+          <button
+            type="button"
+            class="call-list-pill call-list-compare-btn"
+            id="compareCallListBtn"
+            aria-expanded="false"
+            aria-controls="callListCompareCard"
+            title="Compare saved Call List startups side by side"
+          >
+            <span>Compare</span>
+            <b class="num-tabular" id="compareCallListCountBadge">0</b>
+          </button>
         </div>
         <div class="grid-toolbar-right">
           <span class="note" id="gridRoleHint">Hover any card to focus; tap to open details</span>
@@ -544,6 +555,26 @@
           </button>
         </div>
       </div>
+
+      <!-- SIDE-BY-SIDE CALL LIST COMPARISON MATRIX -->
+      <section
+        id="callListCompareCard"
+        class="call-list-compare-card"
+        hidden
+        aria-label="Call List side-by-side comparison matrix"
+      >
+        <div class="compare-card-head">
+          <div>
+            <span class="drawer-kicker">Decision Workbench · Side-by-Side Matrix</span>
+            <h3 class="compare-card-title">Saved Call List Comparison</h3>
+          </div>
+          <div class="compare-card-actions">
+            <span id="compareCardMeta" class="compare-card-meta">Comparing saved targets</span>
+            <button type="button" id="closeCompareCardBtn" class="btn sm">Close matrix &times;</button>
+          </div>
+        </div>
+        <div id="callListCompareGrid" class="call-list-compare-grid"></div>
+      </section>
 
       <div class="startup-grid" id="startupGrid" role="list"></div>
 
@@ -828,6 +859,7 @@
 
         <div class="network-graph-stage">
           <div id="networkGraphCanvas" aria-label="Relationship network graph"></div>
+          <div id="drawerNetworkNodeInspector" class="network-node-inspector" aria-live="polite"></div>
         </div>
 
         <section class="drawer-section">
@@ -860,6 +892,8 @@
       </div>
     </footer>
   </aside>
+
+  <div id="uiToastBanner" class="ui-toast" role="status" aria-live="polite" hidden></div>
 
   <script type="module" src="/app.js"></script>
 </body>

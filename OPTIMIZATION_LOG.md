@@ -78,3 +78,13 @@
   - Workflow accelerators added: `★ Call List` star bookmarking & filter (`localStorage`), `#searchSuggestPopup` autocomplete, `#copyWarmIntroBtn` warm intro generator, and modal hotkeys (`<-/->`, `1`, `2`, `S`, `C`, `Esc`)
 - **Tests:** PASS (`12/12`, `117.5ms`), hygiene check `0` violations, Browser Checks verified (`1440x900` `final_step_842.png` & `390x844` mobile zero overflow, `0` console/network errors, `8/8` Cala credits preserved)
 - **Decision:** KEEP
+
+### [2026-11-14 09:50] — Exp 6: Call List Compare Matrix, Interactive Network Graph Nodes & Unified Deep-Dive / Thesis Drill-Downs
+- **Hypothesis:** Adding a side-by-side Call List Comparison Matrix (`#callListCompareCard`), making every node inside `#networkGraphCanvas` inspectable in place (`#drawerNetworkNodeInspector`) with animated primary route paths, aligning `#panel-talk` with the `64x64px` logo + incomplete-circle gauge aesthetic, and making `#panel-thesis` sector/stage/geo rows & recovered deals interactive entry points unifies every workspace screen into one cohesive deal-flow loop.
+- **Files touched:** `public/index.html`, `public/styles.css`, `public/app.js`
+- **Before -> After:**
+  - Saved Call List workflow: filter-only pill -> `#compareCallListBtn` toggles side-by-side up-to-4-column comparison matrix (`48x48` logos, `46x46` gauges, 5-factor bars, `Open Brief`, `Copy Intro`)
+  - Network SVG (`buildNetworkGraphSvg`): static nodes + immediate peer leave -> column headers, animated `.svg-warm-flow-edge`, clickable `.svg-net-node` inspector bar (`#drawerNetworkNodeInspector`) with non-destructive peer CTA
+  - Deep Dive & Thesis screens: legacy ring header / static distribution bars -> `64x64` logo + `84px` incomplete-circle ring + `#talkSaveCallBtn`/`#talkCopyIntroBtn` in `#panel-talk`, clickable drill-downs in `#panel-thesis` with `#uiToastBanner` feedback
+- **Tests:** PASS (`12/12`, `111.5ms`), hygiene scan `0` hits, Browser Checks verified (`1440x900` & `390x844`, `final_step_881.png`, `final_step_895.png`, `0` console/network errors, `8/8` Cala credits preserved)
+- **Decision:** KEEP

@@ -30,8 +30,21 @@ const state = {
   exposureDepth: "evidence",
   peerHistory: [],
   savedCallListIds: [],
-  onlyCallList: false
+  onlyCallList: false,
+  compareMatrixOpen: false
 };
+
+let uiToastTimer = null;
+function showUiToast(message) {
+  const el = document.getElementById("uiToastBanner");
+  if (!el || !message) return;
+  el.textContent = message;
+  el.hidden = false;
+  window.clearTimeout(uiToastTimer);
+  uiToastTimer = window.setTimeout(() => {
+    el.hidden = true;
+  }, 2600);
+}
 
 const TARGET_STAGE_LABELS = {
   all: "All stages",
@@ -642,10 +655,19 @@ function syncCallListUI() {
   const badge = document.getElementById("callListCountBadge");
   if (badge) badge.textContent = String(count);
 
+  const cmpBadge = document.getElementById("compareCallListCountBadge");
+  if (cmpBadge) cmpBadge.textContent = String(count);
+
   const filterBtn = document.getElementById("filterCallListBtn");
   if (filterBtn) {
     filterBtn.classList.toggle("is-active", Boolean(state.onlyCallList));
     filterBtn.setAttribute("aria-pressed", state.onlyCallList ? "true" : "false");
+  }
+
+  const cmpBtn = document.getElementById("compareCallListBtn");
+  if (cmpBtn) {
+    cmpBtn.classList.toggle("is-active", Boolean(state.compareMatrixOpen));
+    cmpBtn.setAttribute("aria-expanded", state.compareMatrixOpen ? "true" : "false");
   }
 
   const drawerStarBtn = document.getElementById("drawerSaveCallBtn");
@@ -654,6 +676,141 @@ function syncCallListUI() {
     drawerStarBtn.classList.toggle("is-saved", isSaved);
     drawerStarBtn.innerHTML = isSaved ? "&#9733; In Call List" : "&#9734; Call List";
   }
+
+  const talkStarBtn = document.getElementById("talkSaveCallBtn");
+  if (talkStarBtn && state.activeStartupId) {
+    const isSaved = state.savedCallListIds.includes(state.activeStartupId);
+    talkStarBtn.classList.toggle("is-saved", isSaved);
+    talkStarBtn.innerHTML = isSaved ? "&#9733; In Call List" : "&#9734; Save to Call List";
+  }
+
+  if (state.compareMatrixOpen) {
+    renderCallListCompareMatrix();
+  }
+}
+
+function toggleCallListCompareMatrix(forceOpen) {
+  const next = typeof forceOpen === "boolean" ? forceOpen : !state.compareMatrixOpen;
+  state.compareMatrixOpen = next;
+  const card = document.getElementById("callListCompareCard");
+  if (card) {
+    card.hidden = !next;
+  }
+  syncCallListUI();
+}
+
+function renderCallListCompareMatrix() {
+  const grid = document.getElementById("callListCompareGrid");
+  const metaEl = document.getElementById("compareCardMeta");
+  if (!grid) return;
+
+  const items = state.savedCallListIds
+    .map((id) => state.allKnownItems.get(id) || state.DisplayedShortlist.find((c) => c.id === id))
+    .filter(Boolean)
+    .slice(0, 4);
+
+  if (metaEl) {
+    metaEl.textContent =
+      items.length > 0
+        ? `Comparing ${items.length} of ${state.savedCallListIds.length} saved targets (max 4)`
+        : "Save startups to unlock side-by-side matrix";
+  }
+
+  if (items.length < 2) {
+    grid.innerHTML = `
+      <div class="compare-empty-state">
+        <div>
+          <strong>Need at least 2 saved startups to compare side by side.</strong>
+          <p class="note" style="margin:4px 0 0">
+            Star any startup card in the grid or load the highest-scoring shortlist targets now.
+          </p>
+        </div>
+        <button type="button" class="btn sm primary" id="seedTopCallListBtn">
+          Load Top 3 Scored Startups
+        </button>
+      </div>
+    `;
+    return;
+  }
+
+  grid.innerHTML = items
+    .map((s) => {
+      const breakdown = getScoreBreakdownRows(s);
+      const bridgeLabel =
+        s.linkedinNetwork?.bridgePerson ||
+        s.coInvestorPath?.coInvestorName ||
+        "Direct founder outreach";
+
+      return `
+        <article class="compare-col-card" data-compare-col="${escapeHtml(s.id)}">
+          <div class="compare-col-head">
+            <div class="compare-col-id">
+              <div class="compare-col-logo" aria-hidden="true">
+                ${buildStartupLogoSvg(s.name, s.sector, 48)}
+              </div>
+              <div style="min-width:0">
+                <h4 class="compare-col-name">${escapeHtml(s.name)}</h4>
+                <span class="compare-col-sub">${escapeHtml(s.sector)} · ${escapeHtml(s.country)}</span>
+              </div>
+            </div>
+            <div class="compare-col-score">
+              ${buildIncompleteCircleScoreSvg(s.suitabilityScore ?? 0, 46, "")}
+              <button
+                type="button"
+                class="compare-remove-btn"
+                data-compare-remove="${escapeHtml(s.id)}"
+                aria-label="Remove ${escapeHtml(s.name)} from Call List"
+                title="Remove from Call List"
+              >&times;</button>
+            </div>
+          </div>
+
+          <div class="compare-metrics-row">
+            <div class="compare-metric-box">
+              <span>Last stage</span>
+              <b>${escapeHtml(s.stage)}</b>
+            </div>
+            <div class="compare-metric-box">
+              <span>Last round</span>
+              <b class="num-tabular">${formatEur(s.lastRoundAmountEurM)}</b>
+            </div>
+            <div class="compare-metric-box">
+              <span>Next window</span>
+              <b>${escapeHtml(s.likelyNextStage || "Series A")}</b>
+            </div>
+            <div class="compare-metric-box">
+              <span>Team size</span>
+              <b class="num-tabular">${escapeHtml(s.employeeCount || "N/A")}</b>
+            </div>
+          </div>
+
+          <div class="compare-factor-list">
+            ${breakdown
+              .map((f) => {
+                const pct = Math.min(100, Math.round((Number(f.points) / f.maxPoints) * 100));
+                return `
+                  <div class="compare-factor-row">
+                    <span>${escapeHtml(f.label)}</span>
+                    <b class="num-tabular">${f.points}/${f.maxPoints}</b>
+                    <div class="compare-factor-track"><i style="width:${pct}%"></i></div>
+                  </div>
+                `;
+              })
+              .join("")}
+          </div>
+
+          <div class="compare-col-bridge">
+            <strong>Bridge:</strong> ${escapeHtml(bridgeLabel)}
+          </div>
+
+          <div class="compare-col-foot">
+            <button type="button" class="btn sm" data-compare-open="${escapeHtml(s.id)}">Open Brief</button>
+            <button type="button" class="btn sm primary" data-compare-copy="${escapeHtml(s.id)}">Copy Intro</button>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
 }
 
 function toggleCallListStartup(companyId) {
@@ -1142,10 +1299,18 @@ function renderTalkScreen() {
   const bridgeTitle = isLinkedin
     ? candidate.linkedinNetwork?.bridgePerson || "2nd-degree LinkedIn bridge"
     : candidate.coInvestorPath?.coInvestorName || "Verified Cala syndicate";
+  const isSaved = state.savedCallListIds.includes(candidate.id);
 
   container.innerHTML = `
     <div class="head">
-      ${scoreRingHtml(candidate.suitabilityScore)}
+      <div class="talk-head-visuals">
+        <div class="talk-head-logo" aria-hidden="true">
+          ${buildStartupLogoSvg(candidate.name, candidate.sector, 64)}
+        </div>
+        <div class="ring">
+          ${buildIncompleteCircleScoreSvg(candidate.suitabilityScore ?? 0, 84, "Fit score")}
+        </div>
+      </div>
       <div class="t">
         <div class="eyebrow" style="margin-bottom: 6px">One startup in detail · Verified in Cala</div>
         <h2>${escapeHtml(candidate.name)}</h2>
@@ -1153,9 +1318,18 @@ function renderTalkScreen() {
           ${escapeHtml(candidate.hqCity)}, ${escapeHtml(candidate.country)} · ${escapeHtml(candidate.sector)} · ${escapeHtml(candidate.stage)} (${formatEur(candidate.lastRoundAmountEurM)}) · ${escapeHtml(candidate.employeeCount)} employees
         </div>
       </div>
-      <div style="display: flex; gap: 8px; align-items: center">
-        <button type="button" class="btn sm" id="talkPrevStartupBtn">&larr; Prev startup</button>
-        <button type="button" class="btn sm" id="talkNextStartupBtn">Next startup &rarr;</button>
+      <div class="talk-head-actions">
+        <button
+          type="button"
+          class="btn sm drawer-star-btn ${isSaved ? "is-saved" : ""}"
+          id="talkSaveCallBtn"
+          aria-pressed="${isSaved ? "true" : "false"}"
+        >
+          ${isSaved ? "&#9733; In Call List" : "&#9734; Save to Call List"}
+        </button>
+        <button type="button" class="btn sm primary" id="talkCopyIntroBtn">Copy Warm Intro</button>
+        <button type="button" class="btn sm" id="talkPrevStartupBtn">&larr; Prev</button>
+        <button type="button" class="btn sm" id="talkNextStartupBtn">Next &rarr;</button>
       </div>
     </div>
 
@@ -1276,6 +1450,30 @@ function renderTalkScreen() {
     </div>
   `;
 
+  document.getElementById("talkSaveCallBtn")?.addEventListener("click", () => {
+    toggleCallListStartup(candidate.id);
+    showUiToast(
+      state.savedCallListIds.includes(candidate.id)
+        ? `Added ${candidate.name} to Call List`
+        : `Removed ${candidate.name} from Call List`
+    );
+  });
+  document.getElementById("talkCopyIntroBtn")?.addEventListener("click", async () => {
+    const text = buildWarmIntroDraftText(candidate);
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+    } catch {
+      // Non-fatal in non-clipboard contexts
+    }
+    const copyBtn = document.getElementById("talkCopyIntroBtn");
+    if (copyBtn) {
+      copyBtn.textContent = "Copied Intro ✓";
+      window.setTimeout(() => {
+        if (copyBtn.isConnected) copyBtn.textContent = "Copy Warm Intro";
+      }, 1800);
+    }
+    showUiToast(`Copied warm intro note for ${candidate.name}`);
+  });
   document.getElementById("talkPrevStartupBtn")?.addEventListener("click", () => {
     stepStartupInList(-1);
   });
@@ -1677,6 +1875,69 @@ function renderDrawerBriefPane(brief, candidate) {
    NETWORK & WARM INTRO GRAPH (SVG)
    ========================================================================== */
 
+function renderDrawerNetworkInspectorSummary(candidate, nodeObj, isLinkedin) {
+  const insp = document.getElementById("drawerNetworkNodeInspector");
+  if (!insp || !candidate) return;
+
+  if (!nodeObj) {
+    const primaryBridge = isLinkedin
+      ? candidate.linkedinNetwork?.bridgePerson || "2nd-degree warm connector"
+      : candidate.coInvestorPath?.coInvestorName || "Verified syndicate co-investor";
+    insp.innerHTML = `
+      <div class="node-insp-main">
+        <span class="node-insp-kicker">Active Warm Route · ${escapeHtml(isLinkedin ? "LinkedIn First" : "Cala Graph")}</span>
+        <span class="node-insp-desc">
+          Primary bridge via <strong>${escapeHtml(primaryBridge)}</strong>. Click any node in the graph above to inspect verified relationship evidence.
+        </span>
+      </div>
+    `;
+    return;
+  }
+
+  const { id, type, label } = nodeObj;
+  let kicker = "Verified Entity";
+  let desc = `${label} is linked inside the Cala relationship graph for ${candidate.name}.`;
+  let peerActionHtml = "";
+
+  if (type === "target_fund") {
+    const deals = state.analysis?.thesis?.dealsAnalyzedCount || 0;
+    kicker = "Benchmark Fund";
+    desc = `${label}: active benchmark mandate across ${deals} verified Cala rounds.`;
+  } else if (type === "co_investor") {
+    const shared = candidate.coInvestorPath?.sharedCount || 1;
+    kicker = "Co-Investor / Syndicate Bridge";
+    desc = `${label}: ${shared} shared syndicate deals verified in Cala. ${candidate.coInvestorPath?.summary || ""}`;
+  } else if (type === "portfolio") {
+    kicker = "Portfolio Anchor";
+    desc = `${label}: existing benchmark portfolio company linking co-investor syndicates to ${candidate.name}.`;
+  } else if (type === "target_startup" || id === candidate.id) {
+    kicker = "Selected Startup";
+    desc = `${candidate.name} (${candidate.suitabilityScore}/100 fit): ${candidate.stage} (${formatEur(candidate.lastRoundAmountEurM)}) in ${candidate.hqCity}, ${candidate.country}.`;
+  } else if (id === "li-leader") {
+    kicker = "Target Leadership";
+    desc = `${label}: reachable via ${candidate.linkedinNetwork?.bridgePerson || "mutual connector"} (${candidate.linkedinNetwork?.sourceLabel || "LinkedIn 2nd-degree"}).`;
+  } else if (type === "peer_startup") {
+    const peerMeta = (candidate.peerStartups || []).find((p) => p.id === id);
+    kicker = "Cluster Peer Startup";
+    desc = peerMeta
+      ? `${peerMeta.name} (${peerMeta.sector}, ${peerMeta.country}): ${peerMeta.bridgeLabel}.`
+      : `${label}: connected peer in the same investor or founder cluster.`;
+    peerActionHtml = `<button type="button" class="btn sm primary" data-inspect-graph-peer="${escapeHtml(id)}">Inspect ${escapeHtml(label)} &rarr;</button>`;
+  }
+
+  insp.innerHTML = `
+    <div class="node-insp-main">
+      <span class="node-insp-kicker">${escapeHtml(kicker)}</span>
+      <span class="node-insp-desc">${escapeHtml(desc)}</span>
+    </div>
+    ${peerActionHtml}
+  `;
+
+  insp.querySelector("[data-inspect-graph-peer]")?.addEventListener("click", () => {
+    openStartupInspector(id);
+  });
+}
+
 function renderDrawerNetworkPane(brief, candidate) {
   const isLinkedin = state.networkSource === "linkedin";
   const netData = isLinkedin ? candidate.linkedinNetwork : candidate.graph;
@@ -1698,12 +1959,31 @@ function renderDrawerNetworkPane(brief, candidate) {
     }
   }
 
+  renderDrawerNetworkInspectorSummary(candidate, null, isLinkedin);
+
   const canvas = document.getElementById("networkGraphCanvas");
   if (canvas && netData) {
     canvas.innerHTML = buildNetworkGraphSvg(netData, candidate.id);
-    canvas.querySelectorAll(".svg-peer-node[data-peer-id]").forEach((nodeEl) => {
-      nodeEl.addEventListener("click", () => {
-        openStartupInspector(nodeEl.getAttribute("data-peer-id"));
+    canvas.querySelectorAll(".svg-net-node[data-node-id]").forEach((nodeEl) => {
+      const selectNode = () => {
+        canvas.querySelectorAll(".svg-net-node.is-selected-node").forEach((n) => n.classList.remove("is-selected-node"));
+        nodeEl.classList.add("is-selected-node");
+        renderDrawerNetworkInspectorSummary(
+          candidate,
+          {
+            id: nodeEl.getAttribute("data-node-id"),
+            type: nodeEl.getAttribute("data-node-type"),
+            label: nodeEl.getAttribute("data-node-label")
+          },
+          isLinkedin
+        );
+      };
+      nodeEl.addEventListener("click", selectNode);
+      nodeEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          selectNode();
+        }
       });
     });
   }
@@ -1767,7 +2047,7 @@ function buildNetworkGraphSvg(graphObj, selectedStartupId) {
   const nodes = (graphObj.nodes || []).slice(0, 8);
   const links = graphObj.links || [];
   const width = 940;
-  const height = 310;
+  const height = 332;
 
   const cols = { fund: [], bridge: [], target: [], peer: [] };
   for (const n of nodes) {
@@ -1781,28 +2061,38 @@ function buildNetworkGraphSvg(graphObj, selectedStartupId) {
     cols.peer = cols.bridge.splice(3);
   }
 
-  const cardW = 160;
-  const cardH = 48;
+  const cardW = 166;
+  const cardH = 50;
+  const topOffset = 34;
+  const usableH = height - topOffset - 10;
   const positions = new Map();
   const columnLayout = [
-    { list: cols.fund, cx: 92 },
-    { list: cols.bridge, cx: 344 },
-    { list: cols.target, cx: 596 },
-    { list: cols.peer, cx: 848 }
+    { label: "BENCHMARK", list: cols.fund, cx: 95 },
+    { label: "BRIDGE / ANCHOR", list: cols.bridge, cx: 345 },
+    { label: "TARGET STARTUP", list: cols.target, cx: 595 },
+    { label: "CLUSTER PEERS", list: cols.peer, cx: 845 }
   ];
 
   for (const col of columnLayout) {
     const count = col.list.length;
     if (!count) continue;
-    const step = height / (count + 1);
+    const step = usableH / (count + 1);
     col.list.forEach((node, idx) => {
       positions.set(node.id, {
         cx: col.cx,
-        cy: Math.round(step * (idx + 1)),
+        cy: Math.round(topOffset + step * (idx + 1)),
         node
       });
     });
   }
+
+  const colHeaderSvg = columnLayout
+    .filter((col) => col.list.length > 0)
+    .map(
+      (col) =>
+        `<text x="${col.cx}" y="20" text-anchor="middle" font-family="'Plus Jakarta Sans', sans-serif" font-size="10" font-weight="800" letter-spacing="0.9" fill="#64748b">${escapeHtml(col.label)}</text>`
+    )
+    .join("");
 
   const styleForType = (type, id) => {
     if (type === "target_fund") return { accent: "#34d399", kind: "BENCHMARK" };
@@ -1832,8 +2122,18 @@ function buildNetworkGraphSvg(graphObj, selectedStartupId) {
       const dx = Math.abs(x2 - x1) * 0.45;
       const cx1 = a.cx < b.cx ? x1 + dx : x1 - dx;
       const cx2 = a.cx < b.cx ? x2 - dx : x2 + dx;
+      const pathD = `M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}`;
+      const touchesTarget =
+        a.node.id === selectedStartupId ||
+        b.node.id === selectedStartupId ||
+        a.node.type === "target_startup" ||
+        b.node.type === "target_startup";
 
-      return `<path d="M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}" fill="none" stroke="#34d399" stroke-opacity="0.55" stroke-width="1.6" />`;
+      if (touchesTarget) {
+        return `<path d="${pathD}" fill="none" stroke="#34d399" stroke-opacity="0.28" stroke-width="2" /><path class="svg-warm-flow-edge" d="${pathD}" fill="none" stroke="#34d399" stroke-opacity="0.85" stroke-width="2" />`;
+      }
+
+      return `<path d="${pathD}" fill="none" stroke="#34d399" stroke-opacity="0.45" stroke-width="1.5" />`;
     })
     .join("");
 
@@ -1844,14 +2144,14 @@ function buildNetworkGraphSvg(graphObj, selectedStartupId) {
       const y = cy - cardH / 2;
       const shortLabel = node.label.length > 20 ? `${node.label.slice(0, 18)}..` : node.label;
       const isClickablePeer = node.type === "peer_startup";
-      const peerClass = isClickablePeer ? "svg-peer-node" : "";
-      const peerAttr = isClickablePeer ? `data-peer-id="${escapeHtml(node.id)}" style="cursor:pointer"` : "";
+      const nodeClass = isClickablePeer ? "svg-net-node svg-peer-node" : "svg-net-node";
+      const peerAttr = isClickablePeer ? ` data-peer-id="${escapeHtml(node.id)}"` : "";
 
       return `
-        <g class="${peerClass}" ${peerAttr}>
+        <g class="${nodeClass}" data-node-id="${escapeHtml(node.id)}" data-node-type="${escapeHtml(node.type)}" data-node-label="${escapeHtml(node.label)}"${peerAttr} tabindex="0" role="button" aria-label="Inspect ${escapeHtml(node.label)}" style="cursor:pointer">
           <rect x="${x}" y="${y}" width="${cardW}" height="${cardH}" rx="10" fill="#0d1424" stroke="${st.accent}" stroke-width="1.4" />
-          <text x="${x + 12}" y="${y + 18}" font-family="'Plus Jakarta Sans', sans-serif" font-size="10" font-weight="800" fill="${st.accent}">${escapeHtml(st.kind)}</text>
-          <text x="${x + 12}" y="${y + 35}" font-family="'Plus Jakarta Sans', sans-serif" font-size="12" font-weight="700" fill="#e2e8f0">${escapeHtml(shortLabel)}</text>
+          <text x="${x + 12}" y="${y + 19}" font-family="'Plus Jakarta Sans', sans-serif" font-size="10" font-weight="800" fill="${st.accent}">${escapeHtml(st.kind)}</text>
+          <text x="${x + 12}" y="${y + 37}" font-family="'Plus Jakarta Sans', sans-serif" font-size="12.5" font-weight="700" fill="#e2e8f0">${escapeHtml(shortLabel)}</text>
         </g>
       `;
     })
@@ -1859,6 +2159,7 @@ function buildNetworkGraphSvg(graphObj, selectedStartupId) {
 
   return `
     <svg class="network-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Startup relationship network diagram">
+      ${colHeaderSvg}
       ${edgeSvg}
       ${nodeSvg}
     </svg>
@@ -1869,7 +2170,7 @@ function buildNetworkGraphSvg(graphObj, selectedStartupId) {
    THESIS & BACKTEST VIEW
    ========================================================================== */
 
-function renderDistributionBars(containerId, items = []) {
+function renderDistributionBars(containerId, items = [], filterKind = "") {
   const el = document.getElementById(containerId);
   if (!el) return;
 
@@ -1877,7 +2178,11 @@ function renderDistributionBars(containerId, items = []) {
     .slice(0, 5)
     .map(
       (item) => `
-      <div class="frow" style="padding: 5px 0">
+      <div
+        class="frow ${filterKind ? "frow-clickable" : ""}"
+        style="padding: 5px 0"
+        ${filterKind ? `role="button" tabindex="0" data-thesis-kind="${escapeHtml(filterKind)}" data-thesis-val="${escapeHtml(item.label)}" title="Filter Startups to Call by ${escapeHtml(item.label)}"` : ""}
+      >
         <div class="fl" style="font-size:13.5px">${escapeHtml(item.label)}</div>
         <div class="fb" style="height:18px"><i style="width: ${Math.max(4, item.sharePct || 0)}%"></i></div>
         <div class="fv num-tabular" style="font-size:16px">${item.sharePct || 0}%</div>
@@ -1937,9 +2242,9 @@ function renderThesisAndBacktest(result) {
     ].join("");
   }
 
-  renderDistributionBars("sectorDistributionBars", thesis.sectorMix);
-  renderDistributionBars("stageDistributionBars", thesis.stageMix);
-  renderDistributionBars("geoDistributionBars", thesis.geographyMix);
+  renderDistributionBars("sectorDistributionBars", thesis.sectorMix, "sector");
+  renderDistributionBars("stageDistributionBars", thesis.stageMix, "stage");
+  renderDistributionBars("geoDistributionBars", thesis.geographyMix, "geo");
 
   const insightsEl = document.getElementById("thesisInsightsList");
   if (insightsEl) {
@@ -1988,13 +2293,13 @@ function renderThesisAndBacktest(result) {
       hitsEl.innerHTML = (backtest.hiddenDeals || [])
         .map(
           (hit) => `
-          <div class="buyer">
+          <button type="button" class="buyer backtest-hit-btn" data-hit-name="${escapeHtml(hit.name)}">
             <div class="bn">
               <span>${escapeHtml(hit.name)} (Predicted #${hit.predictedRank})</span>
               <span>${hit.predictedScore}/100</span>
             </div>
             <p>Actual deal: ${escapeHtml(hit.actualRoundType)} on ${escapeHtml(hit.actualDate)} · ${escapeHtml(hit.coInvestorHint)}</p>
-          </div>
+          </button>
         `
         )
         .join("");
@@ -2359,6 +2664,98 @@ function bindEvents() {
   document.getElementById("filterCallListBtn")?.addEventListener("click", () => {
     state.onlyCallList = !state.onlyCallList;
     renderStartupGrid(state.DisplayedShortlist);
+  });
+
+  document.getElementById("compareCallListBtn")?.addEventListener("click", () => {
+    toggleCallListCompareMatrix();
+  });
+
+  document.getElementById("closeCompareCardBtn")?.addEventListener("click", () => {
+    toggleCallListCompareMatrix(false);
+  });
+
+  document.getElementById("callListCompareGrid")?.addEventListener("click", async (e) => {
+    if (e.target.closest("#seedTopCallListBtn")) {
+      const topIds = state.DisplayedShortlist.slice(0, 3).map((s) => s.id);
+      if (topIds.length) {
+        state.savedCallListIds = [...new Set([...topIds, ...state.savedCallListIds])];
+        savePrefsToStorage();
+        syncCallListUI();
+        renderStartupGrid(state.DisplayedShortlist);
+        showUiToast(`Loaded ${topIds.length} top-scored startups into Call List`);
+      }
+      return;
+    }
+
+    const remBtn = e.target.closest("[data-compare-remove]");
+    if (remBtn) {
+      toggleCallListStartup(remBtn.dataset.compareRemove);
+      return;
+    }
+
+    const openBtn = e.target.closest("[data-compare-open]");
+    if (openBtn) {
+      state.peerHistory = [];
+      openStartupInspector(openBtn.dataset.compareOpen, { keepHistory: true, tab: "brief" });
+      return;
+    }
+
+    const copyBtn = e.target.closest("[data-compare-copy]");
+    if (copyBtn) {
+      const id = copyBtn.dataset.compareCopy;
+      const cand = state.allKnownItems.get(id) || state.DisplayedShortlist.find((c) => c.id === id);
+      if (cand) {
+        const text = buildWarmIntroDraftText(cand);
+        try {
+          if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+        } catch {
+          // Non-fatal in non-clipboard contexts
+        }
+        copyBtn.textContent = "Copied ✓";
+        window.setTimeout(() => {
+          if (copyBtn.isConnected) copyBtn.textContent = "Copy Intro";
+        }, 1600);
+        showUiToast(`Copied warm intro note for ${cand.name}`);
+      }
+    }
+  });
+
+  const thesisPanelEl = document.getElementById("panel-thesis");
+  const handleThesisDrilldown = async (targetEl) => {
+    const rowEl = targetEl.closest("[data-thesis-kind]");
+    if (rowEl) {
+      const val = rowEl.dataset.thesisVal || "";
+      switchPrimaryTab("search");
+      await executeSearchRefinement(val);
+      showUiToast(`Filtered shortlist by "${val}" from Revealed Thesis`);
+      return;
+    }
+    const hitBtn = targetEl.closest("[data-hit-name]");
+    if (hitBtn) {
+      const hitName = hitBtn.dataset.hitName || "";
+      const match = [...state.allKnownItems.values()].find(
+        (c) => c.name.toLowerCase() === hitName.toLowerCase()
+      );
+      if (match) {
+        openStartupInspector(match.id, { keepHistory: true, tab: "brief" });
+      } else {
+        switchPrimaryTab("search");
+        await executeSearchRefinement(hitName);
+        showUiToast(`Searched historical backtest deal: ${hitName}`);
+      }
+    }
+  };
+  thesisPanelEl?.addEventListener("click", (e) => {
+    handleThesisDrilldown(e.target);
+  });
+  thesisPanelEl?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      const rowEl = e.target.closest("[data-thesis-kind]");
+      if (rowEl) {
+        e.preventDefault();
+        handleThesisDrilldown(rowEl);
+      }
+    }
   });
 
   document.getElementById("aiSearchForm")?.addEventListener("submit", async (e) => {
