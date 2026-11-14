@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="light">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7,7 +7,7 @@
   <script>
     (function () {
       try {
-        var saved = localStorage.getItem("rte_theme_v1");
+        var saved = localStorage.getItem("rte_theme_v2");
         if (saved === "dark" || saved === "light") {
           document.documentElement.setAttribute("data-theme", saved);
         }
@@ -61,7 +61,7 @@
               <circle cx="8" cy="8" r="3.2" stroke="currentColor" stroke-width="1.4" />
               <path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M12.6 3.4l-1.1 1.1M4.5 11.5l-1.1 1.1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
             </svg>
-            <span class="theme-toggle-label">Dark</span>
+            <span class="theme-toggle-label">Light</span>
           </button>
           <div class="onb-progress-wrap" aria-label="Setup step">
             <span class="onb-step-text num-tabular" id="onbStepCounter">Step 1 of 3</span>
@@ -341,7 +341,7 @@
           <circle cx="8" cy="8" r="3.2" stroke="currentColor" stroke-width="1.4" />
           <path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M12.6 3.4l-1.1 1.1M4.5 11.5l-1.1 1.1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
         </svg>
-        <span class="theme-toggle-label">Dark</span>
+        <span class="theme-toggle-label">Light</span>
       </button>
       <span id="telemetryLine" class="telemetry-pill"><span class="dot"></span>8/8 Cala</span>
 
@@ -363,8 +363,8 @@
           <div class="pop-section">
             <span class="pop-label">Appearance</span>
             <div class="role-pill-switch" role="radiogroup" aria-label="Theme switch">
-              <button type="button" class="role-pill-btn is-active" data-set-theme="light">White</button>
-              <button type="button" class="role-pill-btn" data-set-theme="dark">Dark</button>
+              <button type="button" class="role-pill-btn is-active" data-set-theme="dark">Dark</button>
+              <button type="button" class="role-pill-btn" data-set-theme="light">Light</button>
             </div>
           </div>
 

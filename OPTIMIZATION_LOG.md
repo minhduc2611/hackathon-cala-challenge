@@ -118,3 +118,11 @@
   - Random dingbats / emojis (`⚡`, `★`, `☆`, `✓`): 11 HTML/JS occurrences -> `0` (replaced with inline `13-14px` SVG bookmark icons & clean `.live-dot`)
 - **Tests:** PASS (`11/11` sandboxed unit tests, `81.3ms`), `node --check` pass, hygiene & dingbat checks `0` hits, Browser Checks verified White Grid (`final_step_1004.png`), White Modal (`final_step_1028.png`), Neutral Dark Modal (`final_step_1036.png`), `390x844` mobile zero overflow, `0` console/network errors, `8/8` Cala preserved
 - **Decision:** KEEP
+
+### [2026-11-14 12:10] — Exp 10: Obsidian Black & Gray UI with Restrained Steel-Blue Accents (Zero Green)
+- **Hypothesis:** Replacing all green/lime UI tokens across both themes with an obsidian black (`#09090b`) and graphite gray (`#111114` / `#17171b`) default aesthetic, monochrome silver-white primary buttons (`#ededf0`), graphite-to-steel-blue factor bars, and a subtle `#729cd4` steel-blue accent on score arcs and key links gives an understated, institutional dark look without green or heavy cobalt washes.
+- **Files touched:** `public/index.html`, `public/styles.css`, `public/app.js`
+- **Before -> After:**
+  - Color palette: bright green/lime UI (`#16a34a`, `#22c55e`, `#a3e635`) -> obsidian black (`#09090b`) & graphite gray (`#111114` / `#17171b`), crisp silver CTAs (`#ededf0`), and subtle steel blue (`#729cd4`) focal accents; zero green hex/rgba values anywhere in `public/`
+- **Tests:** PASS (`11/11` sandboxed unit tests, `81.7ms`), `node --check` pass, hygiene & green-token scan `0` hits, Browser Checks verified Obsidian Grid (`final_step_1042.png`) & Obsidian Modal (`final_step_1050.png`, `scrollTop === 0`, Light/Dark toggle intact, `0` console/network errors, `8/8` Cala preserved)
+- **Decision:** KEEP

@@ -436,19 +436,19 @@ const WEIGHT_PROFILES = {
   }
 };
 
-const THEME_STORAGE_KEY = "rte_theme_v1";
+const THEME_STORAGE_KEY = "rte_theme_v2";
 
 function getActiveTheme() {
-  return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+  return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
 }
 
 function applyTheme(nextTheme) {
-  const theme = nextTheme === "dark" ? "dark" : "light";
+  const theme = nextTheme === "light" ? "light" : "dark";
   document.documentElement.setAttribute("data-theme", theme);
   try {
     localStorage.setItem(THEME_STORAGE_KEY, theme);
   } catch (_) {}
-  const nextLabel = theme === "light" ? "Dark" : "White";
+  const nextLabel = theme === "dark" ? "Light" : "Dark";
   document.querySelectorAll(".theme-toggle-label").forEach((el) => {
     el.textContent = nextLabel;
   });
@@ -460,7 +460,7 @@ function applyTheme(nextTheme) {
 }
 
 function toggleTheme() {
-  applyTheme(getActiveTheme() === "light" ? "dark" : "light");
+  applyTheme(getActiveTheme() === "dark" ? "light" : "dark");
 }
 
 function bookmarkIconSvg(size = 13) {
@@ -479,13 +479,13 @@ function formatLeadershipTitle(relation) {
 }
 
 const SECTOR_THEMES = {
-  "AI & ML": { bg: "#17211a", fg: "#4ade80", border: "#166534", shape: "grid" },
-  "Climate Tech": { bg: "#142219", fg: "#22c55e", border: "#15803d", shape: "orbit" },
-  DeepTech: { bg: "#1c2217", fg: "#a3e635", border: "#4d7c0f", shape: "prism" },
-  HealthTech: { bg: "#15231e", fg: "#34d399", border: "#0f766e", shape: "cross" },
-  Fintech: { bg: "#222017", fg: "#f59e0b", border: "#b45309", shape: "bars" },
-  "B2B SaaS": { bg: "#192119", fg: "#84cc16", border: "#3f6212", shape: "layers" },
-  "Gaming & Consumer": { bg: "#201a1b", fg: "#fb923c", border: "#9a3412", shape: "spark" }
+  "AI & ML": { bg: "#14161b", fg: "#8ab1e6", border: "#2b3545", shape: "grid" },
+  "Climate Tech": { bg: "#151619", fg: "#c4c6cf", border: "#2c2e36", shape: "orbit" },
+  DeepTech: { bg: "#14161b", fg: "#7fa7de", border: "#2c3647", shape: "prism" },
+  HealthTech: { bg: "#15171b", fg: "#a8c1e3", border: "#2a3342", shape: "cross" },
+  Fintech: { bg: "#17171a", fg: "#d4d4dc", border: "#31313a", shape: "bars" },
+  "B2B SaaS": { bg: "#141519", fg: "#93b5e3", border: "#293242", shape: "layers" },
+  "Gaming & Consumer": { bg: "#16161a", fg: "#b4b4c0", border: "#2f2f38", shape: "spark" }
 };
 
 function escapeHtml(value) {
@@ -517,7 +517,7 @@ function getInitials(name) {
 function scoreBand(score) {
   const val = Number(score || 0);
   if (val >= 72) return { cls: "s-hot", lab: "Call now", shortLab: "Call", col: "var(--green)" };
-  if (val >= 56) return { cls: "s-warm", lab: "Warm", shortLab: "Warm", col: "var(--lime)" };
+  if (val >= 56) return { cls: "s-warm", lab: "Warm", shortLab: "Warm", col: "var(--muted)" };
   return { cls: "s-cold", lab: "Track", shortLab: "Track", col: "var(--dim)" };
 }
 
@@ -552,9 +552,9 @@ function scoreRingHtml(score) {
 function buildStartupLogoSvg(name, sector, size = 64) {
   const initials = getInitials(name);
   const theme = SECTOR_THEMES[sector] || {
-    bg: "#171c18",
-    fg: "#22c55e",
-    border: "#166534",
+    bg: "#15161a",
+    fg: "#93b5e3",
+    border: "#2c3442",
     shape: "orbit"
   };
 
@@ -600,7 +600,7 @@ function buildStartupLogoSvg(name, sector, size = 64) {
 function buildTileTopVisualHtml(item, score) {
   const theme = SECTOR_THEMES[item.sector] || {
     bg: "#111a2e",
-    fg: "#34d399",
+    fg: "#8ab1e6",
     border: "#273449",
     shape: "orbit"
   };
@@ -2981,7 +2981,7 @@ function renderThesisAndBacktest(result) {
     insightsEl.innerHTML = `
       <li>
         <div class="ic">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
         </div>
         <div>
           <b>Stated vs. revealed thesis</b>
@@ -2990,7 +2990,7 @@ function renderThesisAndBacktest(result) {
       </li>
       <li>
         <div class="ic">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m9 12 2 2 4-4"/></svg>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m9 12 2 2 4-4"/></svg>
         </div>
         <div>
           <b>Syndicate conviction &amp; lead behavior</b>
@@ -2999,7 +2999,7 @@ function renderThesisAndBacktest(result) {
       </li>
       <li>
         <div class="ic">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
         </div>
         <div>
           <b>Zero-hallucination evidence gate</b>
