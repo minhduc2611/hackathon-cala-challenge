@@ -197,6 +197,8 @@ function summarizeLiveCalaEntity(entityData) {
 
 function getCachedAnalysis(payload) {
   const entityScope = payload.entityScope === 'all' ? 'all' : 'startups';
+  const hideMegaHubs = payload.hideMegaHubs !== undefined ? Boolean(payload.hideMegaHubs) : true;
+  const bridgeFamily = String(payload.bridgeFamily || 'all').trim().toLowerCase() || 'all';
   const includeCompanyNames = Array.isArray(payload.includeCompanyNames)
     ? [...payload.includeCompanyNames].sort()
     : [];
@@ -208,7 +210,9 @@ function getCachedAnalysis(payload) {
     statedThesisOverride: payload.statedThesisOverride || '',
     seenCompanyNames: Array.isArray(payload.seenCompanyNames) ? [...payload.seenCompanyNames].sort() : [],
     entityScope,
-    includeCompanyNames
+    includeCompanyNames,
+    hideMegaHubs,
+    bridgeFamily
   });
 
   if (analysisCache.has(key)) {
@@ -225,7 +229,9 @@ function getCachedAnalysis(payload) {
       statedThesisOverride: payload.statedThesisOverride || '',
       seenCompanyNames: payload.seenCompanyNames || [],
       entityScope,
-      includeCompanyNames
+      includeCompanyNames,
+      hideMegaHubs,
+      bridgeFamily
     }
   );
   if (analysisCache.size > 60) {
@@ -765,6 +771,8 @@ export function createAppServer(options = {}) {
           highVelocityOnly: body.highVelocityOnly,
           feederOnly: body.feederOnly,
           filingOnly: body.filingOnly,
+          hideMegaHubs: body.hideMegaHubs !== undefined ? Boolean(body.hideMegaHubs) : true,
+          bridgeFamily: body.bridgeFamily || 'all',
           alumniOnly: Boolean(body.alumniOnly || body.requireAlumniFounder || cf.requireAlumniFounder),
           requireAlumniFounder: Boolean(body.requireAlumniFounder || body.alumniOnly || cf.requireAlumniFounder),
           minHeadcountGrowthPct: body.minHeadcountGrowthPct ?? cf.minHeadcountGrowthPct,

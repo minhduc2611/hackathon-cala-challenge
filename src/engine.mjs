@@ -24,6 +24,25 @@ const NEXT_STAGE = {
   'Series B': 'Series B'
 };
 
+/**
+ * Calibrated from investorTotalDealsMap across the indexed European venture snapshot:
+ * - 7 multi-stage mega-hub funds hold 9-18 deals (lifeline-ventures 18, seedcamp 13,
+ *   cherry-ventures 12, maki-vc 11, inventure 11, northzone 10, creandum 9).
+ * - 12 specialist, micro, and angel-syndicate investors hold 1-7 deals (angel-syndicate 7,
+ *   forerunner 4, eqt-ventures 3, true-ventures/icebreaker-vc/hummingbird/general-catalyst/nordic-micro-lab 2, etc.).
+ * Threshold 8 isolates noisy high-degree hubs while keeping boutique and micro-fund bridges visible.
+ */
+export const MEGA_HUB_DEAL_THRESHOLD = 8;
+
+export const SLUSH_2026_EVENT_ID = 'bc844d56-6ab4-452b-96bf-2661e86e592b';
+
+const SOURCE_RANK_PRIORITY = {
+  FILING: 4,
+  PRIMARY: 3,
+  PRESS: 2,
+  AGGREGATOR: 1
+};
+
 export function monthsBetween(startIso, endIso = REFERENCE_DATE) {
   const start = new Date(startIso);
   const end = new Date(endIso);
@@ -507,6 +526,7 @@ export function computeRevealedThesis(input, options = {}) {
         fedDealsCount: f.fedDealsCount,
         totalDeals,
         lift,
+        isMegaHub: totalDeals >= MEGA_HUB_DEAL_THRESHOLD,
         companies: [...f.companies],
         relationshipType: f.relationshipType,
         sourceIds: [...f.sourceIds]
@@ -560,14 +580,21 @@ export function computeRevealedThesis(input, options = {}) {
   }
 
   const topCoInvestors = Object.values(coInvestorMap)
-    .map((ci) => ({
-      id: ci.id,
-      name: ci.name,
-      sharedRounds: ci.sharedRounds,
-      companies: [...ci.companies],
-      sourceIds: [...ci.sourceIds]
-    }))
-    .sort((a, b) => b.sharedRounds - a.sharedRounds || a.name.localeCompare(b.name));
+    .map((ci) => {
+      const totalDeals = Math.max(ci.sharedRounds, investorTotalDealsMap[ci.id] || ci.sharedRounds);
+      const lift = Math.round((ci.sharedRounds / Math.sqrt(Math.max(1, totalDeals))) * 100) / 100;
+      return {
+        id: ci.id,
+        name: ci.name,
+        sharedRounds: ci.sharedRounds,
+        totalDeals,
+        lift,
+        isMegaHub: totalDeals >= MEGA_HUB_DEAL_THRESHOLD,
+        companies: [...ci.companies],
+        sourceIds: [...ci.sourceIds]
+      };
+    })
+    .sort((a, b) => b.sharedRounds - a.sharedRounds || b.lift - a.lift || a.name.localeCompare(b.name));
 
   let pacePerYear = 0;
   if (dealDates.length >= 2) {
@@ -639,6 +666,7 @@ export function computeRevealedThesis(input, options = {}) {
     timeTravelProfile,
     upstreamFeeders,
     topCoInvestors,
+    investorTotalDealsMap,
     portfolioCompanyIds: [...portfolioCompanyIds],
     portfolioCompetitorGroups: Object.fromEntries(portfolioCompetitorGroups),
     portfolioCompanies: portfolioList
@@ -713,12 +741,864 @@ function buildCoInvestorPath(thesis, company, visibleRounds) {
   return bestPath;
 }
 
-const SOURCE_RANK_PRIORITY = {
-  FILING: 4,
-  PRIMARY: 3,
-  PRESS: 2,
-  AGGREGATOR: 1
+const BRIDGE_FAMILY_META = {
+  feeder: { id: 'cluster-feeder', label: 'Feeder Bridges' },
+  co_investor: { id: 'cluster-co-investor', label: 'Co-Investor Bridges' },
+  alumni_spinout: { id: 'cluster-alumni-spinout', label: 'Alumni & Operator Spinouts' },
+  event: { id: 'cluster-event', label: 'Event & Ecosystem Ties' }
 };
+
+function slugifyBridgeId(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'entity';
+}
+
+function resolveValidSourceIds(candidateIds = [], visibleRounds = [], company = null) {
+  const fallbackIds = [
+    ...(visibleRounds || []).flatMap((r) => r.sourceIds || []),
+    company?.registryInfo?.sourceId,
+    ...(company?.corporateEvents || []).map((ev) => ev.sourceId),
+    ...(company?.employeeCountSeries || []).map((pt) => pt.sourceId),
+    ...(company?.financialMetrics || []).map((m) => m.sourceId),
+    ...(company?.peopleCoverage?.roles || []).map((r) => r.sourceId)
+  ];
+  const valid = [...new Set([...(candidateIds || []), ...fallbackIds].filter((id) => id && SOURCES[id]))];
+  if (valid.length > 0) return valid;
+  const anyRoundSrc = (company?.rounds || []).flatMap((r) => r.sourceIds || []).find((id) => id && SOURCES[id]);
+  return anyRoundSrc ? [anyRoundSrc] : [];
+}
+
+function deriveTopRankFromSources(sourceIds = [], explicitRank = null) {
+  const upperExplicit = explicitRank ? String(explicitRank).toUpperCase() : null;
+  let bestRank = upperExplicit && SOURCE_RANK_PRIORITY[upperExplicit] ? upperExplicit : 'AGGREGATOR';
+  let bestPrio = upperExplicit && SOURCE_RANK_PRIORITY[bestRank] ? SOURCE_RANK_PRIORITY[bestRank] : 0;
+  for (const src of resolveSources(sourceIds)) {
+    const rank = String(src.sourceRank || 'PRESS').toUpperCase();
+    const prio = SOURCE_RANK_PRIORITY[rank] || 1;
+    if (prio > bestPrio) {
+      bestPrio = prio;
+      bestRank = rank;
+    }
+  }
+  return bestRank;
+}
+
+function computeBridgeRarityScore(lift, topSourceRank, isMegaHub, extraBonus = 0) {
+  const rankBonus = (SOURCE_RANK_PRIORITY[topSourceRank] || 1) * 1.25;
+  const megaPenalty = isMegaHub ? 50 : 0;
+  return Math.round(((Number(lift) || 0) * 10 + rankBonus + extraBonus - megaPenalty) * 100) / 100;
+}
+
+export function extractHiddenBridges(thesis, company, visibleRounds = [], signals = null, options = {}) {
+  const {
+    hideMegaHubs = true,
+    bridgeFamily = null,
+    filingOnly = false,
+    maxPaths = 5,
+    linkedinNetwork = null
+  } = options || {};
+
+  const normalizedFamily = bridgeFamily && bridgeFamily !== 'all' ? String(bridgeFamily).trim().toLowerCase() : null;
+  const rounds = [...(visibleRounds || [])];
+  const anchorId = thesis?.fundId || 'query-anchor';
+  const anchorLabel = thesis?.fundName || 'Search Strategy Anchor';
+  const targetStartupId = company?.id || 'startup';
+  const targetStartupName = company?.name || 'Target Startup';
+
+  const feederLookup = new Map((thesis?.upstreamFeeders || []).map((f) => [f.id, f]));
+  const coInvestorLookup = new Map((thesis?.topCoInvestors || []).map((ci) => [ci.id, ci]));
+  const totalDealsMap = thesis?.investorTotalDealsMap || {};
+  const portfolioCompanyNames = new Set(
+    (thesis?.portfolioCompanies || []).map((p) => String(p.name || '').toLowerCase()).filter(Boolean)
+  );
+
+  const bridgeMap = new Map();
+  const registerBridge = (candidate) => {
+    const dedupKey = `${candidate.bridgeFamily}::${String(candidate.bridgeEntityId || candidate.bridgeEntityName).toLowerCase()}`;
+    const existing = bridgeMap.get(dedupKey);
+    if (!existing) {
+      bridgeMap.set(dedupKey, candidate);
+      return;
+    }
+    const mergedSourceIds = [...new Set([...(existing.sourceIds || []), ...(candidate.sourceIds || [])])];
+    const mergedRank = deriveTopRankFromSources(
+      mergedSourceIds,
+      (SOURCE_RANK_PRIORITY[candidate.topSourceRank] || 0) >= (SOURCE_RANK_PRIORITY[existing.topSourceRank] || 0)
+        ? candidate.topSourceRank
+        : existing.topSourceRank
+    );
+    const winner = candidate.rarityScore > existing.rarityScore ? candidate : existing;
+    bridgeMap.set(dedupKey, {
+      ...winner,
+      sourceIds: mergedSourceIds,
+      topSourceRank: mergedRank
+    });
+  };
+
+  // 1 & 2. Feeder & Co-Investor investor bridges from visible rounds
+  for (const round of rounds) {
+    for (const invId of round.investorIds || []) {
+      const feeder = feederLookup.get(invId);
+      const coInv = coInvestorLookup.get(invId);
+      const isLead = round.leadInvestorId === invId;
+      const invDisplayName = feeder?.name || coInv?.name || PEER_INVESTORS[invId] || invId;
+
+      if (feeder) {
+        const totalDeals = feeder.totalDeals ?? Math.max(feeder.fedDealsCount || 1, totalDealsMap[invId] || 1);
+        const lift =
+          feeder.lift ??
+          Math.round(((feeder.fedDealsCount || 1) / Math.sqrt(Math.max(1, totalDeals))) * 100) / 100;
+        const isMegaHub = Boolean(feeder.isMegaHub ?? totalDeals >= MEGA_HUB_DEAL_THRESHOLD);
+        const sourceIds = resolveValidSourceIds(
+          [...(feeder.sourceIds || []).slice(0, 2), ...(round.sourceIds || [])],
+          rounds,
+          company
+        );
+        const topSourceRank = deriveTopRankFromSources(sourceIds);
+        const sampleCo = (feeder.companies || [])[0] || null;
+        const hops = [
+          { id: anchorId, label: anchorLabel, role: 'Query Anchor', kind: 'anchor', date: null },
+          {
+            id: `inv-${invId}`,
+            label: invDisplayName,
+            role: `Upstream Feeder (${feeder.fedDealsCount}x N-1, ${totalDeals} deals)`,
+            kind: 'bridge',
+            date: round.date || null
+          },
+          ...(sampleCo
+            ? [
+                {
+                  id: `co-${slugifyBridgeId(sampleCo)}`,
+                  label: sampleCo,
+                  role: 'Shared Portfolio Step',
+                  kind: 'intermediate',
+                  date: null
+                }
+              ]
+            : []),
+          {
+            id: targetStartupId,
+            label: targetStartupName,
+            role: `${isLead ? 'Led' : 'Joined'} ${round.type}`,
+            kind: 'startup',
+            date: round.date || null
+          }
+        ];
+
+        registerBridge({
+          id: `bridge-feeder-${slugifyBridgeId(invId)}-${targetStartupId}`,
+          bridgeFamily: 'feeder',
+          bridgeEntityId: `inv-${invId}`,
+          bridgeEntityName: invDisplayName,
+          hops,
+          totalDeals,
+          lift,
+          isMegaHub,
+          topSourceRank,
+          sourceIds,
+          date: round.date || null,
+          rarityScore: computeBridgeRarityScore(lift, topSourceRank, isMegaHub, isLead ? 0.35 : 0.1),
+          summary: `Upstream feeder ${invDisplayName} (${feeder.fedDealsCount} N-1 fed deals across ${totalDeals} indexed deals, lift ${lift}x${sampleCo ? ` via ${sampleCo}` : ''}) ${isLead ? 'led' : 'joined'} ${targetStartupName} ${round.type} (${(round.date || '').slice(0, 7) || 'undated'}).`
+        });
+      }
+
+      if (coInv) {
+        const totalDeals = coInv.totalDeals ?? Math.max(coInv.sharedRounds || 1, totalDealsMap[invId] || 1);
+        const lift =
+          coInv.lift ??
+          Math.round(((coInv.sharedRounds || 1) / Math.sqrt(Math.max(1, totalDeals))) * 100) / 100;
+        const isMegaHub = Boolean(coInv.isMegaHub ?? totalDeals >= MEGA_HUB_DEAL_THRESHOLD);
+        const sourceIds = resolveValidSourceIds(
+          [...(coInv.sourceIds || []).slice(0, 2), ...(round.sourceIds || [])],
+          rounds,
+          company
+        );
+        const topSourceRank = deriveTopRankFromSources(sourceIds);
+        const sampleCo = (coInv.companies || [])[0] || null;
+        const hops = [
+          { id: anchorId, label: anchorLabel, role: 'Query Anchor', kind: 'anchor', date: null },
+          {
+            id: `inv-${invId}`,
+            label: invDisplayName,
+            role: `Co-Investor (${coInv.sharedRounds}x shared, ${totalDeals} deals)`,
+            kind: 'bridge',
+            date: round.date || null
+          },
+          ...(sampleCo
+            ? [
+                {
+                  id: `co-${slugifyBridgeId(sampleCo)}`,
+                  label: sampleCo,
+                  role: 'Co-Invested Company',
+                  kind: 'intermediate',
+                  date: null
+                }
+              ]
+            : []),
+          {
+            id: targetStartupId,
+            label: targetStartupName,
+            role: `${isLead ? 'Led' : 'Backed'} ${round.type}`,
+            kind: 'startup',
+            date: round.date || null
+          }
+        ];
+
+        registerBridge({
+          id: `bridge-co_investor-${slugifyBridgeId(invId)}-${targetStartupId}`,
+          bridgeFamily: 'co_investor',
+          bridgeEntityId: `inv-${invId}`,
+          bridgeEntityName: invDisplayName,
+          hops,
+          totalDeals,
+          lift,
+          isMegaHub,
+          topSourceRank,
+          sourceIds,
+          date: round.date || null,
+          rarityScore: computeBridgeRarityScore(lift, topSourceRank, isMegaHub, isLead ? 0.25 : 0),
+          summary: `${invDisplayName} co-invested ${coInv.sharedRounds}x across ${totalDeals} indexed deals (lift ${lift}x${sampleCo ? `, e.g. ${sampleCo}` : ''}) and ${isLead ? 'led' : 'joined'} ${targetStartupName} ${round.type} (${(round.date || '').slice(0, 7) || 'undated'}).`
+        });
+      }
+    }
+  }
+
+  // 3. Alumni / operator spinout bridges
+  const roles = company?.peopleCoverage?.roles || [];
+  const priorRolesByPerson = new Map();
+  for (const role of roles) {
+    const rel = String(role.relation || '').toUpperCase();
+    const isPriorRel = ['WORKS_AT', 'IS_VICEPRESIDENT_OF', 'IS_BOARD_MEMBER_OF'].includes(rel);
+    const isPartnerStub = /Partner Rep$/i.test(role.name || '');
+    if (isPriorRel && !isPartnerStub && role.name) {
+      priorRolesByPerson.set(role.name, role);
+    }
+  }
+
+  const candidateAlumniList = [];
+  for (const role of roles) {
+    if (role.priorCompany) {
+      candidateAlumniList.push({
+        personName: role.name,
+        currentRole: role.role || role.relation,
+        validSince: role.validSince || role.startDate || null,
+        priorCompany: role.priorCompany,
+        priorRole: role.priorRole || 'Operator',
+        priorValidUntil: role.priorValidUntil || role.validUntil || role.endDate || null,
+        sourceId: role.sourceId || null,
+        sourceRank: role.sourceRank || null
+      });
+    } else if (
+      ['FOUNDED', 'IS_CEO_OF', 'IS_CTO_OF'].includes(String(role.relation || '').toUpperCase()) &&
+      priorRolesByPerson.has(role.name)
+    ) {
+      const prev = priorRolesByPerson.get(role.name);
+      const prevOrg = prev.company || prev.organization || prev.entityName || prev.role;
+      if (prevOrg) {
+        candidateAlumniList.push({
+          personName: role.name,
+          currentRole: role.role || role.relation,
+          validSince: role.validSince || role.startDate || null,
+          priorCompany: prevOrg,
+          priorRole: prev.role || prev.relation,
+          priorValidUntil: prev.validUntil || prev.endDate || prev.priorValidUntil || null,
+          sourceId: prev.sourceId || role.sourceId || null,
+          sourceRank: prev.sourceRank || role.sourceRank || null
+        });
+      }
+    }
+  }
+
+  if (signals?.alumniSpinout && !candidateAlumniList.some((a) => a.priorCompany === signals.alumniSpinout.priorCompany)) {
+    candidateAlumniList.push({
+      personName: signals.alumniSpinout.name,
+      currentRole: signals.alumniSpinout.role,
+      validSince: signals.alumniSpinout.validSince,
+      priorCompany: signals.alumniSpinout.priorCompany,
+      priorRole: signals.alumniSpinout.priorRole,
+      priorValidUntil: signals.alumniSpinout.priorValidUntil,
+      sourceId: signals.alumniSpinout.sourceId,
+      sourceRank: 'FILING'
+    });
+  }
+
+  for (const alum of candidateAlumniList) {
+    const inPortfolio = portfolioCompanyNames.has(String(alum.priorCompany || '').toLowerCase());
+    const lift = inPortfolio ? 1.45 : 1.15;
+    const bridgeEntityId = `alumni-${slugifyBridgeId(alum.priorCompany)}`;
+    const bridgeEntityName = `${alum.priorCompany} Alumni`;
+    const sourceIds = resolveValidSourceIds([alum.sourceId], rounds, company);
+    const topSourceRank = deriveTopRankFromSources(sourceIds, alum.sourceRank || 'PRIMARY');
+    const hops = [
+      { id: anchorId, label: anchorLabel, role: 'Query Anchor', kind: 'anchor', date: null },
+      {
+        id: bridgeEntityId,
+        label: bridgeEntityName,
+        role: inPortfolio ? 'Portfolio Spinout Source' : 'Scaleup Lineage',
+        kind: 'bridge',
+        date: alum.priorValidUntil || null
+      },
+      {
+        id: `person-${slugifyBridgeId(alum.personName)}`,
+        label: alum.personName,
+        role: `${alum.priorRole}${alum.priorValidUntil ? ` -> ${alum.currentRole}` : ''}`,
+        kind: 'intermediate',
+        date: alum.validSince || null
+      },
+      {
+        id: targetStartupId,
+        label: targetStartupName,
+        role: alum.currentRole || 'Founder / Exec',
+        kind: 'startup',
+        date: alum.validSince || null
+      }
+    ];
+
+    registerBridge({
+      id: `bridge-alumni_spinout-${slugifyBridgeId(alum.priorCompany)}-${targetStartupId}`,
+      bridgeFamily: 'alumni_spinout',
+      bridgeEntityId,
+      bridgeEntityName,
+      hops,
+      totalDeals: null,
+      lift,
+      isMegaHub: false,
+      topSourceRank,
+      sourceIds,
+      date: alum.validSince || alum.priorValidUntil || null,
+      rarityScore: computeBridgeRarityScore(lift, topSourceRank, false, inPortfolio ? 1.0 : 0.2),
+      summary: `${alum.personName} moved from ${alum.priorRole} at ${alum.priorCompany}${alum.priorValidUntil ? ` (until ${alum.priorValidUntil})` : ''} to ${alum.currentRole} at ${targetStartupName}${alum.validSince ? ` (since ${alum.validSince})` : ''}.`
+    });
+  }
+
+  const explicitLinkedin = linkedinNetwork || company?.linkedinNetwork || null;
+  if (explicitLinkedin?.bridgePerson) {
+    const liEntityId = `li-${slugifyBridgeId(explicitLinkedin.bridgePerson)}`;
+    const sourceIds = resolveValidSourceIds([], rounds, company);
+    const topSourceRank = deriveTopRankFromSources(sourceIds, 'PRESS');
+    const hops = [
+      { id: anchorId, label: anchorLabel, role: 'Query Anchor', kind: 'anchor', date: null },
+      {
+        id: liEntityId,
+        label: explicitLinkedin.bridgePerson,
+        role: explicitLinkedin.networkName || 'Warm Network Bridge',
+        kind: 'bridge',
+        date: null
+      },
+      ...(explicitLinkedin.targetLeader
+        ? [
+            {
+              id: `person-${slugifyBridgeId(explicitLinkedin.targetLeader)}`,
+              label: explicitLinkedin.targetLeader,
+              role: 'Founder / Exec Contact',
+              kind: 'intermediate',
+              date: null
+            }
+          ]
+        : []),
+      { id: targetStartupId, label: targetStartupName, role: 'Target Startup', kind: 'startup', date: null }
+    ];
+
+    registerBridge({
+      id: `bridge-alumni_spinout-${liEntityId}-${targetStartupId}`,
+      bridgeFamily: 'alumni_spinout',
+      bridgeEntityId: liEntityId,
+      bridgeEntityName: explicitLinkedin.bridgePerson,
+      hops,
+      totalDeals: null,
+      lift: 0.75,
+      isMegaHub: false,
+      topSourceRank,
+      sourceIds,
+      date: null,
+      rarityScore: computeBridgeRarityScore(0.75, topSourceRank, false, 0),
+      summary:
+        explicitLinkedin.summary ||
+        `Warm operator network bridge via ${explicitLinkedin.bridgePerson} to ${targetStartupName}.`
+    });
+  }
+
+  // 4. Event / ecosystem bridges (Slush 2026 & PARTICIPATES_IN_EVENT / conferences)
+  const corpEvents = [...(signals?.visibleCorpEvents || company?.corporateEvents || [])];
+  const eventCandidates = corpEvents.filter(
+    (ev) =>
+      ev &&
+      (ev.id === SLUSH_2026_EVENT_ID ||
+        ev.eventType === 'PARTICIPATES_IN_EVENT' ||
+        /slush|summit|conference|demo day|accelerator/i.test(`${ev.name || ''} ${ev.summary || ''}`))
+  );
+  const hasSlushEvent =
+    Boolean(company?.attendingSlush2026) ||
+    eventCandidates.some((ev) => ev.id === SLUSH_2026_EVENT_ID || /slush/i.test(`${ev.name || ''} ${ev.summary || ''}`));
+
+  if (hasSlushEvent && !eventCandidates.some((ev) => ev.id === SLUSH_2026_EVENT_ID)) {
+    const anySlushLike = eventCandidates.find((ev) => /slush/i.test(`${ev.name || ''} ${ev.summary || ''}`));
+    eventCandidates.push({
+      id: SLUSH_2026_EVENT_ID,
+      name: 'Slush 2026 (Helsinki)',
+      eventDate: anySlushLike?.eventDate || null,
+      summary: `${targetStartupName} indexed in Slush 2026 participant graph.`,
+      sourceId: anySlushLike?.sourceId || corpEvents[0]?.sourceId || null,
+      sourceRank: anySlushLike?.sourceRank || 'PRIMARY'
+    });
+  }
+
+  for (const ev of eventCandidates) {
+    const isSlush = ev.id === SLUSH_2026_EVENT_ID || /slush/i.test(`${ev.name || ''} ${ev.summary || ''}`);
+    const bridgeEntityId = isSlush ? SLUSH_2026_EVENT_ID : ev.id || `event-${slugifyBridgeId(ev.name)}`;
+    const bridgeEntityName = isSlush ? 'Slush 2026 (Helsinki)' : ev.name || 'Ecosystem Event';
+    const sourceIds = resolveValidSourceIds([ev.sourceId], rounds, company);
+    const topSourceRank = deriveTopRankFromSources(sourceIds, ev.sourceRank || 'PRIMARY');
+    const lift = 0.9;
+    const hops = [
+      { id: anchorId, label: anchorLabel, role: 'Query Anchor', kind: 'anchor', date: null },
+      {
+        id: bridgeEntityId,
+        label: bridgeEntityName,
+        role: 'Event Participant Bridge',
+        kind: 'bridge',
+        date: ev.eventDate || null
+      },
+      { id: targetStartupId, label: targetStartupName, role: 'Participating Startup', kind: 'startup', date: ev.eventDate || null }
+    ];
+
+    registerBridge({
+      id: `bridge-event-${slugifyBridgeId(bridgeEntityId)}-${targetStartupId}`,
+      bridgeFamily: 'event',
+      bridgeEntityId,
+      bridgeEntityName,
+      hops,
+      totalDeals: null,
+      lift,
+      isMegaHub: false,
+      topSourceRank,
+      sourceIds,
+      date: ev.eventDate || null,
+      rarityScore: computeBridgeRarityScore(lift, topSourceRank, false, isSlush ? 0.3 : 0),
+      summary: `${targetStartupName} connects via ${bridgeEntityName}${ev.eventDate ? ` (${ev.eventDate.slice(0, 7)})` : ''}: ${ev.summary || 'verified ecosystem participant record.'}`
+    });
+  }
+
+  const allCandidates = [...bridgeMap.values()];
+  const familyScoped = normalizedFamily
+    ? allCandidates.filter((b) => b.bridgeFamily === normalizedFamily)
+    : allCandidates;
+  const provenanceScoped = filingOnly
+    ? familyScoped.filter((b) => b.topSourceRank === 'FILING')
+    : familyScoped;
+
+  const megaHubCount = provenanceScoped.filter((b) => b.isMegaHub).length;
+  const nonMegaHubs = provenanceScoped.filter((b) => !b.isMegaHub);
+  const suppressedMegaHubCount = hideMegaHubs ? megaHubCount : 0;
+  const eligible = hideMegaHubs ? nonMegaHubs : provenanceScoped;
+
+  eligible.sort(
+    (a, b) =>
+      b.rarityScore - a.rarityScore ||
+      b.lift - a.lift ||
+      a.bridgeEntityName.localeCompare(b.bridgeEntityName)
+  );
+
+  const cap = Math.max(1, Math.min(20, Number(maxPaths) || 5));
+  const bridges = eligible.slice(0, cap);
+
+  return {
+    bridges,
+    totalBeforeSuppression: provenanceScoped.length,
+    suppressedMegaHubCount,
+    hiddenMegaHubCount: suppressedMegaHubCount,
+    megaHubFallbackUsed: false,
+    familiesPresent: [...new Set(bridges.map((b) => b.bridgeFamily))],
+    hideMegaHubsApplied: Boolean(hideMegaHubs)
+  };
+}
+
+function buildMissingFromCala(company, visibleRounds = [], signals = null) {
+  const series = signals?.visibleSeries || company?.employeeCountSeries || [];
+  const finMetrics = signals?.visibleFinMetrics || company?.financialMetrics || [];
+  const roles = company?.peopleCoverage?.roles || [];
+  const rounds = visibleRounds || [];
+
+  const gaps = [
+    {
+      field: 'Private revenue, ARR, and burn rate',
+      status: 'Not found in Cala',
+      reason: finMetrics.length
+        ? 'UK Companies House provides balance sheet cash/creditors only; ARR splits remain private.'
+        : 'Cala financial metrics cover UK/public statutory filings only.'
+    },
+    {
+      field: 'Individual fund cheque sizes',
+      status: 'Not found in Cala',
+      reason: 'Round totals are public; investor-level splits are estimated as not disclosed.'
+    },
+    {
+      field: 'Personal founder-partner connections',
+      status: 'Not found in Cala',
+      reason: 'Personal relationships reside in LinkedIn or private CRMs (not scraped).'
+    },
+    {
+      field: 'Customer cohort retention and net revenue churn',
+      status: 'Not found in Cala',
+      reason: 'Private unit economics and cohort retention metrics are not disclosed in statutory filings.'
+    }
+  ];
+
+  if (series.length < 2) {
+    gaps.push({
+      field: 'Historical employee growth curve',
+      status: 'Not found in Cala',
+      reason: 'Fewer than 2 dated employee_count observations are currently indexed in Cala for this company.'
+    });
+  }
+
+  if (!rounds.length) {
+    gaps.push({
+      field: 'VC funding rounds & valuation',
+      status: 'Not found in Cala',
+      reason: company?.isRegistryDiscovered
+        ? 'Discovered via official government corporate registry; no VC funding rounds are indexed in Cala.'
+        : 'No equity venture rounds are currently indexed in Cala for this entity.'
+    });
+  } else if (rounds.every((r) => r.valuationEurM === null || r.valuationEurM === undefined)) {
+    gaps.push({
+      field: 'Post-money round valuations',
+      status: 'Not found in Cala',
+      reason: 'Equity round filings disclose capital raised, while headline valuations were not publicly reported.'
+    });
+  }
+
+  if (!company?.peopleCoverage?.available || !roles.length) {
+    gaps.push({
+      field: 'Verified leadership & prior-role coverage',
+      status: 'Not found in Cala',
+      reason: company?.peopleCoverage?.note || 'Leadership role lineage has not been indexed in Cala for this entity.'
+    });
+  }
+
+  return gaps;
+}
+
+export function buildEvidenceFolders(
+  company,
+  visibleRounds = [],
+  signals = null,
+  hiddenBridgesResult = null,
+  dataConfidence = null,
+  _matchContext = null
+) {
+  const safeSignals = signals || {};
+  const rounds = visibleRounds || [];
+  const bridgePaths = hiddenBridgesResult?.bridges || [];
+  const suppressedMegaHubCount = hiddenBridgesResult?.suppressedMegaHubCount ?? 0;
+
+  // Folder 2: Observed Activity & Timing
+  const activityItems = [];
+  const series = safeSignals.visibleSeries || [];
+  if (series.length > 0) {
+    const latestPt = series[series.length - 1];
+    const growth = safeSignals.headcountGrowthPct ?? 0;
+    const obsSourceIds = resolveValidSourceIds([latestPt.sourceId], rounds, company);
+    activityItems.push({
+      kind: growth >= 30 ? 'headcount_momentum' : 'headcount_observation',
+      label: growth >= 30 ? `+${growth}% team growth` : `Observed team: ${safeSignals.currentObservedEmp ?? latestPt.value} employees`,
+      detail: `${safeSignals.headcountAtLastRound ?? latestPt.value} -> ${safeSignals.currentObservedEmp ?? latestPt.value} employees across ${series.length} dated Cala observation(s).`,
+      date: latestPt.date || null,
+      sourceRank: deriveTopRankFromSources(obsSourceIds, latestPt.sourceRank || 'PRIMARY'),
+      sourceIds: obsSourceIds
+    });
+  }
+
+  const corpEvents = safeSignals.visibleCorpEvents || [];
+  for (const ev of corpEvents) {
+    const evSourceIds = resolveValidSourceIds([ev.sourceId], rounds, company);
+    activityItems.push({
+      kind: ev.unannouncedFiling
+        ? 'unannounced_filing'
+        : ev.id === SLUSH_2026_EVENT_ID || ev.eventType === 'PARTICIPATES_IN_EVENT'
+          ? 'ecosystem_event'
+          : 'corporate_event',
+      label: ev.name || 'Corporate Event',
+      detail: ev.summary || ev.name || 'Corporate event indexed in Cala.',
+      date: ev.eventDate || null,
+      sourceRank: deriveTopRankFromSources(evSourceIds, ev.sourceRank || 'FILING'),
+      sourceIds: evSourceIds
+    });
+  }
+
+  if (
+    company?.attendingSlush2026 &&
+    !corpEvents.some((ev) => ev.id === SLUSH_2026_EVENT_ID || /slush/i.test(ev.name || ''))
+  ) {
+    const slushSourceIds = resolveValidSourceIds([], rounds, company);
+    activityItems.push({
+      kind: 'ecosystem_event',
+      label: 'Slush 2026 Participant',
+      detail: `${company.name} listed in Cala Slush 2026 participant graph.`,
+      date: null,
+      sourceRank: deriveTopRankFromSources(slushSourceIds, 'PRIMARY'),
+      sourceIds: slushSourceIds
+    });
+  }
+
+  const activeAiDomain = (safeSignals.visibleDomains || []).find((d) => d.status === 'ACTIVE' && d.domain?.endsWith('.ai'));
+  if (activeAiDomain && (safeSignals.visibleDomains || []).some((d) => d.status === 'INACTIVE')) {
+    const domSourceIds = resolveValidSourceIds([], rounds, company);
+    activityItems.push({
+      kind: 'domain_shift',
+      label: `Domain upgrade -> ${activeAiDomain.domain}`,
+      detail: `HAS_DOMAIN_NAME activated ${activeAiDomain.domain} on ${activeAiDomain.validSince}.`,
+      date: activeAiDomain.validSince || null,
+      sourceRank: deriveTopRankFromSources(domSourceIds, 'PRIMARY'),
+      sourceIds: domSourceIds
+    });
+  }
+
+  activityItems.sort((a, b) => (b.date || '').localeCompare(a.date || '') || (SOURCE_RANK_PRIORITY[b.sourceRank] || 0) - (SOURCE_RANK_PRIORITY[a.sourceRank] || 0));
+
+  // Folder 3: Filings, Proof & Missing Gaps
+  const verifiedFacts = [];
+  for (const r of rounds) {
+    const rSources = resolveValidSourceIds(r.sourceIds || [], rounds, company);
+    const invNames = (r.investorIds || []).map((id) => PEER_INVESTORS[id] || id).join(', ');
+    verifiedFacts.push({
+      kind: 'funding_round',
+      label: `${r.type}${r.amountEurM !== null && r.amountEurM !== undefined ? ` (EUR ${r.amountEurM}M)` : ''}`,
+      detail: `Lead: ${PEER_INVESTORS[r.leadInvestorId] || r.leadInvestorId}${invNames ? `; Syndicate: ${invNames}` : ''}.`,
+      date: r.date || null,
+      sourceRank: deriveTopRankFromSources(rSources),
+      sourceIds: rSources
+    });
+  }
+
+  for (const m of safeSignals.visibleFinMetrics || []) {
+    const mSources = resolveValidSourceIds([m.sourceId], rounds, company);
+    verifiedFacts.push({
+      kind: 'statutory_financials',
+      label: `Companies House #${company?.companiesHouseNumber || 'Filing'} (${m.year || m.periodEnd?.slice(0, 4) || 'Latest'})`,
+      detail: `Cash EUR ${m.cashEurM}M, net assets EUR ${m.netAssetsEurM}M (~${m.runwayMonthsEst}m est. runway).`,
+      date: m.filingDate || m.periodEnd || null,
+      sourceRank: deriveTopRankFromSources(mSources, m.sourceRank || 'FILING'),
+      sourceIds: mSources
+    });
+  }
+
+  if (company?.registryInfo?.registrationNumber) {
+    const regSources = resolveValidSourceIds([company.registryInfo.sourceId], rounds, company);
+    verifiedFacts.push({
+      kind: 'official_registry',
+      label: `${company.registryInfo.registryName} #${company.registryInfo.registrationNumber}`,
+      detail: `Status: ${company.registryInfo.status}${company.registryInfo.industryDescription ? ` (${company.registryInfo.industryDescription})` : ''}.`,
+      date: company.foundingDate || null,
+      sourceRank: deriveTopRankFromSources(regSources, 'FILING'),
+      sourceIds: regSources
+    });
+  }
+
+  for (const ev of corpEvents) {
+    if (ev.unannouncedFiling || ev.deduplicatedAgainstRound === false) {
+      const fSources = resolveValidSourceIds([ev.sourceId], rounds, company);
+      verifiedFacts.push({
+        kind: 'statutory_event',
+        label: ev.name || 'Statutory Filing',
+        detail: ev.summary || ev.name || 'Statutory corporate event.',
+        date: ev.eventDate || null,
+        sourceRank: deriveTopRankFromSources(fSources, ev.sourceRank || 'FILING'),
+        sourceIds: fSources
+      });
+    }
+  }
+
+  if (safeSignals.alumniSpinout) {
+    const aSources = resolveValidSourceIds([safeSignals.alumniSpinout.sourceId], rounds, company);
+    verifiedFacts.push({
+      kind: 'people_lineage',
+      label: `${safeSignals.alumniSpinout.name} (${safeSignals.alumniSpinout.role})`,
+      detail: `Prior: ${safeSignals.alumniSpinout.priorRole} at ${safeSignals.alumniSpinout.priorCompany}${safeSignals.alumniSpinout.priorValidUntil ? ` until ${safeSignals.alumniSpinout.priorValidUntil}` : ''}.`,
+      date: safeSignals.alumniSpinout.validSince || null,
+      sourceRank: deriveTopRankFromSources(aSources, 'FILING'),
+      sourceIds: aSources
+    });
+  }
+
+  verifiedFacts.sort(
+    (a, b) =>
+      (SOURCE_RANK_PRIORITY[b.sourceRank] || 0) - (SOURCE_RANK_PRIORITY[a.sourceRank] || 0) ||
+      (b.date || '').localeCompare(a.date || '') ||
+      a.label.localeCompare(b.label)
+  );
+
+  return {
+    triageNote: 'Evidence-match order for analyst review only — not an investment recommendation.',
+    hiddenBridges: {
+      label: 'Hidden Bridges & Warm Paths',
+      totalFound: bridgePaths.length + suppressedMegaHubCount,
+      suppressedMegaHubCount,
+      hiddenMegaHubCount: suppressedMegaHubCount,
+      familiesPresent: [...new Set(bridgePaths.map((p) => p.bridgeFamily))],
+      paths: bridgePaths
+    },
+    observedActivity: {
+      label: 'Observed Activity & Timing',
+      whyNowTrigger: safeSignals.whyNowTrigger || null,
+      headcountAtLastRound: safeSignals.headcountAtLastRound ?? null,
+      currentObservedEmp: safeSignals.currentObservedEmp ?? company?.employeeCount ?? null,
+      headcountGrowthPct: safeSignals.headcountGrowthPct ?? null,
+      items: activityItems
+    },
+    proofAndGaps: {
+      label: 'Filings, Proof & Missing Gaps',
+      dataConfidenceGrade: dataConfidence?.grade || 'Early / Sparse',
+      topSourceRank: dataConfidence?.topSourceRank || 'AGGREGATOR',
+      verifiedFacts: verifiedFacts.slice(0, 12),
+      missingFromCala: buildMissingFromCala(company, rounds, safeSignals)
+    }
+  };
+}
+
+export function buildBridgeMapPayload(thesis, shortlist = [], options = {}) {
+  const maxStartups = Math.max(1, Math.min(12, Number(options.maxStartups) || 12));
+  const maxPaths = Math.max(1, Math.min(5, Number(options.maxPaths) || 3));
+  const hideMegaHubs = options.hideMegaHubs !== undefined ? Boolean(options.hideMegaHubs) : true;
+  const rawFamily = String(options.bridgeFamily || 'all').trim().toLowerCase();
+  const bridgeFamily = BRIDGE_FAMILY_META[rawFamily] ? rawFamily : 'all';
+  const filingOnly = Boolean(options.filingOnly);
+
+  const anchor = {
+    id: thesis?.fundId || 'query-anchor',
+    label: thesis?.fundName || 'Search Strategy Anchor',
+    kind: 'anchor'
+  };
+
+  const nodeMap = new Map();
+  nodeMap.set(anchor.id, { ...anchor });
+
+  const edges = [];
+  const seenEdgeIds = new Set();
+  const renderedBridgeNodeIds = new Set();
+  const clusterStats = {
+    feeder: { bridgeNodeIds: new Set(), edgeCount: 0 },
+    co_investor: { bridgeNodeIds: new Set(), edgeCount: 0 },
+    alumni_spinout: { bridgeNodeIds: new Set(), edgeCount: 0 },
+    event: { bridgeNodeIds: new Set(), edgeCount: 0 }
+  };
+
+  let suppressedMegaHubCount = 0;
+  const displayed = (shortlist || []).slice(0, maxStartups);
+
+  for (const item of displayed) {
+    const rawCompany = COMPANIES.find((c) => c.id === item.id) || {
+      ...item,
+      rounds: item.rounds || item.roundHistory || []
+    };
+    const visibleRounds = [...(rawCompany.rounds || [])];
+    const signals = extractCandidateSignals(rawCompany, visibleRounds, thesis?.evalDate || REFERENCE_DATE, null, item.coInvestorPath || null);
+    const bridgeResult = extractHiddenBridges(thesis, rawCompany, visibleRounds, signals, {
+      hideMegaHubs,
+      bridgeFamily: bridgeFamily === 'all' ? null : bridgeFamily,
+      filingOnly,
+      maxPaths
+    });
+
+    suppressedMegaHubCount += bridgeResult.suppressedMegaHubCount || 0;
+
+    if (!nodeMap.has(item.id)) {
+      nodeMap.set(item.id, {
+        id: item.id,
+        label: item.name,
+        kind: 'startup',
+        startupId: item.id,
+        sector: item.sector,
+        country: item.country,
+        stage: item.stage,
+        topSourceRank: item.dataConfidence?.topSourceRank || 'AGGREGATOR',
+        headcountGrowthPct: item.headcountGrowthPct ?? null,
+        missingGapCount: (item.evidenceFolders?.proofAndGaps?.missingFromCala || []).length
+      });
+    }
+
+    for (const bridge of bridgeResult.bridges) {
+      const fam = bridge.bridgeFamily;
+      const famMeta = BRIDGE_FAMILY_META[fam] || { id: `cluster-${fam}`, label: fam };
+      const bridgeNodeId = `bridge:${fam}:${bridge.bridgeEntityId || slugifyBridgeId(bridge.bridgeEntityName)}`;
+
+      if (!nodeMap.has(bridgeNodeId)) {
+        nodeMap.set(bridgeNodeId, {
+          id: bridgeNodeId,
+          label: bridge.bridgeEntityName,
+          kind: 'bridge',
+          bridgeFamily: fam,
+          clusterId: famMeta.id,
+          topSourceRank: bridge.topSourceRank,
+          isMegaHub: Boolean(bridge.isMegaHub),
+          totalDeals: bridge.totalDeals ?? null,
+          lift: bridge.lift
+        });
+      }
+      renderedBridgeNodeIds.add(bridgeNodeId);
+      if (clusterStats[fam]) clusterStats[fam].bridgeNodeIds.add(bridgeNodeId);
+
+      // Anchor -> Bridge trunk edge (deduplicated per bridge node)
+      const trunkEdgeId = `edge:${anchor.id}:${bridgeNodeId}`;
+      if (!seenEdgeIds.has(trunkEdgeId)) {
+        seenEdgeIds.add(trunkEdgeId);
+        edges.push({
+          id: trunkEdgeId,
+          from: anchor.id,
+          to: bridgeNodeId,
+          bridgeId: bridge.id,
+          bridgeFamily: fam,
+          rarityScore: bridge.rarityScore,
+          topSourceRank: bridge.topSourceRank,
+          sourceIds: bridge.sourceIds,
+          label: bridge.totalDeals ? `${bridge.lift}x lift (${bridge.totalDeals}d)` : famMeta.label
+        });
+        if (clusterStats[fam]) clusterStats[fam].edgeCount += 1;
+      }
+
+      // Bridge -> Startup target edge
+      const targetEdgeId = `edge:${bridgeNodeId}:${item.id}`;
+      if (!seenEdgeIds.has(targetEdgeId)) {
+        seenEdgeIds.add(targetEdgeId);
+        edges.push({
+          id: targetEdgeId,
+          from: bridgeNodeId,
+          to: item.id,
+          bridgeId: bridge.id,
+          bridgeFamily: fam,
+          rarityScore: bridge.rarityScore,
+          topSourceRank: bridge.topSourceRank,
+          sourceIds: bridge.sourceIds,
+          label: bridge.summary
+        });
+        if (clusterStats[fam]) clusterStats[fam].edgeCount += 1;
+      }
+    }
+  }
+
+  const clusters = Object.entries(BRIDGE_FAMILY_META).map(([fam, meta]) => ({
+    id: meta.id,
+    bridgeFamily: fam,
+    label: meta.label,
+    nodeCount: clusterStats[fam]?.bridgeNodeIds.size || 0,
+    edgeCount: clusterStats[fam]?.edgeCount || 0
+  }));
+
+  return {
+    anchor,
+    clusters,
+    nodes: [...nodeMap.values()],
+    edges,
+    stats: {
+      renderedStartups: displayed.length,
+      renderedBridges: renderedBridgeNodeIds.size,
+      suppressedMegaHubCount,
+      hideMegaHubsApplied: hideMegaHubs
+    }
+  };
+}
 
 export function computeDataConfidence(company, visibleRounds = [], signals = null) {
   const roundSources = resolveSources((visibleRounds || []).flatMap((r) => r.sourceIds || []));
@@ -1025,12 +1905,19 @@ export function scoreAndRankCandidates(thesis, options = {}) {
     const sectorRatio = Math.min(1, exactSectorShare * 2.1 + (exactSectorShare === 0 && adjacentMatch ? 0.45 : 0));
     const sectorPts = Math.round(weights.sector * sectorRatio * 10) / 10;
 
-    // 2. Syndicate & Upstream Feeder link + Signals + Provenance
+    // 2. Syndicate & Upstream Feeder link + Signals + Provenance + Multi-Bridge Folders
     const coInvestorPath = buildCoInvestorPath(thesis, company, visibleRounds);
     const hasAngelOnly =
       Boolean(latestRound && latestRound.investorIds.length === 1 && latestRound.investorIds[0] === 'angel-syndicate');
     const signals = extractCandidateSignals(company, visibleRounds, evalDate, cutoffDate, coInvestorPath);
     const dataConfidence = computeDataConfidence(company, visibleRounds, signals);
+    const hiddenBridgesResult = extractHiddenBridges(thesis, company, visibleRounds, signals, {
+      hideMegaHubs: options.hideMegaHubs ?? true,
+      bridgeFamily: options.bridgeFamily ?? null,
+      filingOnly: options.filingOnly ?? false,
+      maxPaths: options.maxBridgePaths ?? 5
+    });
+    const evidenceFolders = buildEvidenceFolders(company, visibleRounds, signals, hiddenBridgesResult, dataConfidence);
 
     // 3. Stage & Time-Travel Entry Kernel (70% next-stage/ticket fit + 30% entry kernel)
     const likelyNextStage = latestRound
@@ -1368,9 +2255,11 @@ export function scoreAndRankCandidates(thesis, options = {}) {
       untappedSignal: hasAngelOnly,
       directCompetitorOf,
       suitabilityScore: totalScore,
+      triageNote: evidenceFolders.triageNote,
       scoreBreakdown,
       reasons,
       coInvestorPath,
+      evidenceFolders,
       linkedinNetwork: linkedinGraph,
       peerStartups,
       similarPortfolio: similarPortfolio.map((p) => ({
@@ -1502,9 +2391,10 @@ export function buildStartupBrief(startupId, fundId = null) {
     throw err;
   }
 
+  let thesis = null;
   let matchContext = null;
   if (fundId && fundId !== 'custom-proxy') {
-    const thesis = computeRevealedThesis({ mode: 'fund', fundId });
+    thesis = computeRevealedThesis({ mode: 'fund', fundId });
     const ranked = scoreAndRankCandidates(thesis, {
       limit: 200,
       entityScope: 'all',
@@ -1533,6 +2423,11 @@ export function buildStartupBrief(startupId, fundId = null) {
     matchContext?.coInvestorPath || null
   );
   const dataConfidence = computeDataConfidence(company, company.rounds, signals);
+  const hiddenBridgesResult = extractHiddenBridges(thesis, company, company.rounds, signals, {
+    hideMegaHubs: true,
+    maxPaths: 5
+  });
+  const evidenceFolders = buildEvidenceFolders(company, company.rounds, signals, hiddenBridgesResult, dataConfidence, matchContext);
 
   const allSourcesMap = new Map();
   const extraSourceIds = [
@@ -1551,28 +2446,7 @@ export function buildStartupBrief(startupId, fundId = null) {
     }
   }
 
-  const notFoundInCala = [
-    { field: 'Private revenue, ARR, and burn rate', status: 'Not found in Cala', reason: company.financialMetrics?.length ? 'UK Companies House provides balance sheet cash/creditors only; ARR splits remain private.' : 'Cala financial metrics cover UK/public statutory filings only.' },
-    { field: 'Individual fund cheque sizes', status: 'Not found in Cala', reason: 'Round totals are public; investor-level splits are estimated as not disclosed.' },
-    { field: 'Personal founder-partner connections', status: 'Not found in Cala', reason: 'Personal relationships reside in LinkedIn or private CRMs (not scraped).' },
-    { field: 'Customer cohort retention and net revenue churn', status: 'Not found in Cala', reason: 'Private unit economics and cohort retention metrics are not disclosed in statutory filings.' }
-  ];
-  if (signals.visibleSeries.length < 2) {
-    notFoundInCala.push({
-      field: 'Historical employee growth curve',
-      status: 'Not found in Cala',
-      reason: 'Fewer than 2 dated employee_count observations are currently indexed in Cala for this company.'
-    });
-  }
-  if (!roundsWithSources.length) {
-    notFoundInCala.push({
-      field: 'VC funding rounds & valuation',
-      status: 'Not found in Cala',
-      reason: company.isRegistryDiscovered
-        ? 'Discovered via official government corporate registry; no VC funding rounds are indexed in Cala.'
-        : 'No equity venture rounds are currently indexed in Cala for this entity.'
-    });
-  }
+  const notFoundInCala = buildMissingFromCala(company, roundsWithSources, signals);
 
   const memoLines = [
     `# Investment Brief: ${company.name}`,
@@ -1646,6 +2520,8 @@ export function buildStartupBrief(startupId, fundId = null) {
     },
     rounds: roundsWithSources,
     matchContext,
+    triageNote: evidenceFolders.triageNote,
+    evidenceFolders,
     sources: [...allSourcesMap.values()],
     notFoundInCala,
     memoMarkdown: memoLines.join('\n')
@@ -1702,7 +2578,7 @@ export function buildAgentPipeline(thesis, shortlist = [], options = {}) {
   ];
 }
 
-const CALA_SLUSH_2026_ID = 'bc844d56-6ab4-452b-96bf-2661e86e592b';
+const CALA_SLUSH_2026_ID = SLUSH_2026_EVENT_ID;
 const EXCLUDED_FUND_NAME_RE = /\b(ventures|venture capital|capital partners|investment fund|fund [ivx]+|scsp|ky\b|holding)\b/i;
 
 function inferCalaSector(industryRels = [], description = '', name = '', sectorHint = null) {
@@ -2297,6 +3173,9 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
       : null;
   const slush2026Only = Boolean(refinement.slush2026Only || refinement.slushOnly);
   const preferWarm = Boolean(refinement.preferWarm);
+  const hideMegaHubs = refinement.hideMegaHubs !== undefined ? Boolean(refinement.hideMegaHubs) : true;
+  const rawBridgeFamily = String(refinement.bridgeFamily || 'all').trim().toLowerCase();
+  const bridgeFamily = BRIDGE_FAMILY_META[rawBridgeFamily] ? rawBridgeFamily : 'all';
 
   let regionFilter = refinement.region || 'all';
   let stageFilter = refinement.stageFilter || 'all';
@@ -2316,6 +3195,12 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
     : 'general';
   let explanation = null;
   const aiTrace = [];
+
+  if (bridgeFamily !== 'all') {
+    aiTrace.push(`Filter: Bridge family "${bridgeFamily}" (${hideMegaHubs ? 'mega-hubs hidden' : 'including mega-hubs'})`);
+  } else if (!hideMegaHubs) {
+    aiTrace.push('Bridge Mode: Mega-hub bridges revealed (hideMegaHubs: false)');
+  }
 
   if (minHeadcountGrowthPct !== null && minHeadcountGrowthPct > 0) {
     aiTrace.push(`Filter: Headcount growth >= +${minHeadcountGrowthPct}%`);
@@ -2362,6 +3247,7 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
       slush2026Only ||
       raisingSoonOnly ||
       untappedOnly ||
+      bridgeFamily !== 'all' ||
       expandedKeywords.length
     );
     if (query.includes('nordic')) {
@@ -2529,6 +3415,31 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
       )
   );
 
+  const bridgeResultCache = new Map();
+  const getReconciledBridges = (item) => {
+    if (bridgeResultCache.has(item.id)) return bridgeResultCache.get(item.id);
+    const rawCompany = COMPANIES.find((c) => c.id === item.id) || {
+      ...item,
+      rounds: item.rounds || item.roundHistory || []
+    };
+    const visibleRounds = [...(rawCompany.rounds || [])];
+    const signals = extractCandidateSignals(
+      rawCompany,
+      visibleRounds,
+      thesis?.evalDate || REFERENCE_DATE,
+      null,
+      item.coInvestorPath || null
+    );
+    const res = extractHiddenBridges(thesis, rawCompany, visibleRounds, signals, {
+      hideMegaHubs,
+      bridgeFamily: bridgeFamily === 'all' ? null : bridgeFamily,
+      filingOnly,
+      maxPaths: 5
+    });
+    bridgeResultCache.set(item.id, res);
+    return res;
+  };
+
   let filtered = allRanked.filter((item) => {
     if (effectiveEntityScope !== 'all' && item.entityCategory === 'established_corp' && !hasEstablishedCompanyMatch) return false;
     if (regionFilter !== 'all' && item.region !== regionFilter) return false;
@@ -2543,6 +3454,7 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
     if (alumniOnly && !item.alumniSpinout) return false;
     if (maxEmployees !== null && Number(item.employeeCount || 0) > maxEmployees) return false;
     if (slush2026Only && !item.attendingSlush2026 && item.region !== 'Nordics') return false;
+    if (bridgeFamily !== 'all' && getReconciledBridges(item).bridges.length === 0) return false;
     if (requestedSectors.length > 0 && !requestedSectors.includes(item.sector)) return false;
     if (requestedCountries.length > 0) {
       const locHay = `${item.country || ''} ${item.hqCity || ''}`.toLowerCase();
@@ -2647,6 +3559,31 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
     aiTrace.push(`${stage.step}. ${stage.agent}: ${stage.detail}`);
   }
 
+  const shortlistSlice = filtered.slice(0, refinement.limit ?? 200).map((item) => {
+    const br = getReconciledBridges(item);
+    const baseFolders = item.evidenceFolders || {};
+    return {
+      ...item,
+      evidenceFolders: {
+        ...baseFolders,
+        hiddenBridges: {
+          label: baseFolders.hiddenBridges?.label || 'Hidden Bridges & Warm Paths',
+          totalFound: br.bridges.length + br.suppressedMegaHubCount,
+          suppressedMegaHubCount: br.suppressedMegaHubCount,
+          hiddenMegaHubCount: br.suppressedMegaHubCount,
+          familiesPresent: br.familiesPresent,
+          paths: br.bridges
+        }
+      }
+    };
+  });
+
+  const bridgeMap = buildBridgeMapPayload(thesis, shortlistSlice, {
+    hideMegaHubs,
+    bridgeFamily,
+    filingOnly
+  });
+
   return {
     searchIntent,
     aiTrace,
@@ -2664,6 +3601,8 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
       filingOnly,
       alumniOnly,
       requireAlumniFounder: alumniOnly,
+      hideMegaHubs,
+      bridgeFamily,
       sectors: requestedSectors,
       countries: requestedCountries,
       maxEmployees,
@@ -2678,21 +3617,32 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
     usedSoftFallback,
     exactMatchesBeforeFallback,
     totalMatches: filtered.length,
-    shortlist: filtered.slice(0, refinement.limit ?? 200)
+    shortlist: shortlistSlice,
+    bridgeMap
   };
 }
 
 export function runFullAnalysis(input, options = {}) {
+  const hideMegaHubs = options.hideMegaHubs !== undefined ? Boolean(options.hideMegaHubs) : true;
+  const rawBridgeFamily = String(options.bridgeFamily || 'all').trim().toLowerCase();
+  const bridgeFamily = BRIDGE_FAMILY_META[rawBridgeFamily] ? rawBridgeFamily : 'all';
+
   const thesis = computeRevealedThesis(input, options);
   const ranking = scoreAndRankCandidates(thesis, {
     rankingMode: options.rankingMode || 'balanced',
     seenCompanyNames: options.seenCompanyNames || [],
     entityScope: options.entityScope || input?.entityScope || 'startups',
     includeCompanyNames: options.includeCompanyNames || input?.includeCompanyNames || [],
+    hideMegaHubs,
+    bridgeFamily,
     limit: options.limit ?? 200
   });
   const backtest = thesis.mode === 'fund' ? runPointInTimeBacktest(thesis.fundId) : null;
   const agentPipeline = buildAgentPipeline(thesis, ranking.shortlist);
+  const bridgeMap = buildBridgeMapPayload(thesis, ranking.shortlist, {
+    hideMegaHubs,
+    bridgeFamily
+  });
 
   const uniqueSourceIds = new Set();
   const confidenceCounts = { high: 0, medium: 0, sparse: 0 };
@@ -2729,6 +3679,7 @@ export function runFullAnalysis(input, options = {}) {
     allRanked: ranking.allRanked,
     backtest,
     agentPipeline,
+    bridgeMap,
     calaTelemetry: {
       entitiesIndexed: FUNDS.length + COMPANIES.length,
       roundsInspected: COMPANIES.reduce((sum, c) => sum + c.rounds.length, 0),

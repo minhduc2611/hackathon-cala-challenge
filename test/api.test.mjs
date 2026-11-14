@@ -213,3 +213,69 @@ test('Hybrid official registry discovery endpoint & /api/refine auto-fallback sp
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('POST /api/analyze, POST /api/refine (hideMegaHubs/bridgeFamily), and GET /api/brief return evidenceFolders & bridgeMap', async () => {
+  const server = createAppServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    const analyzeRes = await fetch(`${baseUrl}/api/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'fund', fundId: 'lifeline-ventures' })
+    });
+    assert.equal(analyzeRes.status, 200);
+    const analyzeData = await analyzeRes.json();
+    assert.ok(analyzeData.bridgeMap);
+    assert.ok(analyzeData.bridgeMap.stats.renderedStartups <= 12);
+    assert.equal(analyzeData.bridgeMap.clusters.length, 4);
+    assert.ok(analyzeData.shortlist[0].evidenceFolders);
+    assert.ok(analyzeData.shortlist[0].evidenceFolders.hiddenBridges);
+    assert.ok(analyzeData.shortlist[0].evidenceFolders.observedActivity);
+    assert.ok(analyzeData.shortlist[0].evidenceFolders.proofAndGaps);
+
+    const refineAlumniRes = await fetch(`${baseUrl}/api/refine`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'fund',
+        fundId: 'lifeline-ventures',
+        bridgeFamily: 'alumni_spinout',
+        hideMegaHubs: true
+      })
+    });
+    assert.equal(refineAlumniRes.status, 200);
+    const refineAlumniData = await refineAlumniRes.json();
+    assert.equal(refineAlumniData.appliedFilters.bridgeFamily, 'alumni_spinout');
+    assert.equal(refineAlumniData.appliedFilters.hideMegaHubs, true);
+    assert.ok(refineAlumniData.shortlist.length >= 1);
+    assert.ok(refineAlumniData.bridgeMap);
+    assert.ok(refineAlumniData.bridgeMap.clusters.find((c) => c.bridgeFamily === 'alumni_spinout').nodeCount >= 1);
+
+    const refineRevealRes = await fetch(`${baseUrl}/api/refine`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'fund',
+        fundId: 'lifeline-ventures',
+        hideMegaHubs: false
+      })
+    });
+    assert.equal(refineRevealRes.status, 200);
+    const refineRevealData = await refineRevealRes.json();
+    assert.equal(refineRevealData.appliedFilters.hideMegaHubs, false);
+    assert.equal(refineRevealData.bridgeMap.stats.hideMegaHubsApplied, false);
+    assert.equal(refineRevealData.bridgeMap.stats.suppressedMegaHubCount, 0);
+
+    const briefRes = await fetch(`${baseUrl}/api/brief?startupId=voltgrid&fundId=lifeline-ventures`);
+    assert.equal(briefRes.status, 200);
+    const briefData = await briefRes.json();
+    assert.ok(briefData.evidenceFolders);
+    assert.ok(briefData.evidenceFolders.hiddenBridges.paths.some((p) => p.bridgeFamily === 'alumni_spinout'));
+    assert.ok(Array.isArray(briefData.notFoundInCala) && briefData.notFoundInCala.length >= 4);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

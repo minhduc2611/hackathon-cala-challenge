@@ -1,19 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildBridgeMapPayload,
+  buildEvidenceFolders,
   buildStartupBrief,
   computeRevealedThesis,
   enforceFactCitations,
+  extractHiddenBridges,
   ingestLiveCalaEntities,
   ingestRegistryEntities,
   interpolateHeadcountAtDate,
+  MEGA_HUB_DEAL_THRESHOLD,
   refineShortlist,
   runFullAnalysis,
   runPointInTimeBacktest,
   searchEntities,
-  scoreAndRankCandidates
+  scoreAndRankCandidates,
+  SLUSH_2026_EVENT_ID
 } from '../src/engine.mjs';
-import { COMPANIES } from '../src/data.mjs';
+import { COMPANIES, SOURCES } from '../src/data.mjs';
 
 test('searchEntities returns top 3 disambiguation for ambiguous fund queries', () => {
   const res = searchEntities('Ventures');
@@ -521,4 +526,191 @@ test('ingestRegistryEntities handles unfunded startups & established_corp withou
     const idx = COMPANIES.findIndex((c) => c.id === 'reg-test-mcdonalds-corp');
     if (idx !== -1) COMPANIES.splice(idx, 1);
   }
+});
+
+test('extractHiddenBridges filters mega-hubs, ranks by rarity/lift, and extracts all 4 bridge families', () => {
+  assert.equal(MEGA_HUB_DEAL_THRESHOLD, 8);
+
+  const thesis = computeRevealedThesis({ mode: 'fund', fundId: 'lifeline-ventures' });
+  assert.ok(thesis.upstreamFeeders.every((f) => typeof f.totalDeals === 'number' && typeof f.lift === 'number' && typeof f.isMegaHub === 'boolean'));
+  assert.ok(thesis.topCoInvestors.every((ci) => typeof ci.totalDeals === 'number' && typeof ci.lift === 'number' && typeof ci.isMegaHub === 'boolean'));
+  assert.ok(thesis.topCoInvestors.some((ci) => ci.isMegaHub === true));
+
+  // Synthetic startup mixing a mega-hub co-investor (seedcamp, 13 deals), boutique feeder/co-investor (eqt-ventures, 3 deals),
+  // an ex-Aiven alumni spinout, and a Slush 2026 event participation record.
+  const syntheticStartup = {
+    id: 'test-bridge-mix',
+    name: 'TestBridge Quantum',
+    sector: 'DeepTech',
+    country: 'Finland',
+    region: 'Nordics',
+    hqCity: 'Espoo',
+    foundingDate: '2024-02-15',
+    employeeCount: 18,
+    attendingSlush2026: true,
+    corporateEvents: [
+      {
+        id: SLUSH_2026_EVENT_ID,
+        name: 'Slush 2026 (Helsinki)',
+        eventType: 'PARTICIPATES_IN_EVENT',
+        eventDate: '2026-11-19',
+        summary: 'TestBridge Quantum exhibited in Slush 2026 Founder Stage.',
+        sourceRank: 'PRIMARY',
+        sourceId: 'src-iceye-1'
+      }
+    ],
+    peopleCoverage: {
+      available: true,
+      note: 'Test founder lineage',
+      roles: [
+        {
+          relation: 'FOUNDED',
+          name: 'Kaisa Korhonen',
+          role: 'CEO & Co-Founder',
+          validSince: '2024-02-15',
+          priorCompany: 'Aiven',
+          priorRole: 'Principal Distributed Systems Lead',
+          priorValidUntil: '2024-01-10',
+          sourceRank: 'FILING',
+          sourceId: 'src-prh-filing-2026'
+        }
+      ]
+    },
+    rounds: [
+      {
+        id: 'tb-r1',
+        type: 'Seed',
+        date: '2025-05-10',
+        amountEurM: 3.5,
+        valuationEurM: null,
+        leadInvestorId: 'eqt-ventures',
+        investorIds: ['eqt-ventures', 'seedcamp'],
+        sourceIds: ['src-iceye-1', 'src-prh-filing-2026']
+      }
+    ]
+  };
+
+  // Inject boutique feeder entry & mega-hub co-investor cleanly into test thesis copy
+  const testThesis = {
+    ...thesis,
+    topCoInvestors: [
+      { id: 'seedcamp', name: 'Seedcamp', sharedRounds: 3, totalDeals: 13, lift: 0.83, isMegaHub: true, companies: ['Oura Health'], sourceIds: ['src-oura-1'] },
+      { id: 'eqt-ventures', name: 'EQT Ventures', sharedRounds: 2, totalDeals: 3, lift: 1.15, isMegaHub: false, companies: ['Varjo'], sourceIds: ['src-varjo-1'] }
+    ],
+    upstreamFeeders: [
+      { id: 'eqt-ventures', name: 'EQT Ventures', fedDealsCount: 2, totalDeals: 3, lift: 1.15, isMegaHub: false, companies: ['Varjo'], sourceIds: ['src-varjo-1'] },
+      { id: 'seedcamp', name: 'Seedcamp', fedDealsCount: 2, totalDeals: 13, lift: 0.55, isMegaHub: true, companies: ['Wolt'], sourceIds: ['src-oura-1'] }
+    ]
+  };
+
+  const hiddenResult = extractHiddenBridges(testThesis, syntheticStartup, syntheticStartup.rounds, null, {
+    hideMegaHubs: true,
+    maxPaths: 5
+  });
+  assert.ok(hiddenResult.suppressedMegaHubCount >= 2);
+  assert.ok(hiddenResult.bridges.length >= 3);
+  assert.ok(hiddenResult.bridges.every((b) => b.isMegaHub === false));
+  for (let i = 1; i < hiddenResult.bridges.length; i++) {
+    assert.ok(hiddenResult.bridges[i - 1].rarityScore >= hiddenResult.bridges[i].rarityScore);
+  }
+  for (const br of hiddenResult.bridges) {
+    assert.ok(br.hops.length >= 2 && br.hops.length <= 4);
+    assert.ok(br.sourceIds.length >= 1 && br.sourceIds.every((id) => Boolean(SOURCES[id])));
+  }
+
+  const revealedResult = extractHiddenBridges(testThesis, syntheticStartup, syntheticStartup.rounds, null, {
+    hideMegaHubs: false,
+    maxPaths: 10
+  });
+  assert.equal(revealedResult.suppressedMegaHubCount, 0);
+  assert.ok(revealedResult.bridges.some((b) => b.isMegaHub === true));
+
+  const alumniOnly = extractHiddenBridges(testThesis, syntheticStartup, syntheticStartup.rounds, null, {
+    bridgeFamily: 'alumni_spinout'
+  });
+  assert.equal(alumniOnly.bridges.length, 1);
+  assert.equal(alumniOnly.bridges[0].bridgeFamily, 'alumni_spinout');
+
+  const eventOnly = extractHiddenBridges(testThesis, syntheticStartup, syntheticStartup.rounds, null, {
+    bridgeFamily: 'event'
+  });
+  assert.equal(eventOnly.bridges.length, 1);
+  assert.equal(eventOnly.bridges[0].bridgeFamily, 'event');
+
+  const filingOnlyRes = extractHiddenBridges(testThesis, syntheticStartup, syntheticStartup.rounds, null, {
+    hideMegaHubs: false,
+    filingOnly: true
+  });
+  assert.ok(filingOnlyRes.bridges.every((b) => b.topSourceRank === 'FILING'));
+});
+
+test('buildEvidenceFolders attaches 3 provenance-ordered analyst folders to shortlist & buildStartupBrief', () => {
+  const analysis = runFullAnalysis({ mode: 'fund', fundId: 'lifeline-ventures' });
+  const topCandidate = analysis.shortlist[0];
+  assert.ok(topCandidate.evidenceFolders);
+  assert.match(topCandidate.triageNote, /not an investment recommendation/i);
+  assert.match(topCandidate.evidenceFolders.triageNote, /not an investment recommendation/i);
+  assert.ok(topCandidate.evidenceFolders.hiddenBridges);
+  assert.ok(topCandidate.evidenceFolders.observedActivity);
+  assert.ok(topCandidate.evidenceFolders.proofAndGaps);
+  assert.ok(topCandidate.evidenceFolders.proofAndGaps.missingFromCala.some((g) => g.status === 'Not found in Cala'));
+
+  const rankOrder = { FILING: 4, PRIMARY: 3, PRESS: 2, AGGREGATOR: 1 };
+  const facts = topCandidate.evidenceFolders.proofAndGaps.verifiedFacts;
+  assert.ok(facts.length >= 1);
+  for (let i = 1; i < facts.length; i++) {
+    assert.ok(rankOrder[facts[i - 1].sourceRank] >= rankOrder[facts[i].sourceRank]);
+  }
+
+  const voltgridBrief = buildStartupBrief('voltgrid', 'lifeline-ventures');
+  assert.ok(voltgridBrief.evidenceFolders);
+  assert.ok(voltgridBrief.evidenceFolders.hiddenBridges.paths.some((p) => p.bridgeFamily === 'alumni_spinout'));
+  assert.ok(voltgridBrief.evidenceFolders.proofAndGaps.missingFromCala.length >= 4);
+
+  // Confirm buildEvidenceFolders works cleanly when called standalone
+  const manualFolders = buildEvidenceFolders(
+    { id: 'voltgrid', name: 'VoltGrid', peopleCoverage: { available: false, roles: [] } },
+    [],
+    { headcountGrowthPct: 0 },
+    { bridges: [], suppressedMegaHubCount: 0 },
+    { grade: 'Early / Sparse', topSourceRank: 'AGGREGATOR' }
+  );
+  assert.ok(manualFolders.proofAndGaps.missingFromCala.some((g) => /Verified leadership/i.test(g.field)));
+});
+
+test('refineShortlist filters by bridgeFamily/hideMegaHubs and buildBridgeMapPayload enforces graph invariants', () => {
+  const analysis = runFullAnalysis({ mode: 'fund', fundId: 'lifeline-ventures' });
+  assert.ok(analysis.bridgeMap);
+  assert.ok(analysis.bridgeMap.stats.renderedStartups <= 12);
+
+  const nodeIds = new Set(analysis.bridgeMap.nodes.map((n) => n.id));
+  assert.equal(nodeIds.size, analysis.bridgeMap.nodes.length);
+  for (const edge of analysis.bridgeMap.edges) {
+    assert.ok(nodeIds.has(edge.from), `Orphan edge source ${edge.from}`);
+    assert.ok(nodeIds.has(edge.to), `Orphan edge target ${edge.to}`);
+  }
+  assert.equal(analysis.bridgeMap.clusters.length, 4);
+
+  const alumniRefined = refineShortlist(analysis.thesis, analysis.allRanked, {
+    bridgeFamily: 'alumni_spinout',
+    hideMegaHubs: true
+  });
+  assert.equal(alumniRefined.appliedFilters.bridgeFamily, 'alumni_spinout');
+  assert.equal(alumniRefined.appliedFilters.hideMegaHubs, true);
+  assert.ok(alumniRefined.aiTrace.some((line) => /alumni_spinout/i.test(line)));
+  assert.ok(alumniRefined.shortlist.length >= 1);
+  assert.ok(
+    alumniRefined.shortlist.every((item) =>
+      item.evidenceFolders.hiddenBridges.paths.some((p) => p.bridgeFamily === 'alumni_spinout')
+    )
+  );
+  assert.ok(alumniRefined.bridgeMap);
+  assert.ok(alumniRefined.bridgeMap.clusters.find((c) => c.bridgeFamily === 'alumni_spinout').nodeCount >= 1);
+
+  const revealedMap = buildBridgeMapPayload(analysis.thesis, analysis.shortlist, { hideMegaHubs: false });
+  const hiddenMap = buildBridgeMapPayload(analysis.thesis, analysis.shortlist, { hideMegaHubs: true });
+  assert.equal(revealedMap.stats.suppressedMegaHubCount, 0);
+  assert.equal(revealedMap.stats.hideMegaHubsApplied, false);
+  assert.equal(hiddenMap.stats.hideMegaHubsApplied, true);
+  assert.ok(hiddenMap.stats.suppressedMegaHubCount >= revealedMap.stats.suppressedMegaHubCount);
 });

@@ -26,18 +26,17 @@
   />
   <link rel="stylesheet" href="/styles.css" />
 </head>
-<body class="is-onboarding">
+<body class="is-search-hero">
   <!-- ======================================================================
-       FULL-SCREEN 3-STEP ONBOARDING (NO UPPER TAB; 100VH CLEAN SETUP FLOW)
-       Step 1: How it works (Cala data reliability)
-       Step 2: Choose role (Analyst vs Investor)
-       Step 3: Investor benchmark, thesis override & filters config
+       BENCHMARK & THESIS CONFIGURATION OVERLAY (OPENED ON DEMAND)
        ====================================================================== -->
   <section
     id="panel-config"
     class="onboarding-fullscreen"
-    role="region"
-    aria-label="Full-screen setup"
+    role="dialog"
+    aria-modal="true"
+    aria-label="Benchmark and thesis configuration"
+    hidden
   >
     <div class="onboarding-shell">
       <div class="onboarding-header">
@@ -73,7 +72,10 @@
           </div>
 
           <button type="button" class="link-btn" id="skipToWorkspaceBtn">
-            Skip to startups &rarr;
+            Explore constellation &rarr;
+          </button>
+          <button type="button" class="btn sm" id="closeConfigOverlayBtn" aria-label="Close setup">
+            Close &times;
           </button>
         </div>
       </div>
@@ -310,7 +312,7 @@
             <div class="footer-review-line" id="configReviewSummary"></div>
           </div>
           <button type="button" class="btn primary btn-lg" id="launchDashboardBtn">
-            Launch startups to call &rarr;
+            Apply benchmark &amp; explore &rarr;
           </button>
         </div>
       </div>
@@ -318,18 +320,29 @@
   </section>
 
   <!-- ======================================================================
-       MINIMAL TOP BAR (0 STEP TABS; SINGLE OPTION BUTTON FOR ROLE & CONFIG)
+       MINIMAL HEADER BAR (HERO SCREEN 1 -> FLOATING COMMAND WORKSPACE SCREEN 2)
        ====================================================================== -->
   <header class="top" id="dashboardMasthead">
-    <a href="#search" class="brand" data-go="search">
+    <a href="#search" class="brand" id="brandHomeLink" data-go="hero">
       <div class="mark">R</div>
       <div>
         Revealed Thesis
-        <small>Verified by Cala</small>
+        <small>Cala Bridge &amp; Evidence Engine</small>
       </div>
     </a>
 
     <div class="top-right" id="inlineCalibrationBar">
+      <button
+        type="button"
+        class="benchmark-trigger-pill"
+        id="heroBenchmarkBtn"
+        title="Change active investor benchmark or portfolio seed"
+      >
+        <span class="bench-kicker">Benchmark:</span>
+        <strong id="heroBenchmarkLabel">Lifeline Ventures</strong>
+        <span class="bench-change">(Change)</span>
+      </button>
+
       <button
         type="button"
         class="theme-toggle-btn"
@@ -354,7 +367,7 @@
           aria-controls="optionsMenuPopover"
         >
           <span class="opt-role-tag" id="activeRoleBadge">Analyst</span>
-          <span class="opt-sep">·</span>
+          <span class="opt-sep">&middot;</span>
           <span id="activeBenchmarkLabel">Lifeline Ventures</span>
           <span class="opt-caret" aria-hidden="true">&#9662;</span>
         </button>
@@ -385,12 +398,12 @@
             <span class="pop-label">Workspace view</span>
             <div class="pop-nav-list">
               <button type="button" class="pop-nav-btn is-active" data-go="search" id="navBtnSearch">
-                <span>Startups to call</span>
-                <span>Shortlist &amp; search</span>
+                <span>Bridge Constellation</span>
+                <span>Map &amp; evidence</span>
               </button>
               <button type="button" class="pop-nav-btn" data-go="talk" id="navBtnTalk">
-                <span>One startup deep dive</span>
-                <span>3-column brief</span>
+                <span>Full startup brief</span>
+                <span>3-column audit</span>
               </button>
               <button type="button" class="pop-nav-btn" data-go="thesis" id="navBtnThesis">
                 <span>Revealed thesis &amp; backtest</span>
@@ -401,7 +414,7 @@
 
           <div class="pop-section pop-foot">
             <button type="button" class="btn sm" id="editSetupBtn" style="width: 100%">
-              Re-open full-screen setup &rarr;
+              Benchmark &amp; mandate setup &rarr;
             </button>
           </div>
         </div>
@@ -410,108 +423,198 @@
   </header>
 
   <!-- ======================================================================
-       MAIN WORKSPACE (STARTUPS TO CALL, DEEP DIVE, THESIS & BACKTEST)
+       MAIN WORKSPACE (SEARCH HERO -> INTERACTIVE CONSTELLATION + SIDE EVIDENCE)
        ====================================================================== -->
   <main class="workspace" id="dashboardMain">
-    <!-- VIEW 1: STARTUPS TO CALL (FLOATING ROUNDED SEARCH BAR + 6-7 PER LINE) -->
+    <!-- VIEW 1: SEARCH-FIRST STAGE -> CONSTELLATION CANVAS & SIDE EVIDENCE RAIL -->
     <section
       id="panel-search"
-      class="screen workspace-panel"
-      aria-label="Startups to call"
+      class="screen workspace-panel bridge-workspace-panel"
+      aria-label="Bridge constellation workspace"
     >
-      <div class="search-hero">
-        <h2>Startups to call for <em id="searchFundTitle">Lifeline Ventures</em></h2>
-        <p class="sub" id="searchHeroSub">
-          Ranked by revealed thesis fit across sector, stage, co-investors, geography, and check size.
-        </p>
-
-        <!-- BIG, CLEAN, ROUNDED FLOATING SEARCH PILL (NO TAB/CARD BEHIND IT) -->
-        <form id="aiSearchForm" class="floating-search-bar" role="search">
-          <label for="aiSearchInput" class="sr-only">Search a company, investor, or industry</label>
-          <svg
-            class="search-lead-icon"
-            width="22"
-            height="22"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2.2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <circle cx="11" cy="11" r="8"></circle>
-            <path d="m21 21-4.3-4.3"></path>
-          </svg>
-          <input
-            type="text"
-            id="aiSearchInput"
-            class="floating-search-input"
-            placeholder="Search any company or startup (e.g. McDonald's, KFC, Slush 2026)..."
-            autocomplete="off"
-          />
-          <kbd class="search-kbd-hint" id="searchKbdHint" aria-hidden="true">/</kbd>
-          <button type="button" class="search-reset-pill" id="aiSearchResetBtn" hidden>
-            Reset
-          </button>
-          <button type="submit" class="floating-search-btn" id="aiSearchSubmitBtn">
-            AI Search
-          </button>
-          <div
-            id="searchSuggestPopup"
-            class="search-suggest-popup"
-            role="listbox"
-            aria-label="Search suggestions"
-            hidden
-          ></div>
-        </form>
-
-        <!-- QUIET TYPED PROMPT ROW + COLLAPSIBLE FILTERS & LIVE CALA -->
-        <div class="examples-strip" id="aiExamplesBar">
-          <span class="try-label">Try:</span>
-          <button type="button" class="example-btn" data-query="VoltGrid">
-            <span class="ex-kind">Company</span>
-            <span class="ex-val">VoltGrid</span>
-          </button>
-          <button type="button" class="example-btn" data-query="Creandum">
-            <span class="ex-kind">Investor</span>
-            <span class="ex-val">Creandum</span>
-          </button>
-          <button type="button" class="example-btn" data-query="Climate Tech">
-            <span class="ex-kind">Industry</span>
-            <span class="ex-val">Climate Tech</span>
-          </button>
-          <button type="button" class="example-btn" data-query="Why not Oura?">
-            <span class="ex-kind">Ask</span>
-            <span class="ex-val">Why not Oura?</span>
-          </button>
-          <button type="button" class="example-btn" data-query="McDonald's">
-            <span class="ex-kind">Registry</span>
-            <span class="ex-val">McDonald's</span>
-          </button>
-          <span class="strip-sep" aria-hidden="true">|</span>
-          <button
-            type="button"
-            class="filter-drawer-toggle"
-            id="toggleFiltersBtn"
-            aria-expanded="false"
-            aria-controls="collapsibleFilterStrip"
-          >
-            <span>Filters</span>
-            <span class="filter-active-badge num-tabular" id="filterCountPill" hidden>0</span>
-            <span aria-hidden="true">&#9662;</span>
-          </button>
-          <button
-            type="button"
-            class="live-cala-pill-btn"
-            id="searchLiveCalaBtn"
-            title="Look up live verified company and event facts"
-          >
-            <span class="live-dot" aria-hidden="true"></span>
-            <span>Check Cala</span>
-          </button>
+      <div class="command-stage" id="commandStage">
+        <div class="hero-intro-block" id="heroIntroBlock">
+          <div class="hero-kicker-pill">Cala Bridge &amp; Evidence Engine</div>
+          <h1 class="hero-main-title">
+            Map <em>hidden bridges</em> and filing-verified startup signals.
+          </h1>
+          <p class="hero-sub-tagline" id="searchHeroSub">
+            Find hidden feeder bridges, alumni spinouts, and filing-verified startup signals - without starburst noise.
+          </p>
         </div>
 
+        <div class="command-row-bar">
+          <form id="aiSearchForm" class="floating-search-bar" role="search">
+            <label for="aiSearchInput" class="sr-only">Search any startup, strategy filter, founder spinout, or company</label>
+            <svg
+              class="search-lead-icon"
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="11" cy="11" r="8"></circle>
+              <path d="m21 21-4.3-4.3"></path>
+            </svg>
+            <input
+              type="text"
+              id="aiSearchInput"
+              class="floating-search-input"
+              placeholder="Search startups, feeder bridges, alumni spinouts, or any company..."
+              autocomplete="off"
+            />
+            <kbd class="search-kbd-hint" id="searchKbdHint" aria-hidden="true">/</kbd>
+            <button type="button" class="search-reset-pill" id="aiSearchResetBtn" hidden>
+              Reset
+            </button>
+            <button type="submit" class="floating-search-btn" id="aiSearchSubmitBtn">
+              Explore Map
+            </button>
+            <div
+              id="searchSuggestPopup"
+              class="search-suggest-popup"
+              role="listbox"
+              aria-label="Search suggestions"
+              hidden
+            ></div>
+          </form>
+
+          <div class="dock-right-controls" id="dockRightControls">
+            <button
+              type="button"
+              class="dock-pill-btn"
+              id="workspaceThesisBtn"
+              data-go="thesis"
+              title="Inspect revealed vs stated thesis and 12-month historical backtest"
+            >
+              <span>Thesis &amp; Backtest</span>
+            </button>
+            <button
+              type="button"
+              class="filter-drawer-toggle"
+              id="toggleFiltersBtn"
+              aria-expanded="false"
+              aria-controls="collapsibleFilterStrip"
+            >
+              <span>Scope &amp; Filters</span>
+              <span class="filter-active-badge num-tabular" id="filterCountPill" hidden>0</span>
+              <span aria-hidden="true">&#9662;</span>
+            </button>
+            <button
+              type="button"
+              class="live-cala-pill-btn"
+              id="searchLiveCalaBtn"
+              title="Run live verified company lookup on Cala"
+            >
+              <span class="live-dot" aria-hidden="true"></span>
+              <span>Check Cala</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- SCREEN 1: 4 CLICKABLE STARTER PROMPT PILLS -->
+        <div class="starter-prompts-wrap" id="aiExamplesBar">
+          <div class="starter-prompts-grid">
+            <button
+              type="button"
+              class="starter-pill-btn"
+              data-query="Slush 2026 Nordic fintech under 25 employees with upstream feeder bridges"
+            >
+              <span class="starter-pill-kicker">Event + Feeder</span>
+              <span class="starter-pill-text">Slush 2026 Nordic fintech under 25 employees with upstream feeder bridges</span>
+            </button>
+            <button
+              type="button"
+              class="starter-pill-btn"
+              data-query="Scaleup alumni spinouts raising Seed with high hiring velocity"
+            >
+              <span class="starter-pill-kicker">Alumni Spinouts</span>
+              <span class="starter-pill-text">Scaleup alumni spinouts raising Seed with high hiring velocity</span>
+            </button>
+            <button
+              type="button"
+              class="starter-pill-btn"
+              data-query="Untapped startups with registry filings and no mega-hub noise"
+            >
+              <span class="starter-pill-kicker">Filing Provenance</span>
+              <span class="starter-pill-text">Untapped startups with registry filings and no mega-hub noise</span>
+            </button>
+            <button
+              type="button"
+              class="starter-pill-btn"
+              id="starterWhyNotBtn"
+              data-query="Why not Oura?"
+            >
+              <span class="starter-pill-kicker">Portfolio Audit</span>
+              <span class="starter-pill-text" id="starterWhyNotText">Why not Oura?</span>
+            </button>
+          </div>
+
+          <div class="hero-secondary-actions">
+            <button type="button" class="btn primary" id="exploreBenchmarkBtn">
+              Explore Active Benchmark Constellation &rarr;
+            </button>
+            <button type="button" class="btn" id="heroFiltersQuickBtn">
+              Filters &amp; Scope
+            </button>
+          </div>
+        </div>
+
+        <!-- SCREEN 2: FLOATING CONSTELLATION FILTER RIBBON -->
+        <div class="constellation-filter-ribbon" id="constellationFilterRibbon">
+          <button
+            type="button"
+            class="ribbon-toggle-btn is-active"
+            id="toggleHideMegaHubsBtn"
+            aria-pressed="true"
+            title="Suppress high-degree broad accelerator and multi-stage platform hubs"
+          >
+            <span class="toggle-indicator-dot" aria-hidden="true"></span>
+            <span>Hide mega-hubs</span>
+            <span class="ribbon-count-pill num-tabular" id="megaHubCounterPill">0 hidden</span>
+          </button>
+
+          <div class="bridge-family-segmented" id="bridgeFamilySwitcher" role="radiogroup" aria-label="Bridge family filter">
+            <button type="button" class="fam-seg-btn is-active" data-bridge-family="all">All</button>
+            <button type="button" class="fam-seg-btn" data-bridge-family="feeder">
+              <span class="fam-dot fam-dot-feeder" aria-hidden="true"></span>Feeders
+            </button>
+            <button type="button" class="fam-seg-btn" data-bridge-family="co_investor">
+              <span class="fam-dot fam-dot-coinv" aria-hidden="true"></span>Co-Investors
+            </button>
+            <button type="button" class="fam-seg-btn" data-bridge-family="alumni_spinout">
+              <span class="fam-dot fam-dot-alumni" aria-hidden="true"></span>Spinouts
+            </button>
+            <button type="button" class="fam-seg-btn" data-bridge-family="event">
+              <span class="fam-dot fam-dot-event" aria-hidden="true"></span>Events
+            </button>
+          </div>
+
+          <div class="ribbon-chips-right">
+            <button type="button" class="ribbon-chip-btn" id="chipFilingOnlyBtn" aria-pressed="false">
+              FILING only
+            </button>
+            <button type="button" class="ribbon-chip-btn" id="chipSlushOnlyBtn" aria-pressed="false">
+              Slush 2026
+            </button>
+            <button type="button" class="ribbon-chip-btn" id="chipUntappedOnlyBtn" aria-pressed="false">
+              Untapped
+            </button>
+            <button type="button" class="ribbon-chip-btn" id="filterCallListBtn" aria-pressed="false">
+              Call List <b class="num-tabular" id="callListCountBadge">0</b>
+            </button>
+            <button type="button" class="ribbon-chip-btn ribbon-reset-btn" id="workspaceResetBtn">
+              Reset
+            </button>
+          </div>
+        </div>
+
+        <!-- POPOVER FILTER STRIP (STAGES, REGION, SCOPE, REGISTRY & LIVE CALA DISCOVERY) -->
         <div class="filter-strip" id="collapsibleFilterStrip" hidden>
           <div class="filter-control">
             <label for="filterEntityScope" class="filter-label">Scope</label>
@@ -577,118 +680,220 @@
               Warmest
             </button>
           </div>
+
+          <button type="button" class="btn sm" id="discoverRegistriesBtn" title="Fetch entities from official corporate registries (PRH / GLEIF)">
+            Sync Registries (<span id="registryDiscoveredBadge">Free API</span>)
+          </button>
+          <button type="button" class="btn sm" id="expandUniverseCalaBtn" title="Fetch additional startups from Live Cala AI graph">
+            Discover Live Cala (<span id="liveDiscoveredBadge">+100</span>)
+          </button>
         </div>
 
-        <div class="ai-trace-banner" id="aiTraceBox" aria-live="polite" hidden>
-          <div class="trace-main">
-            <span class="trace-badge" id="aiIntentBadge">AI Search</span>
-            <p class="trace-explanation" id="aiExplanationText"></p>
+        <!-- LIVE CALA AI ENTITY & KNOWLEDGE LOOKUP OVERLAY CARD -->
+        <section
+          id="liveCalaSearchCard"
+          class="live-cala-intel-card"
+          hidden
+          aria-label="Live Cala AI entity intelligence"
+        >
+          <div id="liveCalaSearchContent"></div>
+        </section>
+
+        <!-- OPTIONAL CALL LIST COMPARISON WORKBENCH -->
+        <section
+          id="callListCompareCard"
+          class="call-list-compare-card"
+          hidden
+          aria-label="Call List side-by-side comparison matrix"
+        >
+          <div class="compare-card-head">
+            <div>
+              <span class="drawer-kicker">Analyst Workbench &middot; Side-by-Side Matrix</span>
+              <h3 class="compare-card-title">Saved Call List Comparison</h3>
+            </div>
+            <div class="compare-card-actions">
+              <span id="compareCardMeta" class="compare-card-meta">Comparing saved targets</span>
+              <button type="button" id="closeCompareCardBtn" class="btn sm">Close matrix &times;</button>
+            </div>
           </div>
-          <div class="trace-operations" id="aiAppliedFilters"></div>
-          <div class="ai-trace-citations" id="aiTraceCitations"></div>
-        </div>
+          <div id="callListCompareGrid" class="call-list-compare-grid"></div>
+        </section>
       </div>
 
-      <!-- LIVE CALA AI ENTITY & KNOWLEDGE LOOKUP RESULT -->
-      <section
-        id="liveCalaSearchCard"
-        class="live-cala-intel-card"
-        hidden
-        aria-label="Live Cala AI entity intelligence"
-      >
-        <div id="liveCalaSearchContent"></div>
-      </section>
+      <!-- ====================================================================
+           SCREEN 2: FULL-BLEED INTERACTIVE CONSTELLATION + COLLAPSIBLE RIGHT RAIL
+           ==================================================================== -->
+      <div class="constellation-stage" id="constellationStage">
+        <div
+          id="bridgeMapCanvas"
+          class="bridge-map-canvas"
+          tabindex="0"
+          role="region"
+          aria-label="Interactive hidden-bridge constellation map"
+        >
+          <div class="map-panzoom-viewport" id="mapPanZoomViewport">
+            <svg
+              id="constellationSvg"
+              class="constellation-svg"
+              viewBox="0 0 1680 1040"
+              width="1680"
+              height="1040"
+              aria-hidden="true"
+            ></svg>
+            <div id="constellationNodesLayer" class="constellation-nodes-layer"></div>
+          </div>
 
-      <!-- 6-7 STARTUPS A LINE GRID -->
-      <div class="grid-toolbar">
-        <div class="grid-toolbar-left">
-          <h3 class="grid-count-title num-tabular"><span id="gridCountBadge">20</span> startups ranked</h3>
-          <button type="button" class="call-list-pill" id="filterCallListBtn" aria-pressed="false">
-            <svg class="ui-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path d="M4 2.5h8v11l-4-2.5L4 13.5v-11z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
-            </svg>
-            <span>Call List</span>
-            <b class="num-tabular" id="callListCountBadge">0</b>
-          </button>
-          <button
-            type="button"
-            class="call-list-pill slush-filter-pill"
-            id="filterSlushBtn"
-            aria-pressed="false"
-            title="Filter to startups attending Slush 2026"
-          >
-            <span>Slush 2026</span>
-            <b class="num-tabular" id="slushCountBadge">0</b>
-          </button>
-          <button
-            type="button"
-            class="call-list-pill call-list-compare-btn"
-            id="compareCallListBtn"
-            aria-expanded="false"
-            aria-controls="callListCompareCard"
-            title="Compare saved Call List startups side by side"
-          >
-            <span>Compare</span>
-            <b class="num-tabular" id="compareCallListCountBadge">0</b>
-          </button>
-          <button
-            type="button"
-            class="call-list-pill"
-            id="discoverRegistriesBtn"
-            title="Fetch startups &amp; companies from free official corporate registries (PRH / GLEIF)"
-          >
-            <span>Sync Registries</span>
-            <b class="num-tabular" id="registryDiscoveredBadge">Free API</b>
-          </button>
-          <button
-            type="button"
-            class="call-list-pill cala-discover-pill"
-            id="expandUniverseCalaBtn"
-            title="Fetch and score additional startups directly from the live Cala AI graph"
-          >
-            <span class="live-dot" aria-hidden="true"></span>
-            <span>Discover Live Cala</span>
-            <b class="num-tabular" id="liveDiscoveredBadge">+100</b>
-          </button>
+          <div id="constellationEmptyState" class="constellation-empty-state" hidden>
+            <div class="empty-kicker">Constellation filter isolated 0 bridges</div>
+            <h3 id="constellationEmptyTitle">No bridges match current filters</h3>
+            <p id="constellationEmptyDesc">
+              Active mega-hub suppression or bridge family filters excluded all connecting paths for this shortlist.
+            </p>
+            <div class="empty-actions">
+              <button type="button" class="btn primary sm" id="emptyRevealMegaHubsBtn">Reveal mega-hubs</button>
+              <button type="button" class="btn sm" id="emptyShowAllBridgesBtn" hidden>Show all bridges</button>
+              <button type="button" class="btn sm" id="emptyResetFiltersBtn">Reset filters</button>
+            </div>
+          </div>
+
+          <!-- Top-right zoom controls -->
+          <div class="map-zoom-controls" id="mapZoomToolbar" aria-label="Map zoom controls">
+            <button type="button" class="zoom-icon-btn" id="mapZoomOutBtn" aria-label="Zoom out">-</button>
+            <span class="zoom-readout num-tabular" id="mapZoomReadout">100%</span>
+            <button type="button" class="zoom-icon-btn" id="mapZoomInBtn" aria-label="Zoom in">+</button>
+            <span class="zoom-sep" aria-hidden="true"></span>
+            <button type="button" class="zoom-text-btn" id="mapCenterBtn">Center</button>
+            <button type="button" class="zoom-text-btn" id="mapFitViewBtn">Fit View</button>
+          </div>
+
+          <!-- Bottom-left translucent AI synthesis banner & legend -->
+          <div class="map-bottom-left-overlay" id="mapBottomLeftOverlay">
+            <div class="map-synthesis-banner" id="aiSynthesisBanner" aria-live="polite">
+              Ready: select a prompt or inspect nodes in the constellation.
+            </div>
+            <div class="map-legend-strip" id="mapLegendStrip">
+              <span class="leg-item"><span class="leg-line leg-line-solid"></span> FILING / PRIMARY</span>
+              <span class="leg-item"><span class="leg-line leg-line-dashed"></span> PRESS / AGG</span>
+              <span class="leg-sep">&middot;</span>
+              <span class="leg-item"><span class="fam-dot fam-dot-feeder"></span> Feeder</span>
+              <span class="leg-item"><span class="fam-dot fam-dot-coinv"></span> Co-Investor</span>
+              <span class="leg-item"><span class="fam-dot fam-dot-alumni"></span> Spinout</span>
+              <span class="leg-item"><span class="fam-dot fam-dot-event"></span> Event</span>
+              <span class="leg-sep">&middot;</span>
+              <span class="leg-item leg-hint">Drag or 2-finger swipe to pan &middot; Pinch or +/- to zoom</span>
+            </div>
+          </div>
+
+          <!-- Floating hover tooltip -->
+          <div id="mapHoverTooltip" class="map-hover-tooltip" hidden></div>
         </div>
-        <div class="grid-toolbar-right">
-          <span class="note" id="gridRoleHint">Hover any card to focus; tap to open details</span>
-          <button type="button" class="inline-action-link" data-go="thesis">
-            Thesis &amp; backtest &rarr;
-          </button>
-        </div>
+
+        <!-- Collapsed floating right-edge pill -->
+        <button
+          type="button"
+          id="sideRailCollapsedTab"
+          class="side-rail-collapsed-tab"
+          aria-expanded="false"
+          aria-controls="sideEvidenceRail"
+        >
+          <span class="rail-pill-main">
+            Evidence &amp; Matches (<span class="num-tabular" id="railCollapsedCount">0</span>)
+          </span>
+          <span class="rail-pill-filing num-tabular" id="railCollapsedFilingCount">0 FILING</span>
+        </button>
+
+        <!-- Expanded collapsible Right-Side Information / Evidence Rail -->
+        <aside
+          id="sideEvidenceRail"
+          class="side-evidence-rail"
+          aria-label="Evidence and matches panel"
+          hidden
+        >
+          <header class="side-rail-header">
+            <div class="side-rail-title-block">
+              <div class="side-rail-kicker" id="railContextKicker">ANALYST TRIAGE &middot; CONSTELLATION</div>
+              <h2 class="side-rail-title" id="railContextTitle">Matches &amp; Evidence</h2>
+              <p class="side-rail-sub" id="railContextSub">Click a startup or bridge node to inspect citations.</p>
+            </div>
+            <div class="side-rail-actions">
+              <button type="button" class="stepper-btn sm" id="railPrevBtn" title="Previous startup">&larr;</button>
+              <button type="button" class="stepper-btn sm" id="railNextBtn" title="Next startup">&rarr;</button>
+              <button type="button" class="rail-icon-btn" id="railSaveCallBtn" title="Bookmark to Call List" aria-pressed="false">
+                <svg class="ui-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="M4 2.5h8v11l-4-2.5L4 13.5v-11z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+                </svg>
+              </button>
+              <button type="button" class="btn sm" id="sideRailCollapseBtn">Collapse</button>
+            </div>
+          </header>
+
+          <nav class="side-rail-tabs" role="tablist" aria-label="Evidence panel views">
+            <button
+              type="button"
+              class="rail-tab-btn is-active"
+              id="railTabMatches"
+              role="tab"
+              aria-selected="true"
+              data-rail-tab="matches"
+            >
+              Matches
+            </button>
+            <button
+              type="button"
+              class="rail-tab-btn"
+              id="railTabEvidence"
+              role="tab"
+              aria-selected="false"
+              data-rail-tab="evidence"
+            >
+              Evidence
+            </button>
+            <button
+              type="button"
+              class="rail-tab-btn"
+              id="railTabStrategy"
+              role="tab"
+              aria-selected="false"
+              data-rail-tab="strategy"
+            >
+              Strategy &amp; Backtest
+            </button>
+          </nav>
+
+          <div class="side-rail-body">
+            <!-- Sub-tab 1: Matches -->
+            <div id="railPaneMatches" class="rail-pane">
+              <div class="triage-note-banner">
+                Evidence-match order for analyst review only - not an investment recommendation.
+              </div>
+              <div class="rail-matches-toolbar">
+                <span class="rail-count-label num-tabular" id="railMatchesCountLabel">0 targets</span>
+                <div class="rail-matches-btns">
+                  <button type="button" class="btn sm" id="compareCallListBtn">
+                    Compare (<span id="compareCallListCountBadge">0</span>)
+                  </button>
+                  <button type="button" class="btn sm" id="exportCsvBtn">CSV</button>
+                </div>
+              </div>
+              <div id="railAiTraceStrip" class="rail-trace-strip" hidden></div>
+              <div id="railMatchesList" class="rail-matches-list" role="list"></div>
+              <div id="alsoScreenedList" class="rail-also-screened" hidden></div>
+            </div>
+
+            <!-- Sub-tab 2: Evidence (3 Folders + Bridge Hub View) -->
+            <div id="railPaneEvidence" class="rail-pane" hidden>
+              <div id="railEvidenceContent" class="rail-evidence-content">
+                <p class="note">Select a startup or bridge node on the constellation map to inspect evidence folders.</p>
+              </div>
+            </div>
+
+            <!-- Sub-tab 3: Strategy & Backtest -->
+            <div id="railPaneStrategy" class="rail-pane" hidden>
+              <div id="railStrategyContent" class="rail-strategy-content"></div>
+            </div>
+          </div>
+        </aside>
       </div>
-
-      <!-- SIDE-BY-SIDE CALL LIST COMPARISON MATRIX -->
-      <section
-        id="callListCompareCard"
-        class="call-list-compare-card"
-        hidden
-        aria-label="Call List side-by-side comparison matrix"
-      >
-        <div class="compare-card-head">
-          <div>
-            <span class="drawer-kicker">Decision Workbench · Side-by-Side Matrix</span>
-            <h3 class="compare-card-title">Saved Call List Comparison</h3>
-          </div>
-          <div class="compare-card-actions">
-            <span id="compareCardMeta" class="compare-card-meta">Comparing saved targets</span>
-            <button type="button" id="closeCompareCardBtn" class="btn sm">Close matrix &times;</button>
-          </div>
-        </div>
-        <div id="callListCompareGrid" class="call-list-compare-grid"></div>
-      </section>
-
-      <div class="startup-grid" id="startupGrid" role="list"></div>
-
-      <!-- MERGERO-STYLE "ALSO SCREENED, AND DELIBERATELY EXCLUDED" -->
-      <section class="card also" id="alsoScreenedCard">
-        <div class="also-header-row">
-          <h4>Also screened &amp; excluded (existing portfolio &amp; direct conflicts)</h4>
-          <span class="gradual-hint" id="alsoScreenedCountBadge">4 excluded</span>
-        </div>
-        <div id="alsoScreenedList" class="also-body"></div>
-      </section>
     </section>
 
     <!-- VIEW 2: FULL-SCREEN 3-COLUMN DEEP DIVE -->
@@ -763,7 +968,7 @@
               Ranked using only pre-cutoff Cala rounds to predict subsequent investments.
             </p>
             <div class="badges">
-              <span class="badge b-green">Precision: <b id="backtestPrecision">3/3 in Top 15</b></span>
+              <span class="badge b-cyan">Precision: <b id="backtestPrecision">3/3 in Top 15</b></span>
               <span class="badge b-sky" id="thesisConfidenceBadge">High confidence</span>
               <span class="badge b-amber" id="driftScoreBadge">Median round €3.2M</span>
             </div>
