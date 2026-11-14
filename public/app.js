@@ -1882,6 +1882,367 @@ function getScoreBreakdownRows(item) {
   ];
 }
 
+function getInvestorFitVerdict(score) {
+  const num = Number(score || 0);
+  if (num >= 78) return { label: "Strong thesis match", hint: "Priority call candidate" };
+  if (num >= 60) return { label: "Good potential fit", hint: "Worth reviewing closely" };
+  return { label: "Early match", hint: "Selective fit · review details" };
+}
+
+function getInvestorStrengthTag(earned, max) {
+  const ratio = max > 0 ? Number(earned || 0) / Number(max) : 0;
+  if (ratio >= 0.78) return { text: "Strong match", pct: Math.round(ratio * 100) };
+  if (ratio >= 0.5) return { text: "Good match", pct: Math.round(ratio * 100) };
+  if (ratio > 0) return { text: "Partial match", pct: Math.round(ratio * 100) };
+  return { text: "No direct link yet", pct: 0 };
+}
+
+function formatReadableMonth(isoDate) {
+  const s = String(isoDate || "").trim();
+  if (!s) return "";
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const m = s.match(/^(\d{4})(?:-(\d{2}))?/);
+  if (!m) return s;
+  if (!m[2]) return m[1];
+  const idx = Math.max(0, Math.min(11, Number(m[2]) - 1));
+  return `${months[idx]} ${m[1]}`;
+}
+
+function formatReadableTrustRank(rank) {
+  const r = String(rank || "").toUpperCase();
+  if (r === "FILING") return "Official Filing";
+  if (r === "PRIMARY") return "Company / Investor";
+  if (r === "PRESS") return "News Report";
+  return "Verified Record";
+}
+
+function getInvestorReliabilityMeta(candidate, brief, calaProfile) {
+  const rounds = brief?.rounds || candidate.roundHistory || [];
+  const latestRound = rounds[rounds.length - 1] || null;
+  const sigs = brief?.arbitrageSignals || candidate.arbitrageSignals || [];
+  const allSources = [];
+  const seenUrls = new Set();
+
+  const pushSource = (src, fallbackRank) => {
+    if (!src) return;
+    const key = `${src.publisher || src.name || ""}|${src.url || src.title || ""}`;
+    if (seenUrls.has(key)) return;
+    seenUrls.add(key);
+    allSources.push({
+      title: src.title || "Verified record",
+      publisher: src.publisher || src.name || "Cala AI Graph",
+      url: src.url || src.document || "",
+      date: src.date || "",
+      sourceRank: src.sourceRank || fallbackRank || "PRIMARY"
+    });
+  };
+
+  (brief?.sources || []).forEach((s) => pushSource(s, "PRIMARY"));
+  (latestRound?.sources || []).forEach((s) => pushSource(s, "PRIMARY"));
+  (candidate.reasons || []).forEach((r) => (r.sources || []).forEach((s) => pushSource(s, "PRIMARY")));
+
+  const rankPriority = { FILING: 3, PRIMARY: 2, PRESS: 1, AGGREGATOR: 0 };
+  const candidateRanks = [
+    ...(latestRound?.sources || []).map((s) => s.sourceRank),
+    ...sigs.map((s) => s.sourceRank),
+    ...allSources.map((s) => s.sourceRank)
+  ].filter(Boolean);
+
+  let topRank = "PRIMARY";
+  let bestPrio = -1;
+  candidateRanks.forEach((rk) => {
+    const p = rankPriority[String(rk).toUpperCase()] ?? 1;
+    if (p > bestPrio) {
+      bestPrio = p;
+      topRank = String(rk).toUpperCase();
+    }
+  });
+
+  if (candidate?.isLiveCalaDiscovered && bestPrio < 2 && allSources.length === 0) {
+    topRank = "PRIMARY";
+  }
+
+  let badgeLabel = "Verified Company Records";
+  let explanation =
+    "Confirmed from direct company disclosures, investor announcements, and Cala AI records.";
+  if (topRank === "FILING") {
+    badgeLabel = "High reliability · Official filings";
+    explanation =
+      "Key figures come directly from official national business registries and regulatory filings indexed by Cala AI.";
+  } else if (topRank === "PRESS" || topRank === "AGGREGATOR") {
+    badgeLabel = "Public news & graph data";
+    explanation =
+      "Summarized from public startup announcements and Cala AI records. Click Verify live data to check the latest filings.";
+  }
+
+  const leadSrc =
+    allSources.find((s) => String(s.sourceRank || "").toUpperCase() === topRank) || allSources[0];
+  const srcDate = formatReadableMonth(leadSrc?.date);
+  const sourceSummary = leadSrc
+    ? `${leadSrc.publisher}${srcDate ? ` · ${srcDate}` : ""}`
+    : `${calaProfile?.fundingStage ? "Cala AI Knowledge Graph" : "Verified Cala index"}`;
+
+  return {
+    topRank,
+    badgeLabel,
+    explanation,
+    sourceSummary,
+    sources: allSources
+  };
+}
+
+function buildCompanyOverviewModel(candidate, brief, calaProfile, isLinkedin) {
+  const rounds = brief?.rounds || candidate.roundHistory || [];
+  const latestRound = rounds[rounds.length - 1] || null;
+  const obsList = calaProfile?.numericalObservations || brief?.employeeCountSeries || candidate.employeeCountSeries || [];
+  const startHc = brief?.headcountAtLastRound ?? candidate.headcountAtLastRound ?? obsList[0]?.value ?? candidate.employeeCount;
+  const currentHc = candidate.employeeCount ?? obsList[obsList.length - 1]?.value ?? startHc;
+  const growthPct =
+    brief?.headcountGrowthPct ??
+    candidate.headcountGrowthPct ??
+    (startHc > 0 ? Math.max(0, Math.round(((currentHc - startHc) / startHc) * 100)) : 0);
+
+  const coPath = candidate.coInvestorPath;
+  const liNet = candidate.linkedinNetwork;
+  const activeBridgeName = isLinkedin
+    ? (liNet?.bridgePerson || coPath?.coInvestorName || "Direct connector").split("(")[0].trim()
+    : coPath?.coInvestorName || "Shared syndicate investor";
+  const introSub = isLinkedin
+    ? "Mutual 2nd-degree LinkedIn connection"
+    : coPath?.isUpstreamFeeder
+      ? "Backed their earlier round"
+      : coPath?.sharedCount
+        ? `Co-invested on ${coPath.sharedCount} deals`
+        : "Connected via syndicate";
+
+  const rawDesc = String(candidate.description || candidate.oneLiner || "").trim();
+  const oneLiner =
+    rawDesc.length > 210 ? `${rawDesc.slice(0, 207).replace(/\s+\S*$/, "")}...` : rawDesc;
+
+  const fitVerdict = getInvestorFitVerdict(candidate.suitabilityScore);
+  const reliability = getInvestorReliabilityMeta(candidate, brief, calaProfile);
+
+  const roundDate = latestRound?.date ? formatReadableMonth(latestRound.date) : "";
+  const fundingValue = latestRound
+    ? `${latestRound.type || candidate.stage || "Round"} · ${formatEur(latestRound.amountEurM)}`
+    : candidate.stage || "Early stage";
+  const fundingSub = latestRound
+    ? [roundDate, latestRound.leadInvestorName ? `Led by ${latestRound.leadInvestorName}` : ""]
+        .filter(Boolean)
+        .join(" · ") || "Recorded funding round"
+    : "No formal round amount reported";
+
+  const teamValue = currentHc ? `${currentHc} people` : "Early team";
+  const teamSub =
+    growthPct >= 10
+      ? `Up ${growthPct}% since ${latestRound?.type || "last round"}`
+      : obsList.length > 1
+        ? `Steady team (${obsList.length} verified checks)`
+        : "Estimated company size";
+
+  return {
+    fitVerdict,
+    oneLiner,
+    fundingValue,
+    fundingSub,
+    teamValue,
+    teamSub,
+    introValue: activeBridgeName,
+    introSub,
+    reliability,
+    rounds,
+    obsList,
+    startHc,
+    currentHc,
+    growthPct
+  };
+}
+
+function buildFitAccordionHtml(candidate, brief) {
+  const labelMap = {
+    "Sector fit": "Industry focus",
+    "Stage timing": "Funding timing",
+    "Co-investor overlap": "Investor network",
+    "Geography match": "Location",
+    "Round size fit": "Check size"
+  };
+  const factors = getScoreBreakdownRows(candidate);
+  const barsHtml = factors
+    .map((f) => {
+      const earnedNum = Number(f.points || 0);
+      const strength = getInvestorStrengthTag(earnedNum, f.maxPoints);
+      const pct = Math.max(4, Math.min(100, Math.round((earnedNum / Math.max(1, f.maxPoints)) * 100)));
+      return `
+        <div class="fit-bar-row">
+          <div class="fit-bar-top">
+            <span class="fit-bar-label">${escapeHtml(labelMap[f.label] || f.label)}</span>
+            <span class="fit-bar-rating">${escapeHtml(strength.text)}</span>
+          </div>
+          <div class="sb-bar-track"><div class="sb-bar-fill" style="width:${pct}%"></div></div>
+          <p class="fit-bar-detail">${escapeHtml(f.detail || "")}</p>
+        </div>
+      `;
+    })
+    .join("");
+
+  const reasonsHtml = (candidate.reasons || [])
+    .slice(0, 3)
+    .map((r) => {
+      const firstSrc = (r.sources || [])[0];
+      const cite = firstSrc
+        ? ` <a href="${escapeHtml(firstSrc.url)}" target="_blank" rel="noopener noreferrer" class="citation-link">[${escapeHtml(firstSrc.publisher || "Source")}]</a>`
+        : "";
+      return `<li class="evidence-item"><span>${escapeHtml(r.text)}${cite}</span></li>`;
+    })
+    .join("");
+
+  const risksArr = brief?.risks || [
+    candidate.competitorConflict
+      ? `Adjacent to ${candidate.competitorConflict}; worth a quick overlap check.`
+      : "No direct portfolio conflict detected."
+  ];
+  const cleanRisk = String(risksArr[0] || "").replace(/^Watchout:\s*/i, "");
+
+  return `
+    <div class="fit-bars-grid">${barsHtml}</div>
+    ${reasonsHtml ? `<ul class="evidence-list" style="margin-top:10px">${reasonsHtml}</ul>` : ""}
+    <p class="watchout-inline-note"><strong>Watchout:</strong> ${escapeHtml(cleanRisk)}</p>
+  `;
+}
+
+function buildEvidenceAccordionHtml(candidate, brief, calaProfile, model) {
+  const rel = model.reliability;
+  const sourcesHtml = rel.sources.length
+    ? rel.sources
+        .slice(0, 4)
+        .map((src) => {
+          const rankLabel = formatReadableTrustRank(src.sourceRank);
+          const dateLabel = formatReadableMonth(src.date);
+          const linkHtml =
+            src.url && src.url.startsWith("http")
+              ? `<a href="${escapeHtml(src.url)}" target="_blank" rel="noopener noreferrer" class="source-row-link">${escapeHtml(src.publisher)} &#8599;</a>`
+              : `<span class="source-row-pub">${escapeHtml(src.publisher)}</span>`;
+          return `
+            <div class="ev-detail-row">
+              <div class="ev-detail-main">
+                <strong>${escapeHtml(src.title)}</strong>
+                <span class="note">${escapeHtml(rankLabel)}${dateLabel ? ` · ${escapeHtml(dateLabel)}` : ""}</span>
+              </div>
+              ${linkHtml}
+            </div>
+          `;
+        })
+        .join("")
+    : `<p class="note" style="margin:0">Indexed via Cala AI Knowledge Graph (${escapeHtml(candidate.name)}).</p>`;
+
+  const roundsHtml = model.rounds.length
+    ? model.rounds
+        .map((r) => {
+          const dt = formatReadableMonth(r.date) || "Date pending";
+          return `
+            <div class="ev-detail-row">
+              <div>
+                <strong>${escapeHtml(r.type || "Round")} · ${formatEur(r.amountEurM)}</strong>
+                <span class="note" style="display:block">${escapeHtml(dt)}${r.leadInvestorName ? ` · Led by ${escapeHtml(r.leadInvestorName)}` : ""}</span>
+              </div>
+            </div>
+          `;
+        })
+        .join("")
+    : `<p class="note" style="margin:0">No formal funding rounds publicly indexed.</p>`;
+
+  const finMetrics = brief?.financialMetrics || candidate.financialMetrics || [];
+  const latestFin = finMetrics[finMetrics.length - 1];
+  const finHtml = latestFin
+    ? `<div class="ev-callout-box"><strong>Companies House balance sheet (${escapeHtml(String(latestFin.year || "Latest"))}):</strong> Reported cash EUR ${escapeHtml(String(latestFin.cashEurM))}M · Net assets EUR ${escapeHtml(String(latestFin.netAssetsEurM))}M.</div>`
+    : "";
+
+  const rolesList = calaProfile?.leadershipRelationships || [];
+  const alumni = brief?.alumniSpinout || candidate.alumniSpinout || rolesList.find((r) => r.priorCompany);
+  const leadersSummary = rolesList.length
+    ? rolesList
+        .slice(0, 3)
+        .map((r) => {
+          const name = r.person || r.name || "Founder";
+          const prior = r.priorCompany ? ` (previously at ${r.priorCompany})` : "";
+          const role = formatLeadershipTitle(r.relation || r.role);
+          return `${name} · ${role}${prior}`;
+        })
+        .join(" · ")
+    : `${candidate.name} founding team`;
+
+  const obsText =
+    model.obsList.length >= 2
+      ? `${formatReadableMonth(model.obsList[0].date) || "Earlier"}: ${model.startHc} people -> Latest: ${model.currentHc} people (${model.growthPct > 0 ? `+${model.growthPct}%` : "steady"})`
+      : `Current estimated headcount: ${model.currentHc || "--"} people`;
+
+  const gaps = brief?.notFoundInCala || [
+    "Private annual revenue (ARR) and monthly cash burn rate are not publicly filed in Cala.",
+    "Individual angel check allocations and private cap-table preferences."
+  ];
+
+  return `
+    <div class="ev-blocks-grid">
+      <div class="ev-subblock">
+        <h4 class="ev-subhead">Verified sources</h4>
+        <div class="ev-rows-list">${sourcesHtml}</div>
+      </div>
+
+      <div class="ev-subblock">
+        <h4 class="ev-subhead">Funding history &amp; financials</h4>
+        <div class="ev-rows-list">${roundsHtml}</div>
+        ${finHtml}
+      </div>
+
+      <div class="ev-subblock">
+        <h4 class="ev-subhead">Leadership &amp; team growth</h4>
+        <p class="ev-copy">${escapeHtml(leadersSummary)}</p>
+        ${alumni ? `<p class="ev-callout-box" style="margin-top:6px"><strong>Repeat operator signal:</strong> ${escapeHtml(`${alumni.name || alumni.person} previously worked at ${alumni.priorCompany}.`)}</p>` : ""}
+        <p class="note" style="margin:6px 0 0">${escapeHtml(obsText)}</p>
+      </div>
+
+      <div class="ev-subblock">
+        <h4 class="ev-subhead">Not available in public records</h4>
+        <ul class="ev-gap-list">
+          ${gaps
+            .slice(0, 3)
+            .map((g) => {
+              const label = typeof g === "string" ? g : `${g.field}: ${g.reason || g.status || "Not publicly reported"}`;
+              return `<li>${escapeHtml(label)}</li>`;
+            })
+            .join("")}
+        </ul>
+      </div>
+    </div>
+  `;
+}
+
+function bindAccordionToggleGroup(rootEl) {
+  if (!rootEl) return;
+  rootEl.querySelectorAll(".info-expand-btn").forEach((btn) => {
+    if (btn.dataset.accordionBound === "1") return;
+    btn.dataset.accordionBound = "1";
+    btn.addEventListener("click", () => {
+      const targetId = btn.getAttribute("aria-controls");
+      const panel = targetId ? document.getElementById(targetId) : btn.nextElementSibling;
+      if (!panel) return;
+      const willOpen = btn.getAttribute("aria-expanded") !== "true";
+      btn.setAttribute("aria-expanded", willOpen ? "true" : "false");
+      panel.hidden = !willOpen;
+    });
+  });
+}
+
+function resetAccordionGroup(rootEl) {
+  if (!rootEl) return;
+  rootEl.querySelectorAll(".info-expand-btn").forEach((btn) => {
+    btn.setAttribute("aria-expanded", "false");
+    const targetId = btn.getAttribute("aria-controls");
+    const panel = targetId ? document.getElementById(targetId) : btn.nextElementSibling;
+    if (panel) panel.hidden = true;
+  });
+}
+
 function renderTalkScreen() {
   const container = document.getElementById("talkScreenContainer");
   if (!container) return;
@@ -1893,238 +2254,239 @@ function renderTalkScreen() {
     list[0];
 
   if (!candidate) {
-    container.innerHTML = `<p class="sub">Select a startup to inspect its deep dive.</p>`;
+    container.innerHTML = `<p class="sub">Select a startup to inspect its overview.</p>`;
     return;
   }
 
   state.activeStartupId = candidate.id;
   const brief = state.briefCache.get(`${candidate.id}:${state.selectedFundId}`) || state.activeBrief;
-  const breakdown = getScoreBreakdownRows(candidate);
   const peers = candidate.peerStartups || [];
-  const rounds = brief?.rounds || candidate.roundHistory || [];
-  const isLinkedin = state.networkSource === "linkedin";
+  const isLinkedin = state.networkSource !== "cala";
   const netData = isLinkedin ? candidate.linkedinNetwork : candidate.graph;
-  const bridgeTitle = isLinkedin
-    ? candidate.linkedinNetwork?.bridgePerson || "2nd-degree LinkedIn bridge"
-    : candidate.coInvestorPath?.coInvestorName || "Verified Cala syndicate";
   const isSaved = state.savedCallListIds.includes(candidate.id);
-
   const calaProf = getStartupCalaFieldProfile(candidate);
-  const latestRound = rounds[rounds.length - 1] || null;
-  const topRank =
-    (latestRound?.sources || [])[0]?.sourceRank ||
-    (brief?.arbitrageSignals || candidate.arbitrageSignals || [])[0]?.sourceRank ||
-    "PRIMARY";
+  const model = buildCompanyOverviewModel(candidate, brief, calaProf, isLinkedin);
+
   const rolesList = calaProf?.leadershipRelationships || [];
-  const alumni = brief?.alumniSpinout || candidate.alumniSpinout || rolesList.find((r) => r.priorCompany);
-  const primaryLeader = alumni || rolesList[0];
-  const obsList = calaProf?.numericalObservations || brief?.employeeCountSeries || candidate.employeeCountSeries || [];
-  const startHc = brief?.headcountAtLastRound ?? candidate.headcountAtLastRound ?? obsList[0]?.value ?? candidate.employeeCount;
-  const currentHc = candidate.employeeCount ?? obsList[obsList.length - 1]?.value ?? startHc;
-  const growthPct =
-    brief?.headcountGrowthPct ??
-    candidate.headcountGrowthPct ??
-    (startHc > 0 ? Math.max(0, Math.round(((currentHc - startHc) / startHc) * 100)) : 0);
-  const activeBridgeName = isLinkedin
-    ? (candidate.linkedinNetwork?.bridgePerson || "Warm connector").split("(")[0].trim()
-    : candidate.coInvestorPath?.coInvestorName || "Cala syndicate lead";
-  const targetFounderName = (candidate.linkedinNetwork?.targetLeader || primaryLeader?.person || `${candidate.name} team`).split("(")[0].trim();
+  const primaryLeader = rolesList[0];
+  const targetFounderName = (
+    candidate.linkedinNetwork?.targetLeader ||
+    primaryLeader?.person ||
+    `${candidate.name} founders`
+  )
+    .split("(")[0]
+    .trim();
 
   container.innerHTML = `
-    <div class="head">
-      <div class="talk-head-visuals">
-        <div class="talk-head-logo" aria-hidden="true">
-          ${buildStartupLogoSvg(candidate.name, candidate.sector, 64)}
+    <div class="talk-calm-wrap">
+      <div class="head">
+        <div class="talk-head-visuals">
+          <div class="talk-head-logo" aria-hidden="true">
+            ${buildStartupLogoSvg(candidate.name, candidate.sector, 64)}
+          </div>
+          <div class="ring">
+            ${buildIncompleteCircleScoreSvg(candidate.suitabilityScore ?? 0, 84, model.fitVerdict.label)}
+          </div>
         </div>
-        <div class="ring">
-          ${buildIncompleteCircleScoreSvg(candidate.suitabilityScore ?? 0, 84, "Fit score")}
+        <div class="t">
+          <h2>${escapeHtml(candidate.name)}</h2>
+          <div class="m">
+            ${escapeHtml(candidate.hqCity)}, ${escapeHtml(candidate.country)} · ${escapeHtml(candidate.sector)}${calaProf?.slush2026?.attending ? " · Attending Slush 2026" : ""}
+          </div>
         </div>
-      </div>
-      <div class="t">
-        <div class="eyebrow" style="margin-bottom: 6px">3-step startup deep dive</div>
-        <h2>${escapeHtml(candidate.name)}</h2>
-        <div class="m">
-          ${escapeHtml(candidate.hqCity)}, ${escapeHtml(candidate.country)} · ${escapeHtml(candidate.sector)} · ${escapeHtml(calaProf?.fundingStage || candidate.stage)} (${formatEur(candidate.lastRoundAmountEurM)})${calaProf?.slush2026?.attending ? " · Attending Slush 2026" : ""}
-        </div>
-      </div>
-      <div class="talk-head-actions">
-        <button
-          type="button"
-          class="btn sm drawer-star-btn ${isSaved ? "is-saved" : ""}"
-          id="talkSaveCallBtn"
-          aria-pressed="${isSaved ? "true" : "false"}"
-        >
-          ${bookmarkIconSvg(13)} <span>${isSaved ? "Saved" : "Save to Call List"}</span>
-        </button>
-        <button type="button" class="btn sm primary" id="talkCopyIntroBtn">Copy Warm Intro Note</button>
-        <button type="button" class="btn sm" id="talkPrevStartupBtn">&larr; Prev</button>
-        <button type="button" class="btn sm" id="talkNextStartupBtn">Next &rarr;</button>
-      </div>
-    </div>
-
-    <div class="cols">
-      <div class="card panel">
-        <h3><span class="n">1</span>Thesis Fit &amp; Why to Call</h3>
-        <p class="why-text">${escapeHtml(candidate.oneLiner || candidate.description)}</p>
-        ${
-          candidate.whyNowTrigger || growthPct > 0
-            ? `<div class="quick-pills-row" style="margin-bottom:10px">
-                ${candidate.whyNowTrigger ? `<span class="meta-pill">${escapeHtml(candidate.whyNowTrigger)}</span>` : ""}
-                ${growthPct > 0 ? `<span class="meta-pill">${escapeHtml(`${startHc} -> ${currentHc} people (+${growthPct}%)`)}</span>` : ""}
-              </div>`
-            : ""
-        }
-
-        <div class="compact-factor-strip" style="margin-bottom:12px">
-          ${breakdown
-            .map(
-              (f) => `<span class="cf-chip"><span>${escapeHtml(f.label)}</span><b>${f.points}/${f.maxPoints}</b></span>`
-            )
-            .join("")}
-        </div>
-
-        <div class="talk-subblock">
-          <h4 class="sub-label">Why this fits (${Math.min(2, (candidate.reasons || []).length)})</h4>
-          <ul class="facts" style="margin-top: 8px">
-            ${(candidate.reasons || [])
-              .slice(0, 2)
-              .map(
-                (r) => `
-              <li>
-                ${escapeHtml(r.text)}
-                ${(r.sources || [])
-                  .slice(0, 1)
-                  .map(
-                    (src, idx) =>
-                      `<a href="${escapeHtml(src.url)}" target="_blank" rel="noopener">[${escapeHtml(src.publisher || `Source ${idx + 1}`)}]</a>`
-                  )
-                  .join(" ")}
-              </li>
-            `
-              )
-              .join("")}
-          </ul>
+        <div class="talk-head-actions">
+          <button
+            type="button"
+            class="btn sm drawer-star-btn ${isSaved ? "is-saved" : ""}"
+            id="talkSaveCallBtn"
+            aria-pressed="${isSaved ? "true" : "false"}"
+          >
+            ${bookmarkIconSvg(13)} <span>${isSaved ? "Saved" : "Save"}</span>
+          </button>
+          <button type="button" class="btn sm" id="talkPrevStartupBtn">&larr; Prev</button>
+          <button type="button" class="btn sm" id="talkNextStartupBtn">Next &rarr;</button>
+          <button type="button" class="btn sm" id="talkOpenDrawerBtn">Compact modal</button>
         </div>
       </div>
 
-      <div class="card panel cala-spotlight-card">
-        <div class="step-card-head cala-spot-head" style="margin-bottom:10px">
-          <div class="step-title-wrap">
-            <span class="step-pill is-accent">2</span>
-            <span class="cala-brand-badge"><span class="live-dot" aria-hidden="true"></span> CALA AI GRAPH</span>
+      <section class="company-overview-card">
+        <div class="overview-summary-col">
+          <div class="overview-verdict-row">
+            <span class="overview-fit-label">${escapeHtml(model.fitVerdict.label)}</span>
+            ${calaProf?.slush2026?.attending ? `<span class="meta-pill slush-attendee-chip">Slush 2026</span>` : ""}
+          </div>
+          <p class="overview-oneliner">${escapeHtml(model.oneLiner)}</p>
+        </div>
+
+        <div class="overview-facts-row">
+          <div class="overview-fact-cell">
+            <span class="overview-fact-label">Latest funding</span>
+            <strong class="overview-fact-val num-tabular">${escapeHtml(model.fundingValue)}</strong>
+            <span class="overview-fact-sub">${escapeHtml(model.fundingSub)}</span>
+          </div>
+          <div class="overview-fact-cell">
+            <span class="overview-fact-label">Team size &amp; pace</span>
+            <strong class="overview-fact-val num-tabular">${escapeHtml(model.teamValue)}</strong>
+            <span class="overview-fact-sub">${escapeHtml(model.teamSub)}</span>
+          </div>
+          <div class="overview-fact-cell overview-fact-action">
+            <div>
+              <span class="overview-fact-label">Best way to connect</span>
+              <strong class="overview-fact-val">${escapeHtml(model.introValue)}</strong>
+              <span class="overview-fact-sub">${escapeHtml(model.introSub)}</span>
+            </div>
+            <button type="button" class="btn sm primary modal-intro-btn" id="talkCopyIntroBtn">Copy intro note</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="reliability-strip-card">
+        <div class="reliability-top-row">
+          <div class="reliability-status-wrap">
+            <span class="reliability-shield" aria-hidden="true">
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                <path d="M8 1.5L13.5 3.8v4.1c0 3.3-2.3 5.9-5.5 6.8-3.2-.9-5.5-3.5-5.5-6.8V3.8L8 1.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+                <path d="M5.6 8.2l1.7 1.7 3.2-3.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </span>
+            <div class="reliability-title-col">
+              <div class="reliability-title-line">
+                <strong class="Verified-badge">${escapeHtml(model.reliability.badgeLabel)}</strong>
+                <span class="reliability-source-meta">${escapeHtml(model.reliability.sourceSummary)}</span>
+              </div>
+              <p class="reliability-note">${escapeHtml(model.reliability.explanation)}</p>
+            </div>
           </div>
           <button type="button" class="btn sm live-cala-pill-btn" id="talkVerifyCalaBtn">
             <span class="live-dot" aria-hidden="true"></span>
-            <span>Verify Live on Cala</span>
+            <span>Verify live data</span>
           </button>
         </div>
-
         <div id="talkLiveCalaBanner" class="live-cala-intel-card cala-inline-banner" hidden></div>
+      </section>
 
-        <div class="cala-ts-list" style="margin-bottom:12px">
-          <div class="cala-ts-row">
-            <span>Cala Round &amp; Filing</span>
-            <strong class="cala-ts-val num-tabular">
-              ${escapeHtml(latestRound ? `${latestRound.type} · ${formatEur(latestRound.amountEurM)} (${String(latestRound.date || "").slice(0, 7)})` : candidate.stage)}
-              <span class="cala-rank-pill rank-${escapeHtml(String(topRank).toLowerCase())}">${escapeHtml(topRank)}</span>
-            </strong>
-          </div>
-          <div class="cala-ts-row">
-            <span>Why Now Signal</span>
-            <strong class="cala-ts-val">${escapeHtml(candidate.whyNowTrigger || (candidate.raisingSoon ? "Active fundraising window" : "Verified monitoring"))}</strong>
-          </div>
-          <div class="cala-ts-row">
-            <span>Headcount Velocity</span>
-            <strong class="cala-ts-val num-tabular">${escapeHtml(`${startHc} -> ${currentHc} employees (+${growthPct}%)`)}</strong>
-          </div>
-          <div class="cala-ts-row">
-            <span>Founder &amp; Feeder</span>
-            <strong class="cala-ts-val">${escapeHtml(
-              alumni
-                ? `${alumni.name || alumni.person} (ex-${alumni.priorCompany})`
-                : primaryLeader?.person || candidate.coInvestorPath?.coInvestorName || "Verified team"
-            )}</strong>
-          </div>
-        </div>
-
-        <div class="talk-subblock">
-          <h4 class="sub-label">Funding rounds (${rounds.length})</h4>
-          <div style="margin-top: 8px">
-            ${
-              rounds.length
-                ? rounds
-                    .map(
-                      (r) => `
-                  <div class="buyer">
-                    <div class="bn">
-                      <span>${escapeHtml(r.type)} (${escapeHtml(r.date)})</span>
-                      <span>${formatEur(r.amountEurM)}</span>
-                    </div>
-                    <div class="bar"><i style="width:${Math.min(100, Math.max(25, (r.amountEurM || 3) * 6))}%"></i></div>
-                    <p>Lead: <b>${escapeHtml(r.leadInvestorName)}</b></p>
-                  </div>
-                `
-                    )
-                    .join("")
-                : `<p class="note">No public rounds indexed.</p>`
-            }
-          </div>
-        </div>
-      </div>
-
-      <div class="card panel">
-        <div class="step-card-head" style="margin-bottom:10px">
-          <h3 style="margin:0"><span class="n">3</span>Connected Warm Network &amp; Intro</h3>
-          <div class="net-source-switch" role="radiogroup" aria-label="Intro source">
-            <button type="button" class="net-src-btn ${isLinkedin ? "is-active" : ""}" data-talk-net-source="linkedin">LinkedIn</button>
-            <button type="button" class="net-src-btn ${!isLinkedin ? "is-active" : ""}" data-talk-net-source="cala">Cala</button>
-          </div>
-        </div>
-
-        <div class="inline-warm-chain" style="margin-bottom:10px">
-          <span class="iwc-node">${escapeHtml(getSelectedBenchmarkLabel())}</span>
-          <span class="iwc-arrow" aria-hidden="true">&rarr;</span>
-          <span class="iwc-node is-bridge">${escapeHtml(activeBridgeName)}</span>
-          <span class="iwc-arrow" aria-hidden="true">&rarr;</span>
-          <span class="iwc-node is-target">${escapeHtml(targetFounderName)}</span>
-        </div>
-
-        <div class="network-graph-stage" style="margin-bottom: 12px">
-          ${netData ? buildNetworkGraphSvg(netData, candidate.id) : ""}
-        </div>
-
-        <div class="warm-intro-preview" style="margin-bottom: 10px">
-          <div class="warm-intro-label">Warm intro draft (${escapeHtml(isLinkedin ? "LinkedIn 2nd°" : "Cala Syndicate")})</div>
-          <p class="warm-intro-text">${escapeHtml(buildWarmIntroDraftText(candidate))}</p>
-        </div>
-
-        <div class="talk-subblock">
-          <h4 class="sub-label">Connected cluster peers (${Math.min(4, peers.length)})</h4>
-          <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px">
-            ${peers
-              .slice(0, 4)
-              .map(
-                (p) => `
-              <button type="button" class="btn sm" data-talk-peer="${escapeHtml(p.id)}">
-                ${escapeHtml(p.name)} · <span style="color:var(--green)">${escapeHtml(p.bridgeLabel)}</span>
-              </button>
-            `
-              )
-              .join("")}
-          </div>
-        </div>
-
-        <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px">
-          <button type="button" class="btn primary sm" id="talkOpenDrawerBtn">
-            Open modal brief
+      <div class="info-accordion-list">
+        <div class="info-expand-item">
+          <button
+            type="button"
+            class="info-expand-btn"
+            id="talkExpandFitBtn"
+            aria-expanded="false"
+            aria-controls="talkExpandFitPanel"
+          >
+            <span class="info-expand-text">
+              <span class="info-expand-title">Why this matches your strategy</span>
+              <span class="info-expand-hint">Sector, timing, region &amp; key watchouts</span>
+            </span>
+            <span class="info-expand-chevron" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </span>
           </button>
-          <button type="button" class="btn sm" id="talkExportMdBtn">
-            Export Memo (.md)
+          <div class="info-expand-panel" id="talkExpandFitPanel" hidden>
+            ${buildFitAccordionHtml(candidate, brief)}
+          </div>
+        </div>
+
+        <div class="info-expand-item">
+          <button
+            type="button"
+            class="info-expand-btn"
+            id="talkExpandEvidenceBtn"
+            aria-expanded="false"
+            aria-controls="talkExpandEvidencePanel"
+          >
+            <span class="info-expand-text">
+              <span class="info-expand-title">Verified sources, team growth &amp; founders</span>
+              <span class="info-expand-hint">${escapeHtml(`${model.reliability.sources.length || 1} sources · funding rounds, team history & gaps`)}</span>
+            </span>
+            <span class="info-expand-chevron" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </span>
           </button>
+          <div class="info-expand-panel" id="talkExpandEvidencePanel" hidden>
+            ${buildEvidenceAccordionHtml(candidate, brief, calaProf, model)}
+            <div style="margin-top:12px">
+              <button type="button" class="btn sm" id="talkExportMdBtn">Export Memo (.md)</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="info-expand-item">
+          <button
+            type="button"
+            class="info-expand-btn"
+            id="talkExpandNetworkBtn"
+            aria-expanded="false"
+            aria-controls="talkExpandNetworkPanel"
+          >
+            <span class="info-expand-text">
+              <span class="info-expand-title">Warm introduction message, diagram &amp; similar startups</span>
+              <span class="info-expand-hint">${escapeHtml(`Via ${model.introValue} · ${peers.length} connected startups`)}</span>
+            </span>
+            <span class="info-expand-chevron" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </span>
+          </button>
+          <div class="info-expand-panel" id="talkExpandNetworkPanel" hidden>
+            <div class="expand-net-toolbar">
+              <div class="net-source-switch" role="radiogroup" aria-label="Intro source">
+                <button type="button" class="net-src-btn ${isLinkedin ? "is-active" : ""}" data-talk-net-source="linkedin">LinkedIn contact</button>
+                <button type="button" class="net-src-btn ${!isLinkedin ? "is-active" : ""}" data-talk-net-source="cala">Co-investor syndicate</button>
+              </div>
+            </div>
+
+            <div class="inline-warm-chain" style="margin-bottom:10px">
+              <span class="iwc-node">${escapeHtml(getSelectedBenchmarkLabel())}</span>
+              <span class="iwc-arrow" aria-hidden="true">&rarr;</span>
+              <span class="iwc-node is-bridge">${escapeHtml(model.introValue)}</span>
+              <span class="iwc-arrow" aria-hidden="true">&rarr;</span>
+              <span class="iwc-node is-target">${escapeHtml(targetFounderName)}</span>
+            </div>
+
+            <div class="warm-intro-preview" style="margin-bottom:12px">
+              <div class="inline-intro-action-row">
+                <span class="warm-intro-label" style="margin:0">Ready-to-send intro note (${escapeHtml(isLinkedin ? "LinkedIn contact" : "Co-investor syndicate")})</span>
+                <button type="button" class="btn sm primary" data-talk-copy-inline="1">Copy intro note</button>
+              </div>
+              <p class="warm-intro-text">${escapeHtml(buildWarmIntroDraftText(candidate))}</p>
+            </div>
+
+            <div class="network-graph-stage" style="margin-bottom:12px">
+              ${netData ? buildNetworkGraphSvg(netData, candidate.id) : ""}
+            </div>
+
+            <div>
+              <span class="inline-sublabel">Similar connected startups (${Math.min(4, peers.length)})</span>
+              <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">
+                ${peers.length
+                  ? peers
+                      .slice(0, 4)
+                      .map(
+                        (p) => `
+                          <button type="button" class="peer-chip-btn" data-talk-peer="${escapeHtml(p.id)}">
+                            <span>${escapeHtml(p.name)}</span>
+                            <span class="peer-chip-tag">${escapeHtml(String(p.bridgeLabel || "").replace(/^(Shared investor|Founder alumni|Alumni link):\s*/i, ""))}</span>
+                            <span aria-hidden="true">&rarr;</span>
+                          </button>
+                        `
+                      )
+                      .join("")
+                  : `<span class="note">No cluster peers indexed in this slice.</span>`}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
   `;
+
+  bindAccordionToggleGroup(container);
 
   document.getElementById("talkSaveCallBtn")?.addEventListener("click", () => {
     toggleCallListStartup(candidate.id);
@@ -2134,27 +2496,31 @@ function renderTalkScreen() {
         : `Removed ${candidate.name} from Call List`
     );
   });
-  document.getElementById("talkCopyIntroBtn")?.addEventListener("click", async () => {
+
+  const handleTalkCopy = async () => {
     const text = buildWarmIntroDraftText(candidate);
     try {
       if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
     } catch {
       // Non-fatal in non-clipboard contexts
     }
-    const copyBtn = document.getElementById("talkCopyIntroBtn");
-    if (copyBtn) {
-      copyBtn.textContent = "Copied Intro Note";
+    const copyBtns = container.querySelectorAll("#talkCopyIntroBtn, [data-talk-copy-inline]");
+    copyBtns.forEach((b) => {
+      b.textContent = "Copied!";
       window.setTimeout(() => {
-        if (copyBtn.isConnected) copyBtn.textContent = "Copy Warm Intro Note";
+        if (b.isConnected) b.textContent = "Copy intro note";
       }, 1800);
-    }
+    });
     showUiToast(`Copied warm intro note for ${candidate.name}`);
-  });
+  };
+  document.getElementById("talkCopyIntroBtn")?.addEventListener("click", handleTalkCopy);
+  container.querySelector("[data-talk-copy-inline]")?.addEventListener("click", handleTalkCopy);
+
   document.getElementById("talkVerifyCalaBtn")?.addEventListener("click", async () => {
     const bannerEl = document.getElementById("talkLiveCalaBanner");
     if (!bannerEl) return;
     bannerEl.hidden = false;
-    bannerEl.innerHTML = `<p class="note" style="margin:0">Verifying <strong>${escapeHtml(candidate.name)}</strong> on Cala AI Graph...</p>`;
+    bannerEl.innerHTML = `<p class="note" style="margin:0">Checking live Cala AI records for <strong>${escapeHtml(candidate.name)}</strong>...</p>`;
     try {
       await runCalaVerifyQuery({
         name: candidate.name,
@@ -2164,7 +2530,7 @@ function renderTalkScreen() {
         context: "talk"
       });
     } catch (err) {
-      bannerEl.innerHTML = `<span class="note">Live Cala notice: ${escapeHtml(err.message)}</span>`;
+      bannerEl.innerHTML = `<span class="note">Live check notice: ${escapeHtml(err.message)}</span>`;
     }
   });
   container.querySelectorAll("[data-talk-net-source]").forEach((btn) => {
@@ -2172,6 +2538,12 @@ function renderTalkScreen() {
       state.networkSource = btn.dataset.talkNetSource;
       syncNetworkSourceButtons();
       renderTalkScreen();
+      const expandNetBtn = document.getElementById("talkExpandNetworkBtn");
+      const expandNetPanel = document.getElementById("talkExpandNetworkPanel");
+      if (expandNetBtn && expandNetPanel) {
+        expandNetBtn.setAttribute("aria-expanded", "true");
+        expandNetPanel.hidden = false;
+      }
       renderStartupGrid(state.DisplayedShortlist);
     });
   });
@@ -2182,6 +2554,7 @@ function renderTalkScreen() {
     stepStartupInList(1);
   });
   document.getElementById("talkOpenDrawerBtn")?.addEventListener("click", () => {
+    switchPrimaryTab("search");
     openStartupInspector(candidate.id, { keepHistory: true });
   });
   document.getElementById("talkExportMdBtn")?.addEventListener("click", () => {
@@ -2324,6 +2697,9 @@ async function openStartupInspector(companyId, options = {}) {
     drawerBanner.innerHTML = "";
   }
 
+  resetAccordionGroup(drawer);
+  bindAccordionToggleGroup(drawer);
+
   const brief = await loadStartupBriefData(companyId);
 
   const defaultDepth = "quick";
@@ -2373,7 +2749,7 @@ async function copyWarmIntroNote() {
     state.DisplayedShortlist.find((c) => c.id === state.activeStartupId);
   if (!candidate) return;
   const text = buildWarmIntroDraftText(candidate);
-  const btn = document.getElementById("copyWarmIntroBtn");
+  const btns = document.querySelectorAll("#copyWarmIntroBtn, [data-copy-intro-inline]");
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);
@@ -2381,16 +2757,18 @@ async function copyWarmIntroNote() {
   } catch {
     // Non-fatal in headless or non-secure contexts
   }
-  if (btn) {
+  btns.forEach((btn) => {
+    const prevLabel = btn.dataset.origLabel || btn.textContent.trim();
+    btn.dataset.origLabel = prevLabel;
     btn.classList.add("is-copied");
-    btn.textContent = "Copied Intro Note";
+    btn.textContent = "Copied!";
     window.clearTimeout(btn._copyTimer);
     btn._copyTimer = window.setTimeout(() => {
       if (!btn.isConnected) return;
       btn.classList.remove("is-copied");
-      btn.textContent = "Copy Warm Intro Note";
+      btn.textContent = btn.dataset.origLabel || "Copy intro note";
     }, 1800);
-  }
+  });
   showUiToast(`Copied warm intro note for ${candidate.name}`);
 }
 
@@ -2415,168 +2793,81 @@ function switchDrawerTab(tabName) {
 }
 
 function renderDrawerBriefPane(brief, candidate) {
-  document.getElementById("drawerQuickVerdict").textContent =
-    candidate.oneLiner || candidate.description || "";
-
   const calaProfile = getStartupCalaFieldProfile(candidate);
   const isLinkedin = state.networkSource !== "cala";
+  const model = buildCompanyOverviewModel(candidate, brief, calaProfile, isLinkedin);
+
+  const fitVerdictEl = document.getElementById("drawerFitVerdict");
+  if (fitVerdictEl) fitVerdictEl.textContent = model.fitVerdict.label;
+
+  const verdictEl = document.getElementById("drawerQuickVerdict");
+  if (verdictEl) verdictEl.textContent = model.oneLiner;
 
   const pillsEl = document.getElementById("drawerQuickPills");
   if (pillsEl) {
-    if (calaProfile?.slush2026?.attending) {
-      pillsEl.innerHTML = `<span class="meta-pill slush-attendee-chip">Slush 2026</span>`;
-    } else {
-      pillsEl.innerHTML = `<span class="meta-pill">${escapeHtml(candidate.hqCity || candidate.country || "")}</span>`;
-    }
+    pillsEl.innerHTML = calaProfile?.slush2026?.attending
+      ? `<span class="meta-pill slush-attendee-chip">Slush 2026</span>`
+      : "";
   }
 
-  const roundsList = brief?.rounds || candidate.roundHistory || [];
-  const latestRound = roundsList[roundsList.length - 1] || null;
-  const topRank =
-    (latestRound?.sources || [])[0]?.sourceRank ||
-    (brief?.arbitrageSignals || candidate.arbitrageSignals || [])[0]?.sourceRank ||
-    "PRIMARY";
+  const fundingValEl = document.getElementById("drawerFactFundingVal");
+  const fundingSubEl = document.getElementById("drawerFactFundingSub");
+  if (fundingValEl) fundingValEl.textContent = model.fundingValue;
+  if (fundingSubEl) fundingSubEl.textContent = model.fundingSub;
+
+  const teamValEl = document.getElementById("drawerFactTeamVal");
+  const teamSubEl = document.getElementById("drawerFactTeamSub");
+  if (teamValEl) teamValEl.textContent = model.teamValue;
+  if (teamSubEl) teamSubEl.textContent = model.teamSub;
+
+  const introValEl = document.getElementById("drawerFactIntroVal");
+  const introSubEl = document.getElementById("drawerFactIntroSub");
+  if (introValEl) introValEl.textContent = model.introValue;
+  if (introSubEl) introSubEl.textContent = model.introSub;
 
   const confEl = document.getElementById("drawerConfidenceLabel");
-  if (confEl) {
-    confEl.textContent = `${topRank} VERIFIED`;
+  const relSourceEl = document.getElementById("drawerReliabilitySource");
+  const relExplainEl = document.getElementById("drawerReliabilityExplain");
+  if (confEl) confEl.textContent = model.reliability.badgeLabel;
+  if (relSourceEl) relSourceEl.textContent = model.reliability.sourceSummary;
+  if (relExplainEl) relExplainEl.textContent = model.reliability.explanation;
+
+  const expandFitPanel = document.getElementById("expandFitPanel");
+  const expandFitHint = document.getElementById("expandFitHint");
+  if (expandFitPanel) {
+    expandFitPanel.innerHTML = buildFitAccordionHtml(candidate, brief);
+  }
+  if (expandFitHint) {
+    const rCount = Math.min(3, (candidate.reasons || []).length);
+    expandFitHint.textContent = rCount
+      ? `${model.fitVerdict.label} · ${rCount} supporting signals & watchouts`
+      : "Industry, timing, network & location breakdown";
   }
 
-  const breakdownEl = document.getElementById("drawerScoreBreakdown");
-  if (breakdownEl) {
-    const shortLabels = {
-      "Sector fit": "Sector",
-      "Stage timing": "Stage",
-      "Co-investor overlap": "Syndicate",
-      "Geography match": "Geo",
-      "Round size fit": "Size"
-    };
-    const factors = getScoreBreakdownRows(candidate);
-    breakdownEl.innerHTML = factors
-      .map(
-        (f) => `
-          <span class="cf-chip" title="${escapeHtml(f.detail || f.label)}">
-            <span>${escapeHtml(shortLabels[f.label] || f.label)}</span>
-            <b class="num-tabular">${f.points}/${f.maxPoints}</b>
-          </span>
-        `
-      )
-      .join("");
+  const expandEvidencePanel = document.getElementById("expandEvidencePanel");
+  const expandEvidenceHint = document.getElementById("expandEvidenceHint");
+  if (expandEvidencePanel) {
+    expandEvidencePanel.innerHTML = buildEvidenceAccordionHtml(candidate, brief, calaProfile, model);
+  }
+  if (expandEvidenceHint) {
+    const sCount = model.reliability.sources.length;
+    expandEvidenceHint.textContent = `${sCount || 1} verified ${sCount === 1 ? "source" : "sources"} · funding rounds, team history & data gaps`;
   }
 
-  const whyList = document.getElementById("drawerWhyFitList");
-  if (whyList) {
-    whyList.innerHTML = (candidate.reasons || [])
-      .slice(0, 2)
-      .map((r) => {
-        const firstSrc = (r.sources || [])[0];
-        const cite = firstSrc
-          ? ` <a href="${escapeHtml(firstSrc.url)}" target="_blank" rel="noopener noreferrer" class="citation-link" title="${escapeHtml(firstSrc.title)}">[${escapeHtml(firstSrc.publisher || "Source")}]</a>`
-          : "";
-        return `
-          <li class="evidence-item">
-            <span>${escapeHtml(r.text)}${cite}</span>
-          </li>
-        `;
-      })
-      .join("");
-  }
-
-  const risksList = document.getElementById("drawerRisksList");
-  if (risksList) {
-    const risksArr = brief?.risks || [
-      candidate.competitorConflict
-        ? `Watchout: Adjacent to ${candidate.competitorConflict}; requires conflict check.`
-        : "Watchout: No direct portfolio conflict detected."
-    ];
-    const cleanRisk = String(risksArr[0] || "").replace(/^Watchout:\s*/i, "");
-    risksList.innerHTML = `<li><strong>Watchout:</strong> ${escapeHtml(cleanRisk)}</li>`;
-  }
-
-  const tsLeadEl = document.getElementById("drawerTimeSeriesAndLeadership");
-  if (tsLeadEl) {
-    const rankSlug = String(topRank || "primary").toLowerCase();
-    const roundSummary = latestRound
-      ? `${latestRound.type || candidate.stage || "Round"} · ${formatEur(latestRound.amountEurM)} (${String(latestRound.date || "").slice(0, 7) || "Recent"})`
-      : `${candidate.stage || "Private"} · Undisclosed`;
-    const whyNowSummary =
-      candidate.whyNowTrigger ||
-      brief?.whyNowTrigger ||
-      (candidate.raisingSoon ? "Active 12-24m fundraising window" : "Tracked baseline entity");
-
-    const obsList = calaProfile?.numericalObservations || brief?.employeeCountSeries || candidate.employeeCountSeries || [];
-    const startHc = brief?.headcountAtLastRound ?? candidate.headcountAtLastRound ?? obsList[0]?.value ?? candidate.employeeCount;
-    const currentHc = candidate.employeeCount ?? obsList[obsList.length - 1]?.value ?? startHc;
-    const growthPct =
-      brief?.headcountGrowthPct ??
-      candidate.headcountGrowthPct ??
-      (startHc > 0 ? Math.max(0, Math.round(((currentHc - startHc) / startHc) * 100)) : 0);
-    const finMetrics = brief?.financialMetrics || candidate.financialMetrics || [];
-    const latestFin = finMetrics[finMetrics.length - 1];
-    const velocitySummary = latestFin
-      ? `${startHc} -> ${currentHc} (+${growthPct}%), EUR ${latestFin.cashEurM}M cash`
-      : `${startHc} -> ${currentHc} employees (+${growthPct}% since ${latestRound?.type || "round"})`;
-
-    const rolesList = calaProfile?.leadershipRelationships || [];
-    const alumni = brief?.alumniSpinout || candidate.alumniSpinout || rolesList.find((r) => r.priorCompany);
-    const primaryLeader = alumni || rolesList[0];
-    const leaderPart = alumni
-      ? `${alumni.name || alumni.person} (ex-${alumni.priorCompany})`
-      : primaryLeader
-        ? primaryLeader.person
-        : `${currentHc || "--"} team`;
-    const feederPart = candidate.coInvestorPath?.isUpstreamFeeder
-      ? ` · Feeder: ${candidate.coInvestorPath.coInvestorName}`
-      : latestRound?.leadInvestorName
-        ? ` · ${latestRound.leadInvestorName}`
-        : "";
-
-    tsLeadEl.innerHTML = `
-      <div class="cala-ts-list">
-        <div class="cala-ts-row">
-          <span>Cala Round &amp; Filing</span>
-          <strong class="cala-ts-val num-tabular">
-            ${escapeHtml(roundSummary)}
-            <span class="cala-rank-pill rank-${escapeHtml(rankSlug)}">${escapeHtml(topRank)}</span>
-          </strong>
-        </div>
-        <div class="cala-ts-row">
-          <span>Why Now Signal</span>
-          <strong class="cala-ts-val">${escapeHtml(whyNowSummary)}</strong>
-        </div>
-        <div class="cala-ts-row">
-          <span>Headcount Velocity</span>
-          <strong class="cala-ts-val num-tabular">${escapeHtml(velocitySummary)}</strong>
-        </div>
-        <div class="cala-ts-row">
-          <span>Founder &amp; Feeder</span>
-          <strong class="cala-ts-val">${escapeHtml(`${leaderPart}${feederPart}`)}</strong>
-        </div>
-      </div>
-    `;
-  }
-
-  // Step 3: Connected Network Path, Peers & Tailored Outreach
+  // Expandable 3: Connected Network Path, Peers & Tailored Outreach
   const coPath = candidate.coInvestorPath;
   const liNet = candidate.linkedinNetwork;
   const targetFundLabel = getSelectedBenchmarkLabel();
-  const activeBridgeName = isLinkedin
-    ? (liNet?.bridgePerson || coPath?.coInvestorName || "Direct connector").split("(")[0].trim()
-    : coPath?.coInvestorName || "Cala syndicate lead";
   const bridgeMeta = isLinkedin
-    ? "LinkedIn 2nd°"
+    ? "LinkedIn 2nd-degree"
     : coPath?.isUpstreamFeeder
-      ? `Upstream feeder (${coPath.feederDealsCount || 1}x)`
-      : `${coPath?.sharedCount || 1} shared Cala deals`;
-  const targetFounderName = (liNet?.targetLeader || `${candidate.name} team`).split("(")[0].trim();
+      ? "Backed earlier round"
+      : `${coPath?.sharedCount || 1} shared deals`;
+  const targetFounderName = (liNet?.targetLeader || `${candidate.name} founders`).split("(")[0].trim();
 
   const layer2Badge = document.getElementById("drawerLayer2Badge");
   if (layer2Badge) {
-    layer2Badge.textContent = isLinkedin
-      ? "LinkedIn warm bridge"
-      : coPath?.isUpstreamFeeder
-        ? "Cala upstream feeder"
-        : "Cala co-investor route";
+    layer2Badge.textContent = `Via ${model.introValue} · Ready-to-send intro message`;
   }
 
   const inlineChain = document.getElementById("drawerInlineWarmChain");
@@ -2585,7 +2876,7 @@ function renderDrawerBriefPane(brief, candidate) {
       <span class="iwc-node">${escapeHtml(targetFundLabel)}</span>
       <span class="iwc-arrow" aria-hidden="true">&rarr;</span>
       <span class="iwc-node is-bridge">
-        <strong>${escapeHtml(activeBridgeName)}</strong>
+        <strong>${escapeHtml(model.introValue)}</strong>
         <small>${escapeHtml(bridgeMeta)}</small>
       </span>
       <span class="iwc-arrow" aria-hidden="true">&rarr;</span>
@@ -2599,7 +2890,7 @@ function renderDrawerBriefPane(brief, candidate) {
   const peers = candidate.peerStartups || [];
   const layer3Badge = document.getElementById("drawerLayer3Badge");
   if (layer3Badge) {
-    layer3Badge.textContent = peers.length ? `${peers.length} connected peers · click to inspect` : "Cluster peers";
+    layer3Badge.textContent = peers.length ? `${peers.length} connected startups` : "Similar startups";
   }
 
   const peersRowEl = document.getElementById("drawerInlinePeersRow");
@@ -2620,14 +2911,14 @@ function renderDrawerBriefPane(brief, candidate) {
         `;
           })
           .join("")
-      : `<span class="note">No cluster peers indexed in this slice.</span>`;
+      : `<span class="note">No similar connected startups found yet.</span>`;
   }
 
   const bridgeProofEl = document.getElementById("drawerInlineBridgeProof");
   if (bridgeProofEl) {
     const proofText = isLinkedin
       ? liNet?.summary || coPath?.summary || "Mutual founder and operator bridge."
-      : coPath?.summary || liNet?.summary || "Verified Cala co-investor overlap.";
+      : coPath?.summary || liNet?.summary || "Shared co-investor overlap verified in Cala.";
     bridgeProofEl.textContent = proofText;
   }
 
@@ -2635,14 +2926,14 @@ function renderDrawerBriefPane(brief, candidate) {
   if (introBox) {
     introBox.innerHTML = `
       <div class="inline-intro-action-row">
-        <span class="warm-intro-label" style="margin:0">Warm intro draft (${escapeHtml(isLinkedin ? "LinkedIn Bridge" : "Cala Syndicate")})</span>
+        <span class="warm-intro-label" style="margin:0">Warm intro message (${escapeHtml(isLinkedin ? "LinkedIn contact" : "Co-investor syndicate")})</span>
         <button
           type="button"
           class="btn sm primary modal-intro-btn"
-          id="copyWarmIntroBtn"
-          title="Copy warm intro note (C)"
+          data-copy-intro-inline="1"
+          title="Copy warm intro note"
         >
-          Copy Warm Intro Note
+          Copy intro note
         </button>
       </div>
       <p class="warm-intro-text">${escapeHtml(buildWarmIntroDraftText(candidate))}</p>
@@ -3236,15 +3527,25 @@ function buildLiveCalaIntelHtml(res, options = {}) {
         </div>
       `;
     }),
-    ...corpEvents.slice(0, 4).map((ev) => `
+    ...corpEvents.slice(0, 4).map((ev) => {
+      const prettyEv =
+        ev.name === "FINANCING_RAISED_OR_FACILITY_ENTERED"
+          ? "Financing filing"
+          : ev.name === "COMPANY_LIFECYCLE_EVENT"
+            ? "Company registry filing"
+            : ev.name === "MNA_COMPLETED"
+              ? "Acquisition completed"
+              : String(ev.name || "Official filing").replace(/_/g, " ").toLowerCase();
+      return `
         <div class="cala-rel-row">
           <div>
-            <strong>${escapeHtml(ev.name)}</strong>
-            <span class="note" style="margin-left:8px">${escapeHtml(ev.eventDate || "")}</span>
+            <strong>${escapeHtml(prettyEv)}</strong>
+            <span class="note" style="margin-left:8px">${escapeHtml(formatReadableMonth(ev.eventDate) || ev.eventDate || "")}</span>
           </div>
-          <span class="badge b-green">Filing</span>
+          <span class="badge b-green">Official filing</span>
         </div>
-      `)
+      `;
+    })
   ];
 
   const candRows = [
@@ -3292,6 +3593,63 @@ function buildLiveCalaIntelHtml(res, options = {}) {
     live?.employeeCountRange ? `<span class="meta-pill">${escapeHtml(String(live.employeeCountRange).replace(",", "-"))} team</span>` : "",
     live?.headquarters ? `<span class="meta-pill">${escapeHtml(live.headquarters)}</span>` : ""
   ].filter(Boolean);
+
+  if (ctx === "drawer" || ctx === "talk") {
+    if (!matched && !live && !kaText) {
+      return `
+        <div class="cala-compact-check">
+          <div class="cala-intel-head">
+            <div style="min-width:0">
+              <div class="cala-intel-title-row">
+                <span class="drawer-kicker" style="margin:0"><span class="live-dot" aria-hidden="true"></span> Checked live index</span>
+                ${costBadge}
+              </div>
+              <p class="cala-intel-desc" style="margin:4px 0 0">
+                No separate entity update found for "${escapeHtml(res?.queryName || entityTitle)}" beyond the verified records shown in Sources &amp; Growth below.
+              </p>
+            </div>
+            <div class="cala-intel-actions">
+              <button type="button" class="btn sm" data-close-cala-ctx="${escapeHtml(ctx)}">Close</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+    const summaryParts = [];
+    if (allRounds.length > 0) summaryParts.push(`${allRounds.length} verified funding ${allRounds.length === 1 ? "round" : "rounds"}`);
+    if (leadership.length + worksAt.length > 0) summaryParts.push(`${leadership.length + worksAt.length} leadership & team records`);
+    if (numObs.length > 0) summaryParts.push(`${numObs.length} headcount checks`);
+    const summaryLine = summaryParts.length
+      ? `Confirmed ${summaryParts.join(" · ")} in live Cala AI records.`
+      : live?.description || matched?.description || "Company entity confirmed in Cala AI records.";
+    return `
+      <div class="cala-compact-check">
+        <div class="cala-intel-head">
+          <div style="min-width:0">
+            <div class="cala-intel-title-row">
+              <span class="drawer-kicker" style="margin:0"><span class="live-dot" aria-hidden="true"></span> Live check complete</span>
+              ${costBadge}
+            </div>
+            <p class="cala-intel-desc" style="margin:4px 0 0">${escapeHtml(summaryLine)}</p>
+          </div>
+          <div class="cala-intel-actions">
+            ${
+              !ka && entityId && entityId !== SLUSH_2026_EVENT_ID
+                ? `<button type="button" class="btn sm primary" data-cala-deep-name="${escapeHtml(res?.queryName || entityTitle)}" data-cala-deep-type="${escapeHtml(res?.type || "company")}" data-cala-deep-ctx="${escapeHtml(ctx)}">Ask Cala AI (1 credit)</button>`
+                : ""
+            }
+            <button type="button" class="btn sm" data-close-cala-ctx="${escapeHtml(ctx)}">Close</button>
+          </div>
+        </div>
+        ${
+          kaText
+            ? `<div class="cala-knowledge-box" style="margin-top:8px"><strong>Live summary:</strong><p style="margin:4px 0 0">${escapeHtml(kaText)}</p></div>`
+            : ""
+        }
+        ${relRows.length ? `<div class="cala-rel-list" style="margin-top:8px">${relRows.slice(0, 3).join("")}</div>` : ""}
+      </div>
+    `;
+  }
 
   return `
     <div class="cala-intel-head">

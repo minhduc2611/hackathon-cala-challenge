@@ -236,6 +236,9 @@ test('agentic arbitrage signals, alumni spinouts, Companies House metrics, and b
   assert.ok(brief.employeeCountSeries.length >= 3);
   assert.ok(brief.arbitrageSignals.some((s) => s.type === 'companies_house_metric'));
   assert.match(brief.memoMarkdown, /Time-Series & Filing Arbitrage Signals/);
+
+  const kestrelBrief = buildStartupBrief('kestrel-nav', 'lifeline-ventures');
+  assert.ok(kestrelBrief.sources.some((s) => s.sourceRank === 'FILING'));
 });
 
 test('refineShortlist handles agentic velocity, feeder, filing, alumni filters & 4-agent trace', () => {

@@ -1283,8 +1283,20 @@ export function buildStartupBrief(startupId, fundId = null) {
   );
 
   const allSourcesMap = new Map();
+  const extraSourceIds = [
+    ...(signals.arbitrageSignals || []).flatMap((sig) => sig.sourceIds || []),
+    ...(company.corporateEvents || []).map((ev) => ev.sourceId),
+    ...(company.financialMetrics || []).map((m) => m.sourceId),
+    ...(company.employeeCountSeries || []).map((p) => p.sourceId),
+    ...(company.peopleCoverage?.roles || []).map((r) => r.sourceId)
+  ].filter(Boolean);
+  for (const s of resolveSources(extraSourceIds)) {
+    allSourcesMap.set(s.id, s);
+  }
   for (const r of roundsWithSources) {
-    for (const s of r.sources) allSourcesMap.set(s.id, s);
+    for (const s of r.sources) {
+      if (!allSourcesMap.has(s.id)) allSourcesMap.set(s.id, s);
+    }
   }
 
   const notFoundInCala = [

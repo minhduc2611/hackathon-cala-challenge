@@ -32,10 +32,39 @@ const MIME_TYPES = {
 
 const analysisCache = new Map();
 
-function pickBestCalaEntity(entities = [], preferredType = 'Organization') {
+const ENTITY_LEGAL_SUFFIX_RE = /\b(?:oyj|oy|ab|aps|a\/s|as|ltd|limited|plc|inc|corp|corporation|gmbh|ag|s\.a\.s|sas|sarl|b\.v\.|bv|llc|oü)\b\.?/gi;
+
+function normalizeEntityCoreName(name = '') {
+  return String(name || '')
+    .toLowerCase()
+    .replace(ENTITY_LEGAL_SUFFIX_RE, ' ')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isStrongEntityNameMatch(queryName = '', candName = '') {
+  const qCore = normalizeEntityCoreName(queryName);
+  const cCore = normalizeEntityCoreName(candName);
+  if (!qCore || !cCore) return false;
+  if (qCore === cCore) return true;
+  const qTokens = qCore.split(' ').filter((t) => t.length >= 2);
+  const cTokens = cCore.split(' ').filter((t) => t.length >= 2);
+  if (!qTokens.length || !cTokens.length) return false;
+  if (qTokens.length === 1) {
+    return cTokens[0] === qTokens[0] || (cTokens.includes(qTokens[0]) && cTokens.length <= 2);
+  }
+  return qTokens.every((t) => cTokens.includes(t));
+}
+
+function pickBestCalaEntity(entities = [], preferredType = 'Organization', queryName = '') {
   if (!entities.length) return null;
-  const exactType = entities.find((e) => e.entity_type === preferredType);
-  return exactType || entities[0];
+  const pool = queryName
+    ? entities.filter((e) => isStrongEntityNameMatch(queryName, e?.name || ''))
+    : entities;
+  if (!pool.length) return null;
+  const exactType = pool.find((e) => e.entity_type === preferredType);
+  return exactType || pool[0];
 }
 
 function summarizeLiveCalaEntity(entityData) {
@@ -494,7 +523,7 @@ export function createAppServer(options = {}) {
         const searchRes = await calaClient.calaEntitySearch(name, 5, searchTypes);
         const candidates = searchRes.data?.entities || [];
         const preferredType = type === 'event' ? 'Event' : type === 'fund' ? 'Organization' : 'Company';
-        const matched = pickBestCalaEntity(candidates, preferredType);
+        const matched = pickBestCalaEntity(candidates, preferredType, name);
 
         let introRes = null;
         let entityRes = null;
@@ -518,7 +547,6 @@ export function createAppServer(options = {}) {
 
         const verifyPool = [
           ...(entityRes?.data?.entity_type === 'Company' ? [entityRes.data] : []),
-          ...candidates.slice(0, type === 'company' ? 1 : 0),
           ...(entityRes?.data?.relationships?.incoming?.PARTICIPATES_IN_EVENT || []),
           ...(knowledgeRes?.data?.entities || [])
         ].filter(Boolean);

@@ -821,7 +821,7 @@
           aria-selected="true"
           data-drawer-tab="brief"
         >
-          1. Deal, Cala &amp; Intro
+          Overview
         </button>
         <button
           type="button"
@@ -831,7 +831,7 @@
           aria-selected="false"
           data-drawer-tab="network"
         >
-          2. Interactive Graph Map
+          Warm intro map
         </button>
         <button
           type="button"
@@ -839,7 +839,7 @@
           id="openFullTalkBtn"
           style="margin-left: auto"
         >
-          Full screen view &rarr;
+          Full page view &rarr;
         </button>
       </div>
     </header>
@@ -848,105 +848,189 @@
       <div id="drawerPaneBrief" class="drawer-pane">
         <div class="hero-kpi-strip" id="drawerHeroKpis" hidden></div>
 
-        <!-- STEP 1 & STEP 2: WHY IT FITS + PROMINENT CALA AI INTELLIGENCE -->
-        <div class="modal-exec-grid">
-          <section class="exposure-stage-Quick modal-step-card">
-            <div class="step-card-head">
-              <div class="step-title-wrap">
-                <span class="step-pill">1</span>
-                <h3 class="drawer-section-title">Why This Startup Fits</h3>
+        <section class="company-overview-card">
+          <div class="overview-head-row">
+            <div class="overview-summary-col">
+              <div class="overview-verdict-row">
+                <span class="overview-fit-label" id="drawerFitVerdict">Match summary</span>
+                <div class="quick-pills-row" id="drawerQuickPills"></div>
               </div>
-              <div class="quick-pills-row" id="drawerQuickPills"></div>
+              <p class="overview-oneliner" id="drawerQuickVerdict"></p>
             </div>
+          </div>
 
-            <p class="quick-verdict" id="drawerQuickVerdict"></p>
-
-            <div class="compact-factor-strip" id="drawerScoreBreakdown"></div>
-
-            <div class="drawer-inline-reasons">
-              <ul class="evidence-list" id="drawerWhyFitList"></ul>
-              <ul class="risk-list modal-watchout-list" id="drawerRisksList"></ul>
+          <div class="overview-facts-row">
+            <div class="overview-fact-cell">
+              <span class="overview-fact-label">Latest funding</span>
+              <strong class="overview-fact-val num-tabular" id="drawerFactFundingVal">--</strong>
+              <span class="overview-fact-sub" id="drawerFactFundingSub">Public filings</span>
             </div>
-          </section>
-
-          <section class="cala-spotlight-card modal-step-card" id="drawerCalaSpotlightCard">
-            <div class="step-card-head cala-spot-head">
-              <div class="step-title-wrap">
-                <span class="step-pill is-accent">2</span>
-                <span class="cala-brand-badge">
-                  <span class="live-dot" aria-hidden="true"></span>
-                  CALA AI GRAPH
-                </span>
-                <span class="Verified-badge" id="drawerConfidenceLabel">FILING VERIFIED</span>
+            <div class="overview-fact-cell">
+              <span class="overview-fact-label">Team size &amp; pace</span>
+              <strong class="overview-fact-val num-tabular" id="drawerFactTeamVal">--</strong>
+              <span class="overview-fact-sub" id="drawerFactTeamSub">Tracked headcount</span>
+            </div>
+            <div class="overview-fact-cell overview-fact-action">
+              <div>
+                <span class="overview-fact-label">Best way to connect</span>
+                <strong class="overview-fact-val" id="drawerFactIntroVal">--</strong>
+                <span class="overview-fact-sub" id="drawerFactIntroSub">Warm introduction</span>
               </div>
               <button
                 type="button"
-                class="btn sm live-cala-pill-btn"
-                id="modalHeaderLiveCalaBtn"
-                title="Verify latest live company facts on Cala AI"
+                class="btn sm primary modal-intro-btn"
+                id="copyWarmIntroBtn"
+                title="Copy ready-to-send intro message (C)"
               >
-                <span class="live-dot" aria-hidden="true"></span>
-                <span>Verify Live</span>
+                Copy intro note
               </button>
             </div>
-
-            <div id="drawerLiveCalaBanner" class="live-cala-intel-card cala-inline-banner" hidden></div>
-            <div id="drawerTimeSeriesAndLeadership"></div>
-          </section>
-        </div>
-
-        <!-- STEP 3: CONNECTED WARM NETWORK & OUTREACH -->
-        <section class="connected-network-card modal-step-card" id="drawerConnectedNetworkCard">
-          <div class="step-card-head">
-            <div class="step-title-wrap">
-              <span class="step-pill">3</span>
-              <h3 class="drawer-section-title">Warm Network Path &amp; Intro</h3>
-              <span class="gradual-hint" id="drawerLayer2Badge">Connected route</span>
-            </div>
-            <div class="connected-net-controls">
-              <div class="net-source-switch" role="radiogroup" aria-label="Intro bridge source">
-                <button type="button" class="net-src-btn is-active" data-net-source="linkedin" id="inlineNetLinkedinBtn">
-                  LinkedIn Bridge
-                </button>
-                <button type="button" class="net-src-btn" data-net-source="cala" id="inlineNetCalaBtn">
-                  Cala Syndicate
-                </button>
-              </div>
-              <button type="button" class="btn sm" id="openGraphMapInlineBtn">
-                Open Graph Map &rarr;
-              </button>
-            </div>
-          </div>
-
-          <div id="drawerInlineWarmChain" class="inline-warm-chain"></div>
-
-          <div class="connected-net-bottom">
-            <div class="inline-peers-panel">
-              <div class="inline-subhead">
-                <span class="inline-sublabel">Connected Cluster Peers</span>
-                <span class="gradual-hint" id="drawerLayer3Badge">Click to inspect</span>
-              </div>
-              <div id="drawerInlinePeersRow" class="inline-peer-chips"></div>
-              <p class="note inline-bridge-proof" id="drawerInlineBridgeProof"></p>
-            </div>
-
-            <div class="warm-intro-preview" id="drawerIntroPreviewBox"></div>
           </div>
         </section>
+
+        <section class="reliability-strip-card" id="drawerReliabilityCard">
+          <div class="reliability-top-row">
+            <div class="reliability-status-wrap">
+              <span class="reliability-shield" aria-hidden="true">
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                  <path d="M8 1.5L13.5 3.8v4.1c0 3.3-2.3 5.9-5.5 6.8-3.2-.9-5.5-3.5-5.5-6.8V3.8L8 1.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+                  <path d="M5.6 8.2l1.7 1.7 3.2-3.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </span>
+              <div class="reliability-title-col">
+                <div class="reliability-title-line">
+                  <strong class="Verified-badge" id="drawerConfidenceLabel">Verified Company Records</strong>
+                  <span class="reliability-source-meta" id="drawerReliabilitySource">Cala AI Knowledge Graph</span>
+                </div>
+                <p class="reliability-note" id="drawerReliabilityExplain"></p>
+              </div>
+            </div>
+            <button
+              type="button"
+              class="btn sm live-cala-pill-btn"
+              id="modalHeaderLiveCalaBtn"
+              title="Verify latest live facts and official sources on Cala AI"
+            >
+              <span class="live-dot" aria-hidden="true"></span>
+              <span>Verify live data</span>
+            </button>
+          </div>
+          <div id="drawerLiveCalaBanner" class="live-cala-intel-card cala-inline-banner" hidden></div>
+        </section>
+
+        <div class="info-accordion-list" id="drawerExpandableSections">
+          <div class="info-expand-item">
+            <button
+              type="button"
+              class="info-expand-btn"
+              id="expandFitBtn"
+              aria-expanded="false"
+              aria-controls="expandFitPanel"
+            >
+              <span class="info-expand-text">
+                <span class="info-expand-title">Why this matches your strategy</span>
+                <span class="info-expand-hint" id="expandFitHint">Sector, timing, region &amp; key watchouts</span>
+              </span>
+              <span class="info-expand-chevron" aria-hidden="true">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </span>
+            </button>
+            <div class="info-expand-panel" id="expandFitPanel" hidden>
+              <div class="fit-bars-grid" id="drawerScoreBreakdown"></div>
+              <ul class="evidence-list" id="drawerWhyFitList"></ul>
+              <ul class="risk-list modal-watchout-list" id="drawerRisksList"></ul>
+            </div>
+          </div>
+
+          <div class="info-expand-item">
+            <button
+              type="button"
+              class="info-expand-btn"
+              id="expandEvidenceBtn"
+              aria-expanded="false"
+              aria-controls="expandEvidencePanel"
+            >
+              <span class="info-expand-text">
+                <span class="info-expand-title">Verified sources, team growth &amp; founders</span>
+                <span class="info-expand-hint" id="expandEvidenceHint">Official filings, funding rounds, team history &amp; gaps</span>
+              </span>
+              <span class="info-expand-chevron" aria-hidden="true">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </span>
+            </button>
+            <div class="info-expand-panel" id="expandEvidencePanel" hidden>
+              <div id="drawerTimeSeriesAndLeadership"></div>
+            </div>
+          </div>
+
+          <div class="info-expand-item">
+            <button
+              type="button"
+              class="info-expand-btn"
+              id="expandNetworkBtn"
+              aria-expanded="false"
+              aria-controls="expandNetworkPanel"
+            >
+              <span class="info-expand-text">
+                <span class="info-expand-title">Warm introduction message &amp; connected companies</span>
+                <span class="info-expand-hint" id="drawerLayer2Badge">Ready-to-send outreach &amp; mutual contacts</span>
+              </span>
+              <span class="info-expand-chevron" aria-hidden="true">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </span>
+            </button>
+            <div class="info-expand-panel" id="expandNetworkPanel" hidden>
+              <div class="expand-net-toolbar">
+                <div class="net-source-switch" role="radiogroup" aria-label="Intro bridge source">
+                  <button type="button" class="net-src-btn is-active" data-net-source="linkedin" id="inlineNetLinkedinBtn">
+                    LinkedIn contact
+                  </button>
+                  <button type="button" class="net-src-btn" data-net-source="cala" id="inlineNetCalaBtn">
+                    Co-investor syndicate
+                  </button>
+                </div>
+                <button type="button" class="btn sm" id="openGraphMapInlineBtn">
+                  See network diagram &rarr;
+                </button>
+              </div>
+
+              <div id="drawerInlineWarmChain" class="inline-warm-chain"></div>
+
+              <div class="connected-net-bottom">
+                <div class="inline-peers-panel">
+                  <div class="inline-subhead">
+                    <span class="inline-sublabel">Similar connected startups</span>
+                    <span class="gradual-hint" id="drawerLayer3Badge">Click to view</span>
+                  </div>
+                  <div id="drawerInlinePeersRow" class="inline-peer-chips"></div>
+                  <p class="note inline-bridge-proof" id="drawerInlineBridgeProof"></p>
+                </div>
+
+                <div class="warm-intro-preview" id="drawerIntroPreviewBox"></div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div id="drawerPaneNetwork" class="drawer-pane" hidden>
         <div class="network-toolbar">
           <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap">
-            <button type="button" class="btn sm" id="graphBackToBriefBtn">&larr; Back to Deal &amp; Intro</button>
+            <button type="button" class="btn sm" id="graphBackToBriefBtn">&larr; Back to Overview</button>
             <h3 class="drawer-section-title">Warm intro &amp; relationship graph</h3>
           </div>
           <div class="net-source-switch" role="radiogroup" aria-label="Network source">
             <button type="button" class="net-src-btn is-active" data-net-source="linkedin" id="netSrcLinkedinBtn">
-              LinkedIn first
+              LinkedIn contact
             </button>
             <button type="button" class="net-src-btn" data-net-source="cala" id="netSrcCalaBtn">
-              Cala graph
+              Co-investor syndicate
             </button>
           </div>
         </div>
