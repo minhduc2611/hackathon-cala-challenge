@@ -29,6 +29,7 @@ const state = {
 
   // Drawer state
   activeStartupId: null,
+  drawerHistory: [],
   activeDrawerTab: 'score', // 'score' | 'network'
   activeNetworkSource: 'linkedin', // 'linkedin' | 'cala'
   briefCache: new Map(),
@@ -37,13 +38,19 @@ const state = {
   calaBudget: null
 };
 
+const WEIGHT_PRESETS = {
+  balanced: { sector: 30, stage: 25, coInvestor: 20, geography: 15, roundSize: 10 },
+  untapped: { sector: 36, stage: 30, coInvestor: 0, geography: 20, roundSize: 14 },
+  warmest: { sector: 25, stage: 20, coInvestor: 35, geography: 12, roundSize: 8 }
+};
+
 const LOGO_PALETTES = {
-  HealthTech: { bg: '#E8F1EE', fg: '#0D5C46', stroke: '#B6D3C9' },
-  DeepTech: { bg: '#EDF0F4', fg: '#1F3A52', stroke: '#C2CDD9' },
-  'Climate Tech': { bg: '#EBF3E8', fg: '#1E5631', stroke: '#BFD8B8' },
-  'B2B SaaS': { bg: '#F2EFE9', fg: '#4D3D24', stroke: '#D6CEBF' },
-  'AI & ML': { bg: '#EEF0F7', fg: '#2C3867', stroke: '#C5CCE3' },
-  Fintech: { bg: '#FDF1EC', fg: '#9A3412', stroke: '#E7C5B5' }
+  HealthTech: { bg: '#E5EFEA', fg: '#0B5540', stroke: '#B6D0C5' },
+  DeepTech: { bg: '#EBF0F5', fg: '#1D374F', stroke: '#C0CCD8' },
+  'Climate Tech': { bg: '#E9F2E6', fg: '#1B522E', stroke: '#BCD4B5' },
+  'B2B SaaS': { bg: '#F2EEE6', fg: '#4D3C22', stroke: '#D5CCBC' },
+  'AI & ML': { bg: '#ECEFF7', fg: '#293566', stroke: '#C3CAE2' },
+  Fintech: { bg: '#FDF1EC', fg: '#9A3412', stroke: '#E7C3B3' }
 };
 
 function esc(value) {
@@ -66,26 +73,33 @@ function getInitials(name) {
   return String(name || 'ST').slice(0, 2).toUpperCase();
 }
 
-function hashSeed(text) {
-  let hash = 0;
-  for (let i = 0; i < text.length; i += 1) {
-    hash = (hash * 31 + text.charCodeAt(i)) % 997;
+function getSectorMotifSvg(sector, fg) {
+  switch (sector) {
+    case 'DeepTech':
+      return `<ellipse cx="19" cy="19" rx="14" ry="6" fill="none" stroke="${fg}" stroke-width="1" opacity="0.18" transform="rotate(-24 19 19)" />`;
+    case 'AI & ML':
+      return `<g fill="${fg}" opacity="0.2"><circle cx="9" cy="9" r="1.4"/><circle cx="29" cy="9" r="1.4"/><circle cx="29" cy="29" r="1.4"/><line x1="9" y1="9" x2="29" y2="29" stroke="${fg}" stroke-width="0.8"/></g>`;
+    case 'Climate Tech':
+      return `<g fill="none" stroke="${fg}" stroke-width="0.9" opacity="0.2"><circle cx="19" cy="19" r="13"/><path d="M6 19 Q19 13 32 19"/></g>`;
+    case 'HealthTech':
+      return `<path d="M4 21 L12 21 L15 14 L20 25 L24 19 L34 19" fill="none" stroke="${fg}" stroke-width="1.1" opacity="0.2"/>`;
+    case 'Fintech':
+      return `<g fill="${fg}" opacity="0.14"><rect x="7" y="23" width="4" height="8" rx="1"/><rect x="13" y="18" width="4" height="13" rx="1"/><rect x="27" y="14" width="4" height="17" rx="1"/></g>`;
+    default:
+      return `<polygon points="19,5 32,12 32,26 19,33 6,26 6,12" fill="none" stroke="${fg}" stroke-width="0.9" opacity="0.18"/>`;
   }
-  return hash;
 }
 
 function renderLogoSvg(name, sector) {
-  const palette = LOGO_PALETTES[sector] || { bg: '#ECEEE9', fg: '#0F1715', stroke: '#D5DAD4' };
+  const palette = LOGO_PALETTES[sector] || { bg: '#EFECE6', fg: '#111615', stroke: '#DCD9D0' };
   const initials = getInitials(name);
-  const motif = hashSeed(String(name || ''));
-  const cornerX = motif % 2 === 0 ? 27 : 7;
-  const cornerY = motif % 3 === 0 ? 9 : 27;
+  const motif = getSectorMotifSvg(sector, palette.fg);
 
   return `
-    <svg class="startup-logo" viewBox="0 0 36 36" aria-hidden="true">
-      <rect x="0.75" y="0.75" width="34.5" height="34.5" rx="6" fill="${palette.bg}" stroke="${palette.stroke}" stroke-width="1.25" />
-      <circle cx="${cornerX}" cy="${cornerY}" r="2.1" fill="${palette.fg}" opacity="0.32" />
-      <text x="18" y="22.5" text-anchor="middle" font-family="Plus Jakarta Sans, sans-serif" font-size="12.5" font-weight="700" fill="${palette.fg}">${esc(initials)}</text>
+    <svg class="startup-logo" viewBox="0 0 38 38" aria-hidden="true">
+      <rect x="0.75" y="0.75" width="36.5" height="36.5" rx="6" fill="${palette.bg}" stroke="${palette.stroke}" stroke-width="1.2" />
+      ${motif}
+      <text x="19" y="23.5" text-anchor="middle" font-family="Plus Jakarta Sans, sans-serif" font-size="13" font-weight="700" fill="${palette.fg}">${esc(initials)}</text>
     </svg>
   `;
 }
@@ -129,7 +143,7 @@ async function apiPost(path, body) {
   return data;
 }
 
-/* ---------------- NAVIGATION & CONFIGURATION WIZARD ---------------- */
+/* ---------------- NAVIGATION & CONFIGURATION FOLIO ---------------- */
 
 function switchPrimaryTab(tabName) {
   state.activeTab = tabName;
@@ -160,6 +174,10 @@ function setConfigStep(stepNumber) {
       stepperBtn.classList.toggle('is-done', i < stepNumber);
     }
   }
+  const fill = document.getElementById('configProgressFill');
+  if (fill) {
+    fill.style.width = `${(stepNumber / 3) * 100}%`;
+  }
   if (stepNumber === 3) {
     renderConfigReviewSummary();
   }
@@ -169,19 +187,69 @@ function syncRoleSelection(role) {
   state.role = role === 'investor' ? 'investor' : 'analyst';
   document.querySelectorAll('[data-role-card]').forEach((card) => {
     const cardRole = card.getAttribute('data-role-card');
-    card.classList.toggle('is-selected', cardRole === state.role);
+    const selected = cardRole === state.role;
+    card.classList.toggle('is-selected', selected);
     const input = card.querySelector('input[type="radio"]');
-    if (input) input.checked = cardRole === state.role;
+    if (input) input.checked = selected;
+    const badge = card.querySelector('.choice-check');
+    if (badge) badge.textContent = selected ? 'Selected' : 'Select';
+  });
+
+  document.querySelectorAll('[data-quick-role]').forEach((btn) => {
+    btn.classList.toggle('is-active', btn.getAttribute('data-quick-role') === state.role);
   });
 
   const hintEl = document.getElementById('roleStepHint');
   if (hintEl) {
     hintEl.textContent =
       state.role === 'investor'
-        ? 'Default lens for Investor / Partner: High-conviction triage, thesis drift audit, and warm intro paths.'
-        : 'Default lens for Analyst: Balanced suitability ranking, expandable Cala tables, and memo exports.';
+        ? 'Partner perspective active: warm 2nd-degree access cues and thesis drift comparisons emphasized.'
+        : 'Analyst perspective active: empirical Cala tables and partner memo exports prioritized.';
   }
   updateTelemetryLine();
+  if (state.activeStartupId) {
+    const item = state.allKnownItems.get(state.activeStartupId);
+    if (item) renderDrawerHeaderAndOverview(item);
+  }
+}
+
+function syncPrioritySelection(mode) {
+  state.rankingMode = ['balanced', 'untapped', 'warmest'].includes(mode) ? mode : 'balanced';
+  document.querySelectorAll('input[name="rankingMode"]').forEach((r) => {
+    r.checked = r.value === state.rankingMode;
+  });
+  document.querySelectorAll('[data-quick-priority]').forEach((btn) => {
+    btn.classList.toggle('is-active', btn.getAttribute('data-quick-priority') === state.rankingMode);
+  });
+  renderWeightPreview();
+}
+
+function renderWeightPreview() {
+  const grid = document.getElementById('weightPreviewBars');
+  if (!grid) return;
+  const w = WEIGHT_PRESETS[state.rankingMode] || WEIGHT_PRESETS.balanced;
+  const rows = [
+    { label: 'Sector fit', val: w.sector },
+    { label: 'Stage timing', val: w.stage },
+    { label: 'Co-investor', val: w.coInvestor },
+    { label: 'Geography', val: w.geography },
+    { label: 'Round size', val: w.roundSize }
+  ];
+  grid.innerHTML = rows
+    .map(
+      (r) => `
+      <div class="weight-bar-item">
+        <div class="weight-bar-top">
+          <span class="weight-bar-name">${esc(r.label)}</span>
+          <span class="weight-bar-pct">${esc(r.val)}%</span>
+        </div>
+        <div class="weight-bar-track">
+          <div class="weight-bar-fill" style="width: ${Math.min(100, Math.round((r.val / 40) * 100))}%"></div>
+        </div>
+      </div>
+    `
+    )
+    .join('');
 }
 
 function syncNetworkPrioritySelection(priority) {
@@ -189,9 +257,12 @@ function syncNetworkPrioritySelection(priority) {
   state.activeNetworkSource = state.networkPriority;
   document.querySelectorAll('[data-network-card]').forEach((card) => {
     const cardMode = card.getAttribute('data-network-card');
-    card.classList.toggle('is-selected', cardMode === state.networkPriority);
+    const selected = cardMode === state.networkPriority;
+    card.classList.toggle('is-selected', selected);
     const input = card.querySelector('input[type="radio"]');
-    if (input) input.checked = cardMode === state.networkPriority;
+    if (input) input.checked = selected;
+    const badge = card.querySelector('.choice-check');
+    if (badge) badge.textContent = selected ? 'Selected' : 'Select';
   });
   renderConfigReviewSummary();
 }
@@ -200,17 +271,22 @@ function renderFundQuickPicks() {
   const container = document.getElementById('fundQuickPicks');
   if (!container || !state.bootstrap) return;
   container.innerHTML = state.bootstrap.funds
-    .map(
-      (f) => `
-      <button
-        type="button"
-        class="quick-pick-btn ${f.id === state.fundId ? 'is-active' : ''}"
-        data-fund-id="${esc(f.id)}"
-      >
-        ${esc(f.name)}
-      </button>
-    `
-    )
+    .map((f) => {
+      const active = f.id === state.fundId;
+      return `
+        <button
+          type="button"
+          class="fund-index-row ${active ? 'is-active' : ''}"
+          data-fund-id="${esc(f.id)}"
+        >
+          <span class="fund-row-left">
+            <span class="fund-row-name">${esc(f.name)}</span>
+            <span class="fund-row-hq">${esc(f.hqCity)}, ${esc(f.country)} · ${esc(f.teamSize)} team</span>
+          </span>
+          <span class="fund-row-marker">${active ? 'Selected' : 'Select'}</span>
+        </button>
+      `;
+    })
     .join('');
 
   container.querySelectorAll('[data-fund-id]').forEach((btn) => {
@@ -237,8 +313,8 @@ function renderSelectedFundSummary() {
     return;
   }
   box.innerHTML = `
-    <strong>${esc(fund.name)}</strong> · ${esc(fund.hqCity)}, ${esc(fund.country)} (${esc(fund.teamSize)} team members)<br />
-    <span class="disambig-meta">Stated positioning: ${esc(fund.statedThesis)}</span>
+    <strong>${esc(fund.name)}</strong> (${esc(fund.hqCity)}, ${esc(fund.country)})<br />
+    <span class="disambig-meta">Published thesis: ${esc(fund.statedThesis)}</span>
   `;
 }
 
@@ -326,7 +402,7 @@ function renderConfigReviewSummary() {
   const fundObj = state.bootstrap.funds.find((f) => f.id === payload.fundId);
   const benchmarkLabel =
     payload.mode === 'companies'
-      ? `${payload.companyIds.length} admired companies benchmark`
+      ? `${payload.companyIds.length} admired companies`
       : `${fundObj ? fundObj.name : payload.fundId} (indexed fund)`;
 
   const priorityLabels = {
@@ -399,7 +475,7 @@ function registerKnownItems(items) {
   }
 }
 
-async function runAnalysisAndSwitch(shouldSwitchToSearch = true) {
+async function runAnalysisAndSwitch(shouldSwitchToSearch = true, preserveFilters = false) {
   const payload = getConfigPayload();
   if (payload.mode === 'companies' && payload.companyIds.length < 3) {
     alert('Select between 3 and 5 companies to build a benchmark thesis, or switch to an indexed fund.');
@@ -417,28 +493,31 @@ async function runAnalysisAndSwitch(shouldSwitchToSearch = true) {
     const result = await apiPost('/api/analyze', payload);
     state.analysis = result;
     state.calaBudget = result.calaBudget || state.calaBudget;
-    state.displayedShortlist = result.shortlist || [];
-    state.lastSearchResult = null;
     registerKnownItems(result.shortlist);
 
-    // Clear active search box when relaunching configuration
-    state.filters = {
-      queryText: '',
-      region: 'all',
-      excludeSector: 'none',
-      raisingSoonOnly: false,
-      untappedOnly: false
-    };
-    const searchInput = document.getElementById('aiSearchInput');
-    if (searchInput) searchInput.value = '';
-    const regionEl = document.getElementById('filterRegion');
-    if (regionEl) regionEl.value = 'all';
-    const excEl = document.getElementById('filterExcludeSector');
-    if (excEl) excEl.value = 'none';
-    const rsEl = document.getElementById('filterRaisingSoon');
-    if (rsEl) rsEl.checked = false;
-    const utEl = document.getElementById('filterUntapped');
-    if (utEl) utEl.checked = false;
+    if (!preserveFilters) {
+      state.displayedShortlist = result.shortlist || [];
+      state.lastSearchResult = null;
+      state.filters = {
+        queryText: '',
+        region: 'all',
+        excludeSector: 'none',
+        raisingSoonOnly: false,
+        untappedOnly: false
+      };
+      const searchInput = document.getElementById('aiSearchInput');
+      if (searchInput) searchInput.value = '';
+      const regionEl = document.getElementById('filterRegion');
+      if (regionEl) regionEl.value = 'all';
+      const excEl = document.getElementById('filterExcludeSector');
+      if (excEl) excEl.value = 'none';
+      const rsEl = document.getElementById('filterRaisingSoon');
+      if (rsEl) rsEl.checked = false;
+      const utEl = document.getElementById('filterUntapped');
+      if (utEl) utEl.checked = false;
+    } else {
+      await executeAiRefine();
+    }
 
     renderSearchDashboard();
     renderThesisTab();
@@ -454,7 +533,7 @@ async function runAnalysisAndSwitch(shouldSwitchToSearch = true) {
   } finally {
     if (launchBtn) {
       launchBtn.disabled = false;
-      launchBtn.textContent = 'Launch AI search dashboard';
+      launchBtn.textContent = 'Launch AI search workspace \u2192';
     }
   }
 }
@@ -512,21 +591,19 @@ function resetAiSearch() {
 
 function renderSearchDashboard() {
   if (!state.analysis) return;
-  const { thesis, rankingMode } = state.analysis;
+  const { thesis } = state.analysis;
 
-  const contextEl = document.getElementById('searchRoleContext');
-  if (contextEl) {
-    const priorityNames = {
-      balanced: 'Balanced fit',
-      untapped: 'Untapped alpha',
-      warmest: 'Warmest intro'
-    };
-    const netLabel = state.networkPriority === 'cala' ? 'Cala graph first' : 'LinkedIn network first';
-    const roleText = state.role === 'investor' ? 'Investor / Partner' : 'Analyst';
-    contextEl.textContent = `${roleText} · Benchmark: ${thesis.fundName} · ${priorityNames[rankingMode] || rankingMode} · ${netLabel}`;
-  }
+  const benchLabel = document.getElementById('activeBenchmarkLabel');
+  if (benchLabel) benchLabel.textContent = thesis.fundName;
 
-  // AI Trace & Explanation Box
+  document.querySelectorAll('[data-quick-role]').forEach((btn) => {
+    btn.classList.toggle('is-active', btn.getAttribute('data-quick-role') === state.role);
+  });
+  document.querySelectorAll('[data-quick-priority]').forEach((btn) => {
+    btn.classList.toggle('is-active', btn.getAttribute('data-quick-priority') === state.rankingMode);
+  });
+
+  // AI Trace & Explanation Strip
   const intentEl = document.getElementById('aiTraceIntent');
   const explEl = document.getElementById('aiExplanationText');
   const stepsEl = document.getElementById('aiTraceSteps');
@@ -563,18 +640,18 @@ function renderSearchDashboard() {
   } else {
     if (intentEl) intentEl.textContent = 'Baseline thesis shortlist';
     if (explEl) {
-      explEl.textContent = `Showing top ${state.displayedShortlist.length} startups ranked from ${state.analysis.totalCandidatesEvaluated} European companies scored out of 100 against ${thesis.fundName}.`;
+      explEl.textContent = `Showing top ${state.displayedShortlist.length} startups ranked from ${state.analysis.totalCandidatesEvaluated} European companies scored against ${thesis.fundName}.`;
     }
     if (stepsEl) {
       stepsEl.innerHTML = `
         <li>Scored on Cala-indexed lead history (${esc(thesis.dealsAnalyzedCount)} deals, median check signal ${formatEur(thesis.medianRoundSizeEurM)})</li>
-        <li>Portfolio companies and direct category competitors filtered automatically</li>
+        <li>Existing portfolio companies and direct category competitors excluded automatically</li>
       `;
       stepsEl.hidden = false;
     }
   }
 
-  // Grid Header & Cards (6-7 startups a line on desktop)
+  // Directory Header & 6-7 Startups Per Row Grid
   const countHeading = document.getElementById('gridCountHeading');
   if (countHeading) {
     const total = state.lastSearchResult ? state.lastSearchResult.totalMatches : state.displayedShortlist.length;
@@ -606,6 +683,8 @@ function renderSearchDashboard() {
         cueText = 'Untapped deal';
       }
 
+      const barPct = Math.max(0, Math.min(100, item.suitabilityScore || 0));
+
       return `
         <button
           type="button"
@@ -615,16 +694,21 @@ function renderSearchDashboard() {
         >
           <div class="tile-top">
             ${renderLogoSvg(item.name, item.sector)}
-            <div class="tile-score-group">
+            <div class="tile-score-col">
               <span class="tile-score">${esc(item.suitabilityScore)}</span>
-              <span class="tile-score-cap">/ 100</span>
+              <div class="tile-score-meter" aria-hidden="true">
+                <div class="tile-score-fill" style="width: ${barPct}%"></div>
+              </div>
             </div>
           </div>
           <div class="tile-identity">
             <span class="tile-name" title="${esc(item.name)}">${esc(item.name)}</span>
             <span class="tile-meta" title="${esc(item.sector)} · ${esc(item.country)}">${esc(item.sector)} · ${esc(item.country)}</span>
           </div>
-          <span class="tile-signal ${warmClass}" title="${esc(cueText)}">${esc(cueText)}</span>
+          <div class="tile-footer">
+            <span class="tile-signal ${warmClass}" title="${esc(cueText)}">${esc(cueText)}</span>
+            <span class="tile-inspect-cue" aria-hidden="true">Inspect &rarr;</span>
+          </div>
         </button>
       `;
     })
@@ -632,17 +716,16 @@ function renderSearchDashboard() {
 
   gridEl.querySelectorAll('[data-startup-id]').forEach((card) => {
     card.addEventListener('click', () => {
-      openInspectorDrawer(card.getAttribute('data-startup-id'));
+      openInspectorDrawer(card.getAttribute('data-startup-id'), null, 'reset');
     });
   });
 }
 
-/* ---------------- TEMPORARY OVERLAP INSPECTOR DRAWER ---------------- */
+/* ---------------- DOSSIER TEMPORARY OVERLAP INSPECTOR DRAWER ---------------- */
 
-async function openInspectorDrawer(startupId, initialDrawerTab) {
+async function openInspectorDrawer(startupId, initialDrawerTab, historyMode = 'reset') {
   let item = state.allKnownItems.get(startupId);
 
-  // If clicked from a peer startup link outside the current 20-item slice, look up via refine
   if (!item && state.bootstrap) {
     const companyMeta = state.bootstrap.companies.find((c) => c.id === startupId);
     if (companyMeta) {
@@ -654,12 +737,18 @@ async function openInspectorDrawer(startupId, initialDrawerTab) {
         registerKnownItems(res.shortlist);
         item = state.allKnownItems.get(startupId);
       } catch (_err) {
-        // Ignore and fallback below if unavailable
+        // Fallback below
       }
     }
   }
 
   if (!item) return;
+
+  if (historyMode === 'push' && state.activeStartupId && state.activeStartupId !== startupId) {
+    state.drawerHistory.push(state.activeStartupId);
+  } else if (historyMode === 'reset') {
+    state.drawerHistory = [];
+  }
 
   state.activeStartupId = startupId;
   state.activeNetworkSource = state.networkPriority;
@@ -667,20 +756,16 @@ async function openInspectorDrawer(startupId, initialDrawerTab) {
     state.activeDrawerTab = initialDrawerTab;
   }
 
-  // Highlight selected tile in background grid
   document.querySelectorAll('.startup-tile').forEach((el) => {
     el.classList.toggle('is-selected', el.getAttribute('data-startup-id') === startupId);
   });
 
-  // Reset gradual exposure state per role
-  const stage2 = document.getElementById('stage2Disclosure');
-  const stage3 = document.getElementById('stage3Disclosure');
-  if (stage2) stage2.open = false;
-  if (stage3) stage3.open = false;
+  setExposureDepth('5s');
 
   const drawerLiveOut = document.getElementById('drawerLiveCalaOutput');
   if (drawerLiveOut) drawerLiveOut.hidden = true;
 
+  renderDrawerUtilityControls();
   renderDrawerHeaderAndOverview(item);
   renderDrawerNetworkPane(item);
   switchDrawerTab(state.activeDrawerTab);
@@ -689,20 +774,82 @@ async function openInspectorDrawer(startupId, initialDrawerTab) {
   if (overlay) {
     overlay.hidden = false;
     document.body.style.overflow = 'hidden';
+    requestAnimationFrame(() => {
+      overlay.classList.add('is-open');
+    });
   }
 
-  // Load detailed brief asynchronously for Stage 2 & Stage 3
   loadDrawerBrief(item);
 }
 
 function closeInspectorDrawer() {
   const overlay = document.getElementById('inspectorDrawer');
   if (overlay) {
-    overlay.hidden = true;
-    document.body.style.overflow = '';
+    overlay.classList.remove('is-open');
+    setTimeout(() => {
+      if (!state.activeStartupId) {
+        overlay.hidden = true;
+      }
+    }, 220);
   }
+  document.body.style.overflow = '';
   state.activeStartupId = null;
+  state.drawerHistory = [];
   document.querySelectorAll('.startup-tile').forEach((el) => el.classList.remove('is-selected'));
+}
+
+function renderDrawerUtilityControls() {
+  const backBtn = document.getElementById('drawerBackPeerBtn');
+  const backNameEl = document.getElementById('drawerBackPeerName');
+  if (backBtn && backNameEl) {
+    if (state.drawerHistory.length > 0) {
+      const prevId = state.drawerHistory[state.drawerHistory.length - 1];
+      const prevItem = state.allKnownItems.get(prevId);
+      backNameEl.textContent = prevItem ? prevItem.name : prevId;
+      backBtn.hidden = false;
+    } else {
+      backBtn.hidden = true;
+    }
+  }
+
+  const prevBtn = document.getElementById('drawerPrevBtn');
+  const nextBtn = document.getElementById('drawerNextBtn');
+  const posEl = document.getElementById('drawerPositionText');
+  const list = state.displayedShortlist || [];
+  const idx = list.findIndex((x) => x.id === state.activeStartupId);
+
+  if (posEl) {
+    posEl.textContent = idx >= 0 ? `${idx + 1} of ${list.length}` : 'Peer view';
+  }
+  if (prevBtn) prevBtn.disabled = idx <= 0;
+  if (nextBtn) nextBtn.disabled = idx === -1 || idx >= list.length - 1;
+}
+
+function stepDrawerStartup(delta) {
+  const list = state.displayedShortlist || [];
+  const idx = list.findIndex((x) => x.id === state.activeStartupId);
+  if (idx === -1) return;
+  const targetIdx = idx + delta;
+  if (targetIdx >= 0 && targetIdx < list.length) {
+    openInspectorDrawer(list[targetIdx].id, state.activeDrawerTab, 'reset');
+  }
+}
+
+function setExposureDepth(depth) {
+  const s2 = document.getElementById('stage2Disclosure');
+  const s3 = document.getElementById('stage3Disclosure');
+  if (s2) s2.open = depth === '1m' || depth === '10m';
+  if (s3) s3.open = depth === '10m';
+  syncDepthButtons(depth);
+}
+
+function syncDepthButtons(forcedDepth) {
+  const s2Open = Boolean(document.getElementById('stage2Disclosure')?.open);
+  const s3Open = Boolean(document.getElementById('stage3Disclosure')?.open);
+  const current = forcedDepth || (s3Open ? '10m' : s2Open ? '1m' : '5s');
+  document.querySelectorAll('[data-depth]').forEach((btn) => {
+    btn.classList.toggle('is-active', btn.getAttribute('data-depth') === current);
+  });
 }
 
 function switchDrawerTab(tabName) {
@@ -772,7 +919,6 @@ function renderDrawerHeaderAndOverview(item) {
     `;
   }
 
-  // Score breakdown bars (Sector, Stage, Co-investor, Geography, Round size)
   const sb = item.scoreBreakdown;
   const rows = [
     { label: 'Sector fit', earned: sb.sector.earned, max: sb.sector.max },
@@ -800,7 +946,6 @@ function renderDrawerHeaderAndOverview(item) {
       .join('');
   }
 
-  // Sourced reasons with Cala citations
   const reasonsEl = document.getElementById('drawerReasonsList');
   if (reasonsEl) {
     reasonsEl.innerHTML = (item.reasons || [])
@@ -816,7 +961,6 @@ function renderDrawerHeaderAndOverview(item) {
       .join('');
   }
 
-  // Stage 2 preliminary data (similar portfolio & round history)
   renderDrawerStage2(item);
 }
 
@@ -828,7 +972,7 @@ function renderDrawerStage2(item, brief) {
       ? sims
           .map(
             (s) => `
-            <div class="mini-card">
+            <div class="ledger-item">
               <strong>${esc(s.name)}</strong>
               <span>${esc(s.sector)} · ${esc(s.country)}</span>
             </div>
@@ -887,7 +1031,6 @@ async function loadDrawerBrief(item) {
     }
   }
 
-  // Verify the drawer is still showing this company
   if (state.activeStartupId !== item.id) return;
 
   renderDrawerStage2(item, brief);
@@ -907,14 +1050,14 @@ async function loadDrawerBrief(item) {
       ? people
           .map(
             (p) => `
-            <div class="mini-card">
+            <div class="ledger-item">
               <strong>${esc(p.name)}</strong>
               <span>${esc(p.role)}</span>
             </div>
           `
           )
           .join('')
-      : '<div class="mini-card"><strong>Not found in Cala</strong><span>No public officer feed verified yet.</span></div>';
+      : '<div class="ledger-item"><strong>Not found in Cala</strong><span>No public officer feed verified yet.</span></div>';
   }
 
   const gapsEl = document.getElementById('drawerGapsList');
@@ -922,7 +1065,7 @@ async function loadDrawerBrief(item) {
     gapsEl.innerHTML = (brief.notFoundInCala || [])
       .map(
         (g) => `
-        <div class="mini-card">
+        <div class="ledger-item">
           <strong>${esc(g.field)}</strong>
           <span class="gap-status">${esc(g.status)}</span>
           <span> · ${esc(g.reason)}</span>
@@ -933,7 +1076,39 @@ async function loadDrawerBrief(item) {
   }
 }
 
-/* ---------------- NETWORK & RELATIONSHIPS TAB ---------------- */
+/* ---------------- NETWORK & RELATIONSHIPS (BÉZIER SVG + INTRO CHAIN) ---------------- */
+
+function renderIntroPathChain(item, isLinkedin) {
+  const el = document.getElementById('introPathChain');
+  if (!el) return;
+  const fundName = state.analysis?.thesis?.fundName || 'Target fund';
+
+  if (isLinkedin && item.linkedinNetwork) {
+    const hops = [
+      fundName,
+      item.linkedinNetwork.bridgePerson?.split('(')[0]?.trim() || 'LinkedIn Bridge',
+      item.linkedinNetwork.targetLeader?.split('(')[0]?.trim() || 'Leadership',
+      item.name
+    ];
+    el.innerHTML = hops
+      .map((hop, idx) => {
+        const arrow = idx < hops.length - 1 ? '<span class="chain-arrow" aria-hidden="true">&rarr;</span>' : '';
+        const highlight = idx === hops.length - 1 ? 'is-highlight' : '';
+        return `<span class="chain-hop ${highlight}">${esc(hop)}</span>${arrow}`;
+      })
+      .join('');
+  } else {
+    const coInv = item.coInvestorPath?.coInvestorName || 'Cala Syndicate';
+    const hops = [fundName, coInv, item.name];
+    el.innerHTML = hops
+      .map((hop, idx) => {
+        const arrow = idx < hops.length - 1 ? '<span class="chain-arrow" aria-hidden="true">&rarr;</span>' : '';
+        const highlight = idx === hops.length - 1 ? 'is-highlight' : '';
+        return `<span class="chain-hop ${highlight}">${esc(hop)}</span>${arrow}`;
+      })
+      .join('');
+  }
+}
 
 function renderDrawerNetworkPane(item) {
   const sourceInputs = document.querySelectorAll('input[name="drawerNetworkSource"]');
@@ -941,12 +1116,14 @@ function renderDrawerNetworkPane(item) {
     inp.checked = inp.value === state.activeNetworkSource;
   });
 
+  const isLinkedin = state.activeNetworkSource === 'linkedin';
+  const netData = isLinkedin ? item.linkedinNetwork : item.graph;
+
+  renderIntroPathChain(item, isLinkedin);
+
   const summaryEl = document.getElementById('networkViewSummary');
   const svgWrap = document.getElementById('networkSvgWrap');
   const peersEl = document.getElementById('peerStartupsList');
-
-  const isLinkedin = state.activeNetworkSource === 'linkedin';
-  const netData = isLinkedin ? item.linkedinNetwork : item.graph;
 
   if (summaryEl) {
     if (isLinkedin && item.linkedinNetwork) {
@@ -965,6 +1142,11 @@ function renderDrawerNetworkPane(item) {
 
   if (svgWrap && netData) {
     svgWrap.innerHTML = buildNetworkGraphSvg(netData, item.id);
+    svgWrap.querySelectorAll('.svg-peer-node[data-peer-id]').forEach((nodeEl) => {
+      nodeEl.addEventListener('click', () => {
+        openInspectorDrawer(nodeEl.getAttribute('data-peer-id'), 'network', 'push');
+      });
+    });
   }
 
   if (peersEl) {
@@ -987,19 +1169,18 @@ function renderDrawerNetworkPane(item) {
 
     peersEl.querySelectorAll('[data-peer-id]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        openInspectorDrawer(btn.getAttribute('data-peer-id'), 'network');
+        openInspectorDrawer(btn.getAttribute('data-peer-id'), 'network', 'push');
       });
     });
   }
 }
 
 function buildNetworkGraphSvg(graphObj, selectedStartupId) {
-  const nodes = (graphObj.nodes || []).slice(0, 10);
+  const nodes = (graphObj.nodes || []).slice(0, 8);
   const links = graphObj.links || [];
-  const width = 640;
-  const height = 270;
+  const width = 940;
+  const height = 310;
 
-  // Assign columns based on node role for a crisp layered diagram
   const cols = { fund: [], bridge: [], target: [], peer: [] };
   for (const n of nodes) {
     if (n.type === 'target_fund') cols.fund.push(n);
@@ -1012,12 +1193,14 @@ function buildNetworkGraphSvg(graphObj, selectedStartupId) {
     cols.peer = cols.bridge.splice(3);
   }
 
+  const cardW = 160;
+  const cardH = 48;
   const positions = new Map();
   const columnLayout = [
-    { list: cols.fund, x: 90 },
-    { list: cols.bridge, x: 255 },
-    { list: cols.target, x: 425 },
-    { list: cols.peer, x: 560 }
+    { list: cols.fund, cx: 92 },
+    { list: cols.bridge, cx: 344 },
+    { list: cols.target, cx: 596 },
+    { list: cols.peer, cx: 848 }
   ];
 
   for (const col of columnLayout) {
@@ -1026,18 +1209,20 @@ function buildNetworkGraphSvg(graphObj, selectedStartupId) {
     const step = height / (count + 1);
     col.list.forEach((node, idx) => {
       positions.set(node.id, {
-        x: col.x,
-        y: Math.round(step * (idx + 1)),
+        cx: col.cx,
+        cy: Math.round(step * (idx + 1)),
         node
       });
     });
   }
 
-  const colorForType = (type, id) => {
-    if (type === 'target_fund') return '#0D5C46';
-    if (id === selectedStartupId || type === 'target_startup') return '#0F1715';
-    if (type === 'co_investor') return '#9A3412';
-    return '#5C6B67';
+  const styleForType = (type, id) => {
+    if (type === 'target_fund') return { accent: '#0B5540', kind: 'FUND' };
+    if (id === selectedStartupId || type === 'target_startup') return { accent: '#111615', kind: 'SELECTED' };
+    if (type === 'co_investor') return { accent: '#9A3412', kind: 'BRIDGE' };
+    if (id === 'li-leader') return { accent: '#0B5540', kind: 'LEADERSHIP' };
+    if (type === 'portfolio') return { accent: '#525B58', kind: 'PORTFOLIO' };
+    return { accent: '#525B58', kind: 'PEER' };
   };
 
   const edgeSvg = links
@@ -1045,30 +1230,71 @@ function buildNetworkGraphSvg(graphObj, selectedStartupId) {
       const a = positions.get(link.source);
       const b = positions.get(link.target);
       if (!a || !b) return '';
-      const mx = Math.round((a.x + b.x) / 2);
-      const my = Math.round((a.y + b.y) / 2) - 4;
+
+      const edgeText = String(link.label || '').slice(0, 16);
+      const pillW = Math.max(46, edgeText.length * 6.5 + 14);
+
+      // Clean vertical connector when two nodes share the same column
+      if (a.cx === b.cx) {
+        const yTop = a.cy < b.cy ? a.cy + cardH / 2 : b.cy + cardH / 2;
+        const yBot = a.cy < b.cy ? b.cy - cardH / 2 : a.cy - cardH / 2;
+        const my = Math.round((yTop + yBot) / 2);
+        return `
+          <path d="M ${a.cx} ${yTop} L ${b.cx} ${yBot}" fill="none" stroke="#C5C1B5" stroke-width="1.5" />
+          ${
+            edgeText
+              ? `<rect x="${a.cx - pillW / 2}" y="${my - 9}" width="${pillW}" height="18" rx="3" fill="#F6F5F0" stroke="#DCD9D0" stroke-width="0.75" />
+                 <text x="${a.cx}" y="${my + 3.5}" text-anchor="middle" font-family="Plus Jakarta Sans, sans-serif" font-size="11.5" fill="#525B58">${esc(edgeText)}</text>`
+              : ''
+          }
+        `;
+      }
+
+      const x1 = a.cx < b.cx ? a.cx + cardW / 2 : a.cx - cardW / 2;
+      const y1 = a.cy;
+      const x2 = a.cx < b.cx ? b.cx - cardW / 2 : b.cx + cardW / 2;
+      const y2 = b.cy;
+      const dx = Math.abs(x2 - x1) * 0.45;
+      const cx1 = a.cx < b.cx ? x1 + dx : x1 - dx;
+      const cx2 = a.cx < b.cx ? x2 - dx : x2 + dx;
+      const mx = Math.round((x1 + x2) / 2);
+      const my = Math.round((y1 + y2) / 2);
+
       return `
-        <line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="#C6CEC5" stroke-width="1.5" />
-        <text x="${mx}" y="${my}" text-anchor="middle" font-family="Plus Jakarta Sans, sans-serif" font-size="10.5" fill="#4A5552">${esc(link.label || '')}</text>
+        <path d="M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}" fill="none" stroke="#C5C1B5" stroke-width="1.5" />
+        ${
+          edgeText
+            ? `<rect x="${mx - pillW / 2}" y="${my - 9}" width="${pillW}" height="18" rx="3" fill="#F6F5F0" stroke="#DCD9D0" stroke-width="0.75" />
+               <text x="${mx}" y="${my + 3.5}" text-anchor="middle" font-family="Plus Jakarta Sans, sans-serif" font-size="11.5" fill="#525B58">${esc(edgeText)}</text>`
+            : ''
+        }
       `;
     })
     .join('');
 
   const nodeSvg = [...positions.values()]
-    .map(({ x, y, node }) => {
-      const fill = colorForType(node.type, node.id);
-      const shortLabel = node.label.length > 20 ? `${node.label.slice(0, 18)}..` : node.label;
+    .map(({ cx, cy, node }) => {
+      const st = styleForType(node.type, node.id);
+      const x = cx - cardW / 2;
+      const y = cy - cardH / 2;
+      const shortLabel = node.label.length > 22 ? `${node.label.slice(0, 20)}..` : node.label;
+      const isClickablePeer = node.type === 'peer_startup';
+      const peerClass = isClickablePeer ? 'svg-peer-node' : '';
+      const peerAttr = isClickablePeer ? `data-peer-id="${esc(node.id)}"` : '';
+
       return `
-        <g>
-          <circle cx="${x}" cy="${y}" r="8" fill="${fill}" stroke="#FFFFFF" stroke-width="2" />
-          <text x="${x}" y="${y + 20}" text-anchor="middle" font-family="Plus Jakarta Sans, sans-serif" font-size="11.5" font-weight="600" fill="#0F1715">${esc(shortLabel)}</text>
+        <g class="${peerClass}" ${peerAttr}>
+          <rect x="${x}" y="${y}" width="${cardW}" height="${cardH}" rx="5" fill="#FFFFFF" stroke="${st.accent}" stroke-width="1.2" />
+          <rect x="${x}" y="${y}" width="4" height="${cardH}" rx="2" fill="${st.accent}" />
+          <text x="${x + 12}" y="${y + 18}" font-family="Plus Jakarta Sans, sans-serif" font-size="11.5" font-weight="600" fill="${st.accent}">${esc(st.kind)}</text>
+          <text x="${x + 12}" y="${y + 36}" font-family="Plus Jakarta Sans, sans-serif" font-size="12" font-weight="600" fill="#111615">${esc(shortLabel)}</text>
         </g>
       `;
     })
     .join('');
 
   return `
-    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Startup relationship network graph">
+    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Startup relationship network diagram">
       ${edgeSvg}
       ${nodeSvg}
     </svg>
@@ -1084,7 +1310,6 @@ function renderThesisTab() {
   document.getElementById('thesisTitleHeading').textContent = `Revealed thesis: ${thesis.fundName}`;
   document.getElementById('thesisHeaderSummary').textContent = `${thesis.driftSummary || ''} ${thesis.weakProfileNote || ''}`.trim();
 
-  // Sync Cala verify input default
   const verifyInput = document.getElementById('calaVerifyInput');
   if (verifyInput && !verifyInput.value && thesis.mode === 'fund') {
     verifyInput.value = thesis.fundName;
@@ -1272,17 +1497,16 @@ async function handleLiveCalaVerify(type, name, includeKnowledgeSearch, outputEl
 /* ---------------- EVENT BINDING & BOOTSTRAP ---------------- */
 
 function bindEvents() {
-  // Primary Masthead Tabs
   document.querySelectorAll('.primary-tab').forEach((btn) => {
     btn.addEventListener('click', () => {
       switchPrimaryTab(btn.getAttribute('data-tab'));
     });
   });
 
-  // Configuration Stepper Buttons
   document.getElementById('stepperBtn1')?.addEventListener('click', () => setConfigStep(1));
   document.getElementById('stepperBtn2')?.addEventListener('click', () => setConfigStep(2));
   document.getElementById('stepperBtn3')?.addEventListener('click', () => setConfigStep(3));
+  document.getElementById('skipToWorkspaceBtn')?.addEventListener('click', () => runAnalysisAndSwitch(true));
 
   document.getElementById('step1NextBtn')?.addEventListener('click', () => setConfigStep(2));
   document.getElementById('step2BackBtn')?.addEventListener('click', () => setConfigStep(1));
@@ -1290,14 +1514,12 @@ function bindEvents() {
   document.getElementById('step3BackBtn')?.addEventListener('click', () => setConfigStep(2));
   document.getElementById('launchDashboardBtn')?.addEventListener('click', () => runAnalysisAndSwitch(true));
 
-  // Role radios
   document.querySelectorAll('input[name="configRole"]').forEach((radio) => {
     radio.addEventListener('change', (e) => {
       syncRoleSelection(e.target.value);
     });
   });
 
-  // Benchmark inputMode switch
   document.querySelectorAll('input[name="inputMode"]').forEach((radio) => {
     radio.addEventListener('change', (e) => {
       state.inputMode = e.target.value === 'companies' ? 'companies' : 'fund';
@@ -1306,17 +1528,29 @@ function bindEvents() {
     });
   });
 
-  // Ranking priority radios
   document.querySelectorAll('input[name="rankingMode"]').forEach((radio) => {
     radio.addEventListener('change', (e) => {
-      state.rankingMode = e.target.value;
+      syncPrioritySelection(e.target.value);
     });
   });
 
-  // Network priority radios (Step 3)
   document.querySelectorAll('input[name="networkPriority"]').forEach((radio) => {
     radio.addEventListener('change', (e) => {
       syncNetworkPrioritySelection(e.target.value);
+    });
+  });
+
+  // Inline Calibration Bar (on AI Search Stage)
+  document.querySelectorAll('[data-quick-role]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      syncRoleSelection(btn.getAttribute('data-quick-role'));
+    });
+  });
+
+  document.querySelectorAll('[data-quick-priority]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      syncPrioritySelection(btn.getAttribute('data-quick-priority'));
+      runAnalysisAndSwitch(false, true);
     });
   });
 
@@ -1361,12 +1595,10 @@ function bindEvents() {
     }, 150);
   });
 
-  // Companies checklist filter
   document.getElementById('companyBenchmarkSearch')?.addEventListener('input', (e) => {
     renderCompanyChecklist(e.target.value);
   });
 
-  // Centered AI Search Form
   document.getElementById('aiSearchForm')?.addEventListener('submit', (e) => {
     e.preventDefault();
     executeAiRefine();
@@ -1399,23 +1631,27 @@ function bindEvents() {
   // Temporary Overlap Drawer Events
   document.getElementById('drawerCloseBtn')?.addEventListener('click', closeInspectorDrawer);
   document.getElementById('drawerBackdrop')?.addEventListener('click', closeInspectorDrawer);
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && state.activeStartupId) {
-      closeInspectorDrawer();
+
+  document.getElementById('drawerPrevBtn')?.addEventListener('click', () => stepDrawerStartup(-1));
+  document.getElementById('drawerNextBtn')?.addEventListener('click', () => stepDrawerStartup(1));
+  document.getElementById('drawerBackPeerBtn')?.addEventListener('click', () => {
+    const prevId = state.drawerHistory.pop();
+    if (prevId) {
+      openInspectorDrawer(prevId, state.activeDrawerTab, 'preserve');
     }
   });
 
   document.getElementById('drawerTabScore')?.addEventListener('click', () => switchDrawerTab('score'));
   document.getElementById('drawerTabNetwork')?.addEventListener('click', () => switchDrawerTab('network'));
 
-  document.getElementById('expandAllBriefBtn')?.addEventListener('click', () => {
-    const s2 = document.getElementById('stage2Disclosure');
-    const s3 = document.getElementById('stage3Disclosure');
-    const willOpen = !(s2.open && s3.open);
-    s2.open = willOpen;
-    s3.open = willOpen;
-    document.getElementById('expandAllBriefBtn').textContent = willOpen ? 'Collapse brief sections' : 'Expand full brief';
+  document.querySelectorAll('[data-depth]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      setExposureDepth(btn.getAttribute('data-depth'));
+    });
   });
+
+  document.getElementById('stage2Disclosure')?.addEventListener('toggle', () => syncDepthButtons());
+  document.getElementById('stage3Disclosure')?.addEventListener('toggle', () => syncDepthButtons());
 
   document.querySelectorAll('input[name="drawerNetworkSource"]').forEach((radio) => {
     radio.addEventListener('change', (e) => {
@@ -1425,8 +1661,37 @@ function bindEvents() {
     });
   });
 
+  // Global keyboard shortcuts: '/' focuses AI Search; Escape / Arrows control Drawer
+  document.addEventListener('keydown', (e) => {
+    const tag = document.activeElement?.tagName;
+    const isTyping = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+
+    if (e.key === 'Escape' && state.activeStartupId) {
+      closeInspectorDrawer();
+      return;
+    }
+
+    if (state.activeStartupId && !isTyping) {
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        stepDrawerStartup(-1);
+        return;
+      }
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        stepDrawerStartup(1);
+        return;
+      }
+    }
+
+    if (e.key === '/' && state.activeTab === 'search' && !state.activeStartupId && !isTyping) {
+      e.preventDefault();
+      document.getElementById('aiSearchInput')?.focus();
+    }
+  });
+
   // Drawer Export & Live Cala Verify
-  document.getElementById('drawerExportMdBtn')?.addEventListener('click', async () => {
+  document.getElementById('drawerExportMdBtn')?.addEventListener('click', () => {
     if (!state.activeStartupId) return;
     const item = state.allKnownItems.get(state.activeStartupId);
     const cacheKey = `${state.activeStartupId}:${state.fundId}`;
@@ -1468,6 +1733,7 @@ function bindEvents() {
 
 async function bootstrap() {
   bindEvents();
+  renderWeightPreview();
   try {
     const data = await apiGet('/api/bootstrap');
     state.bootstrap = data;
@@ -1483,9 +1749,7 @@ async function bootstrap() {
     updateTelemetryLine();
     updateBudgetReadout();
 
-    // Precompute baseline analysis silently so users can jump straight to Tab 2 or 3 anytime
     await runAnalysisAndSwitch(false);
-    // Keep Configuration tab active on first entry as requested
     switchPrimaryTab('config');
   } catch (err) {
     document.getElementById('telemetryLine').textContent = `Bootstrap error: ${err.message}`;
