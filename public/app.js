@@ -143,10 +143,13 @@ async function apiPost(path, body) {
   return data;
 }
 
-/* ---------------- NAVIGATION & CONFIGURATION FOLIO ---------------- */
+/* ---------------- FULL-SCREEN ONBOARDING & VIEW NAVIGATION ---------------- */
 
 function switchPrimaryTab(tabName) {
   state.activeTab = tabName;
+  const isOnboarding = tabName === 'config';
+  document.body.classList.toggle('is-onboarding', isOnboarding);
+
   const tabs = ['config', 'search', 'thesis'];
   for (const name of tabs) {
     const btn = document.getElementById(`tab-${name}`);
@@ -191,21 +194,12 @@ function syncRoleSelection(role) {
     card.classList.toggle('is-selected', selected);
     const input = card.querySelector('input[type="radio"]');
     if (input) input.checked = selected;
-    const badge = card.querySelector('.choice-check');
-    if (badge) badge.textContent = selected ? 'Selected' : 'Select';
   });
 
   document.querySelectorAll('[data-quick-role]').forEach((btn) => {
     btn.classList.toggle('is-active', btn.getAttribute('data-quick-role') === state.role);
   });
 
-  const hintEl = document.getElementById('roleStepHint');
-  if (hintEl) {
-    hintEl.textContent =
-      state.role === 'investor'
-        ? 'Partner perspective active: warm 2nd-degree access cues and thesis drift comparisons emphasized.'
-        : 'Analyst perspective active: empirical Cala tables and partner memo exports prioritized.';
-  }
   updateTelemetryLine();
   if (state.activeStartupId) {
     const item = state.allKnownItems.get(state.activeStartupId);
@@ -229,11 +223,11 @@ function renderWeightPreview() {
   if (!grid) return;
   const w = WEIGHT_PRESETS[state.rankingMode] || WEIGHT_PRESETS.balanced;
   const rows = [
-    { label: 'Sector fit', val: w.sector },
-    { label: 'Stage timing', val: w.stage },
+    { label: 'Sector', val: w.sector },
+    { label: 'Stage', val: w.stage },
     { label: 'Co-investor', val: w.coInvestor },
-    { label: 'Geography', val: w.geography },
-    { label: 'Round size', val: w.roundSize }
+    { label: 'Geo', val: w.geography },
+    { label: 'Size', val: w.roundSize }
   ];
   grid.innerHTML = rows
     .map(
@@ -261,8 +255,6 @@ function syncNetworkPrioritySelection(priority) {
     card.classList.toggle('is-selected', selected);
     const input = card.querySelector('input[type="radio"]');
     if (input) input.checked = selected;
-    const badge = card.querySelector('.choice-check');
-    if (badge) badge.textContent = selected ? 'Selected' : 'Select';
   });
   renderConfigReviewSummary();
 }
@@ -281,9 +273,9 @@ function renderFundQuickPicks() {
         >
           <span class="fund-row-left">
             <span class="fund-row-name">${esc(f.name)}</span>
-            <span class="fund-row-hq">${esc(f.hqCity)}, ${esc(f.country)} · ${esc(f.teamSize)} team</span>
+            <span class="fund-row-hq">${esc(f.hqCity)}, ${esc(f.country)}</span>
           </span>
-          <span class="fund-row-marker">${active ? 'Selected' : 'Select'}</span>
+          <span class="fund-row-marker">${active ? 'Selected' : ''}</span>
         </button>
       `;
     })
@@ -309,13 +301,10 @@ function renderSelectedFundSummary() {
   if (!box || !state.bootstrap) return;
   const fund = state.bootstrap.funds.find((f) => f.id === state.fundId);
   if (!fund) {
-    box.textContent = 'Select a fund above to inspect its revealed thesis.';
+    box.textContent = '';
     return;
   }
-  box.innerHTML = `
-    <strong>${esc(fund.name)}</strong> (${esc(fund.hqCity)}, ${esc(fund.country)})<br />
-    <span class="disambig-meta">Published thesis: ${esc(fund.statedThesis)}</span>
-  `;
+  box.textContent = `Selected: ${fund.name} (${fund.hqCity}, ${fund.country})`;
 }
 
 function renderCompanyChecklist(filterQuery = '') {
@@ -341,7 +330,7 @@ function renderCompanyChecklist(filterQuery = '') {
           <input type="checkbox" value="${esc(c.id)}" ${checked ? 'checked' : ''} />
           <span>
             <strong>${esc(c.name)}</strong>
-            <span class="company-check-sub"> · ${esc(c.sector)} (${esc(c.country)})</span>
+            <span class="company-check-sub"> · ${esc(c.sector)}</span>
           </span>
         </label>
       `;
@@ -402,42 +391,34 @@ function renderConfigReviewSummary() {
   const fundObj = state.bootstrap.funds.find((f) => f.id === payload.fundId);
   const benchmarkLabel =
     payload.mode === 'companies'
-      ? `${payload.companyIds.length} admired companies`
-      : `${fundObj ? fundObj.name : payload.fundId} (indexed fund)`;
+      ? `${payload.companyIds.length} companies`
+      : fundObj
+        ? fundObj.name
+        : payload.fundId;
 
   const priorityLabels = {
-    balanced: 'Balanced fit',
-    untapped: 'Untapped alpha',
+    balanced: 'Balanced',
+    untapped: 'Untapped',
     warmest: 'Warmest intro'
   };
 
   box.innerHTML = `
     <div class="review-grid">
       <div>
-        <span class="review-item-label">Role perspective</span>
-        <span class="review-item-value">${state.role === 'investor' ? 'Investor or partner' : 'Investment analyst'}</span>
+        <span class="review-item-label">Role</span>
+        <span class="review-item-value">${state.role === 'investor' ? 'Investor' : 'Analyst'}</span>
       </div>
       <div>
-        <span class="review-item-label">Benchmark target</span>
+        <span class="review-item-label">Benchmark</span>
         <span class="review-item-value">${esc(benchmarkLabel)}</span>
       </div>
       <div>
-        <span class="review-item-label">Scoring priority</span>
+        <span class="review-item-label">Focus</span>
         <span class="review-item-value">${esc(priorityLabels[payload.rankingMode] || payload.rankingMode)}</span>
       </div>
       <div>
-        <span class="review-item-label">Default network graph order</span>
-        <span class="review-item-value">${
-          state.networkPriority === 'cala'
-            ? 'Cala public funding graph first'
-            : 'LinkedIn & 3rd-party paths first'
-        }</span>
-      </div>
-      <div>
-        <span class="review-item-label">Excluded seen companies</span>
-        <span class="review-item-value">${
-          payload.seenCompanyNames.length ? esc(payload.seenCompanyNames.join(', ')) : 'None specified'
-        }</span>
+        <span class="review-item-label">Network</span>
+        <span class="review-item-value">${state.networkPriority === 'cala' ? 'Cala first' : 'LinkedIn first'}</span>
       </div>
     </div>
   `;
@@ -458,13 +439,12 @@ function updateTelemetryLine() {
   if (!el || !state.bootstrap) return;
   const stats = state.bootstrap.coverageStats;
   const budget = state.calaBudget || stats.calaBudget;
-  let remaining = 'Local cache active';
+  let remaining = 'Local cache';
   if (budget) {
-    const { remaining: rem, max, cached } = getBudgetNumbers(budget);
-    remaining = `${rem}/${max} live credits left (${cached} cached)`;
+    const { remaining: rem, max } = getBudgetNumbers(budget);
+    remaining = `${rem}/${max} Cala credits`;
   }
-  const roleName = state.role === 'investor' ? 'Partner view' : 'Analyst view';
-  el.textContent = `${stats.companiesIndexed + stats.fundsIndexed} Cala entities · ${stats.roundsIndexed} rounds · ${roleName} · ${remaining}`;
+  el.textContent = `${stats.companiesIndexed + stats.fundsIndexed} entities · ${remaining}`;
 }
 
 function registerKnownItems(items) {
@@ -478,7 +458,7 @@ function registerKnownItems(items) {
 async function runAnalysisAndSwitch(shouldSwitchToSearch = true, preserveFilters = false) {
   const payload = getConfigPayload();
   if (payload.mode === 'companies' && payload.companyIds.length < 3) {
-    alert('Select between 3 and 5 companies to build a benchmark thesis, or switch to an indexed fund.');
+    alert('Select between 3 and 5 companies, or switch to a venture fund.');
     setConfigStep(2);
     return;
   }
@@ -486,7 +466,7 @@ async function runAnalysisAndSwitch(shouldSwitchToSearch = true, preserveFilters
   const launchBtn = document.getElementById('launchDashboardBtn');
   if (launchBtn) {
     launchBtn.disabled = true;
-    launchBtn.textContent = 'Running thesis analysis...';
+    launchBtn.textContent = 'Loading...';
   }
 
   try {
@@ -529,11 +509,11 @@ async function runAnalysisAndSwitch(shouldSwitchToSearch = true, preserveFilters
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   } catch (err) {
-    alert(err.message || 'Failed to compute revealed thesis analysis.');
+    alert(err.message || 'Analysis failed.');
   } finally {
     if (launchBtn) {
       launchBtn.disabled = false;
-      launchBtn.textContent = 'Launch AI search workspace \u2192';
+      launchBtn.textContent = 'Open workspace \u2192';
     }
   }
 }
@@ -565,7 +545,7 @@ async function executeAiRefine() {
     registerKnownItems(res.shortlist);
     renderSearchDashboard();
   } catch (err) {
-    alert(err.message || 'AI refinement failed.');
+    alert(err.message || 'Search failed.');
   } finally {
     if (submitBtn) submitBtn.disabled = false;
   }
@@ -603,7 +583,8 @@ function renderSearchDashboard() {
     btn.classList.toggle('is-active', btn.getAttribute('data-quick-priority') === state.rankingMode);
   });
 
-  // AI Trace & Explanation Strip
+  // Show AI trace strip ONLY when a search or filter is active
+  const traceBox = document.getElementById('aiTraceBox');
   const intentEl = document.getElementById('aiTraceIntent');
   const explEl = document.getElementById('aiExplanationText');
   const stepsEl = document.getElementById('aiTraceSteps');
@@ -618,44 +599,34 @@ function renderSearchDashboard() {
 
   if (resetBtn) resetBtn.hidden = !hasFilters;
 
-  if (state.lastSearchResult && hasFilters) {
+  if (state.lastSearchResult && hasFilters && traceBox) {
+    traceBox.hidden = false;
     const intentMap = {
-      company: 'Company similarity lookup',
-      investor: 'Investor & co-investor search',
-      industry: 'Industry sector scan',
-      why_not: 'Portfolio exclusion audit',
-      general: 'Thesis refinement'
+      company: 'Company match',
+      investor: 'Investor match',
+      industry: 'Industry filter',
+      why_not: 'Portfolio audit',
+      general: 'Filtered'
     };
-    if (intentEl) intentEl.textContent = intentMap[state.lastSearchResult.searchIntent] || 'AI search';
+    if (intentEl) intentEl.textContent = intentMap[state.lastSearchResult.searchIntent] || 'AI Search';
     if (explEl) {
       explEl.textContent =
         state.lastSearchResult.explanation ||
-        `Matched ${state.lastSearchResult.totalMatches} startups from ${thesis.fundName} evaluated pool.`;
+        `${state.lastSearchResult.totalMatches} startups matched.`;
     }
     if (stepsEl) {
       const traceItems = state.lastSearchResult.aiTrace || [];
       stepsEl.innerHTML = traceItems.map((line) => `<li>${esc(line)}</li>`).join('');
       stepsEl.hidden = traceItems.length === 0;
     }
-  } else {
-    if (intentEl) intentEl.textContent = 'Baseline thesis shortlist';
-    if (explEl) {
-      explEl.textContent = `Showing top ${state.displayedShortlist.length} startups ranked from ${state.analysis.totalCandidatesEvaluated} European companies scored against ${thesis.fundName}.`;
-    }
-    if (stepsEl) {
-      stepsEl.innerHTML = `
-        <li>Scored on Cala-indexed lead history (${esc(thesis.dealsAnalyzedCount)} deals, median check signal ${formatEur(thesis.medianRoundSizeEurM)})</li>
-        <li>Existing portfolio companies and direct category competitors excluded automatically</li>
-      `;
-      stepsEl.hidden = false;
-    }
+  } else if (traceBox) {
+    traceBox.hidden = true;
   }
 
-  // Directory Header & 6-7 Startups Per Row Grid
+  // Grid Header & 6-7 Startups Per Row Grid
   const countHeading = document.getElementById('gridCountHeading');
   if (countHeading) {
-    const total = state.lastSearchResult ? state.lastSearchResult.totalMatches : state.displayedShortlist.length;
-    countHeading.textContent = `Showing ${state.displayedShortlist.length} of ${total} startups`;
+    countHeading.textContent = `${state.displayedShortlist.length} startups`;
   }
 
   const gridEl = document.getElementById('startupGrid');
@@ -707,7 +678,7 @@ function renderSearchDashboard() {
           </div>
           <div class="tile-footer">
             <span class="tile-signal ${warmClass}" title="${esc(cueText)}">${esc(cueText)}</span>
-            <span class="tile-inspect-cue" aria-hidden="true">Inspect &rarr;</span>
+            <span class="tile-inspect-cue" aria-hidden="true">Open &rarr;</span>
           </div>
         </button>
       `;
@@ -721,7 +692,7 @@ function renderSearchDashboard() {
   });
 }
 
-/* ---------------- DOSSIER TEMPORARY OVERLAP INSPECTOR DRAWER ---------------- */
+/* ---------------- TEMPORARY OVERLAP INSPECTOR DRAWER ---------------- */
 
 async function openInspectorDrawer(startupId, initialDrawerTab, historyMode = 'reset') {
   let item = state.allKnownItems.get(startupId);
@@ -819,7 +790,7 @@ function renderDrawerUtilityControls() {
   const idx = list.findIndex((x) => x.id === state.activeStartupId);
 
   if (posEl) {
-    posEl.textContent = idx >= 0 ? `${idx + 1} of ${list.length}` : 'Peer view';
+    posEl.textContent = idx >= 0 ? `${idx + 1} / ${list.length}` : 'Peer';
   }
   if (prevBtn) prevBtn.disabled = idx <= 0;
   if (nextBtn) nextBtn.disabled = idx === -1 || idx >= list.length - 1;
@@ -877,7 +848,7 @@ function renderDrawerHeaderAndOverview(item) {
   if (logoWrap) logoWrap.innerHTML = renderLogoSvg(item.name, item.sector);
 
   document.getElementById('drawerTitle').textContent = item.name;
-  document.getElementById('drawerSubtitle').textContent = `${item.sector} · ${item.hqCity}, ${item.country} · ${item.employeeCount} employees`;
+  document.getElementById('drawerSubtitle').textContent = `${item.sector} · ${item.hqCity}, ${item.country}`;
 
   const scoreBox = document.getElementById('drawerScoreBox');
   if (scoreBox) {
@@ -893,11 +864,11 @@ function renderDrawerHeaderAndOverview(item) {
   if (roleCallout) {
     if (state.role === 'investor') {
       const bridgeText = item.linkedinNetwork?.bridgePerson
-        ? `Warm intro path via ${item.linkedinNetwork.bridgePerson}.`
-        : item.coInvestorPath?.summary || 'Direct founder outreach recommended.';
-      roleCallout.textContent = `Partner triage: ${item.raisingSoon ? 'Inside active next-round timing window.' : 'Out-of-cycle thesis match.'} ${bridgeText}`;
+        ? `Intro via ${item.linkedinNetwork.bridgePerson.split('(')[0].trim()}.`
+        : item.coInvestorPath?.summary || 'Direct founder outreach.';
+      roleCallout.textContent = `${item.raisingSoon ? 'Raising window open.' : 'Thesis match.'} ${bridgeText}`;
     } else {
-      roleCallout.textContent = `Analyst verification note: Suitability ${item.suitabilityScore}/100 backed by ${item.roundHistory.length} Cala round record(s) and ${item.reasons.length} cited signal(s).`;
+      roleCallout.textContent = `${item.roundHistory.length} Cala round(s) · ${item.reasons.length} verified signal(s).`;
     }
   }
 
@@ -909,23 +880,23 @@ function renderDrawerHeaderAndOverview(item) {
         <span class="fact-val">${esc(item.stage)} · ${formatEur(item.lastRoundAmountEurM)}</span>
       </div>
       <div class="fact-cell">
-        <span class="fact-label">Round date</span>
+        <span class="fact-label">Date</span>
         <span class="fact-val">${esc(item.lastRoundDate || 'Undisclosed')}</span>
       </div>
       <div class="fact-cell">
-        <span class="fact-label">Next target stage</span>
-        <span class="fact-val">${esc(item.likelyNextStage)} ${item.raisingSoon ? '(Likely window)' : ''}</span>
+        <span class="fact-label">Next stage</span>
+        <span class="fact-val">${esc(item.likelyNextStage)}</span>
       </div>
     `;
   }
 
   const sb = item.scoreBreakdown;
   const rows = [
-    { label: 'Sector fit', earned: sb.sector.earned, max: sb.sector.max },
-    { label: 'Stage timing', earned: sb.stage.earned, max: sb.stage.max },
-    { label: 'Co-investor overlap', earned: sb.coInvestor.earned, max: sb.coInvestor.max },
-    { label: 'Geography match', earned: sb.geography.earned, max: sb.geography.max },
-    { label: 'Round size fit', earned: sb.roundSize.earned, max: sb.roundSize.max }
+    { label: 'Sector', earned: sb.sector.earned, max: sb.sector.max },
+    { label: 'Stage', earned: sb.stage.earned, max: sb.stage.max },
+    { label: 'Co-investor', earned: sb.coInvestor.earned, max: sb.coInvestor.max },
+    { label: 'Geography', earned: sb.geography.earned, max: sb.geography.max },
+    { label: 'Round size', earned: sb.roundSize.earned, max: sb.roundSize.max }
   ];
 
   const sbEl = document.getElementById('drawerScoreBreakdown');
@@ -953,7 +924,7 @@ function renderDrawerHeaderAndOverview(item) {
         const cites = (r.sources || [])
           .map(
             (src, idx) =>
-              `<a class="source-cite" href="${esc(src.url)}" target="_blank" rel="noopener noreferrer" title="${esc(src.title)} (${esc(src.publisher)})">[${idx + 1}]</a>`
+              `<a class="source-cite" href="${esc(src.url)}" target="_blank" rel="noopener noreferrer" title="${esc(src.title)}">[${idx + 1}]</a>`
           )
           .join('');
         return `<li>${esc(r.text)} ${cites}</li>`;
@@ -979,7 +950,7 @@ function renderDrawerStage2(item, brief) {
           `
           )
           .join('')
-      : '<p class="card-note">No close sector portfolio overlap recorded for this benchmark.</p>';
+      : '<p class="card-note">None recorded.</p>';
   }
 
   const rounds = brief?.rounds || item.roundHistory || [];
@@ -992,7 +963,7 @@ function renderDrawerStage2(item, brief) {
             <th>Date</th>
             <th>Stage</th>
             <th>Amount</th>
-            <th>Lead &amp; investors</th>
+            <th>Investors</th>
           </tr>
         </thead>
         <tbody>
@@ -1043,7 +1014,7 @@ async function loadDrawerBrief(item) {
         people.push({ name: p.name || p.personName, role: p.role || p.title || 'Executive' });
       }
     } else if (item.linkedinNetwork?.targetLeader) {
-      people.push({ name: item.linkedinNetwork.targetLeader, role: 'Indexed LinkedIn leadership tie' });
+      people.push({ name: item.linkedinNetwork.targetLeader, role: 'Leadership' });
     }
 
     peopleEl.innerHTML = people.length
@@ -1057,7 +1028,7 @@ async function loadDrawerBrief(item) {
           `
           )
           .join('')
-      : '<div class="ledger-item"><strong>Not found in Cala</strong><span>No public officer feed verified yet.</span></div>';
+      : '<div class="ledger-item"><strong>Not found in Cala</strong><span>No public officer record.</span></div>';
   }
 
   const gapsEl = document.getElementById('drawerGapsList');
@@ -1068,7 +1039,6 @@ async function loadDrawerBrief(item) {
         <div class="ledger-item">
           <strong>${esc(g.field)}</strong>
           <span class="gap-status">${esc(g.status)}</span>
-          <span> · ${esc(g.reason)}</span>
         </div>
       `
       )
@@ -1076,18 +1046,18 @@ async function loadDrawerBrief(item) {
   }
 }
 
-/* ---------------- NETWORK & RELATIONSHIPS (BÉZIER SVG + INTRO CHAIN) ---------------- */
+/* ---------------- NETWORK & RELATIONSHIPS ---------------- */
 
 function renderIntroPathChain(item, isLinkedin) {
   const el = document.getElementById('introPathChain');
   if (!el) return;
-  const fundName = state.analysis?.thesis?.fundName || 'Target fund';
+  const fundName = state.analysis?.thesis?.fundName || 'Fund';
 
   if (isLinkedin && item.linkedinNetwork) {
     const hops = [
       fundName,
-      item.linkedinNetwork.bridgePerson?.split('(')[0]?.trim() || 'LinkedIn Bridge',
-      item.linkedinNetwork.targetLeader?.split('(')[0]?.trim() || 'Leadership',
+      item.linkedinNetwork.bridgePerson?.split('(')[0]?.trim() || 'Bridge',
+      item.linkedinNetwork.targetLeader?.split('(')[0]?.trim() || 'Leader',
       item.name
     ];
     el.innerHTML = hops
@@ -1098,7 +1068,7 @@ function renderIntroPathChain(item, isLinkedin) {
       })
       .join('');
   } else {
-    const coInv = item.coInvestorPath?.coInvestorName || 'Cala Syndicate';
+    const coInv = item.coInvestorPath?.coInvestorName || 'Syndicate';
     const hops = [fundName, coInv, item.name];
     el.innerHTML = hops
       .map((hop, idx) => {
@@ -1126,18 +1096,9 @@ function renderDrawerNetworkPane(item) {
   const peersEl = document.getElementById('peerStartupsList');
 
   if (summaryEl) {
-    if (isLinkedin && item.linkedinNetwork) {
-      summaryEl.innerHTML = `
-        <strong>${esc(item.linkedinNetwork.sourceLabel)}</strong><br />
-        <span>${esc(item.linkedinNetwork.summary)}</span>
-      `;
-    } else {
-      const pathText = item.coInvestorPath?.summary || 'Direct round participation and co-investor graph from Cala.';
-      summaryEl.innerHTML = `
-        <strong>Cala verified co-investment &amp; round graph</strong><br />
-        <span>${esc(pathText)}</span>
-      `;
-    }
+    summaryEl.textContent = isLinkedin
+      ? item.linkedinNetwork?.summary || ''
+      : item.coInvestorPath?.summary || 'Verified Cala funding relationships.';
   }
 
   if (svgWrap && netData) {
@@ -1159,13 +1120,13 @@ function renderDrawerNetworkPane(item) {
               ${renderLogoSvg(p.name, p.sector)}
               <span class="peer-btn-meta">
                 <span class="peer-btn-name">${esc(p.name)}</span>
-                <span class="peer-btn-desc">${esc(p.sector)} · ${esc(p.country)} · ${esc(p.bridgeLabel)}</span>
+                <span class="peer-btn-desc">${esc(p.sector)} · ${esc(p.bridgeLabel)}</span>
               </span>
             </button>
           `
           )
           .join('')
-      : '<p class="card-note">No connected peer startups indexed in this view.</p>';
+      : '<p class="card-note">No connected startups indexed.</p>';
 
     peersEl.querySelectorAll('[data-peer-id]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -1234,7 +1195,6 @@ function buildNetworkGraphSvg(graphObj, selectedStartupId) {
       const edgeText = String(link.label || '').slice(0, 16);
       const pillW = Math.max(46, edgeText.length * 6.5 + 14);
 
-      // Clean vertical connector when two nodes share the same column
       if (a.cx === b.cx) {
         const yTop = a.cy < b.cy ? a.cy + cardH / 2 : b.cy + cardH / 2;
         const yBot = a.cy < b.cy ? b.cy - cardH / 2 : a.cy - cardH / 2;
@@ -1307,8 +1267,8 @@ function renderThesisTab() {
   if (!state.analysis) return;
   const { thesis, backtest } = state.analysis;
 
-  document.getElementById('thesisTitleHeading').textContent = `Revealed thesis: ${thesis.fundName}`;
-  document.getElementById('thesisHeaderSummary').textContent = `${thesis.driftSummary || ''} ${thesis.weakProfileNote || ''}`.trim();
+  document.getElementById('thesisTitleHeading').textContent = thesis.fundName;
+  document.getElementById('thesisHeaderSummary').textContent = thesis.driftSummary || '';
 
   const verifyInput = document.getElementById('calaVerifyInput');
   if (verifyInput && !verifyInput.value && thesis.mode === 'fund') {
@@ -1320,12 +1280,12 @@ function renderThesisTab() {
     const topSector = thesis.sectorMix?.[0]?.label || 'Mixed';
     const topCountry = thesis.geographyMix?.[0]?.label || 'Europe';
     const metrics = [
-      { label: 'Deals analyzed', value: thesis.dealsAnalyzedCount },
-      { label: 'Portfolio companies', value: thesis.portfolioCount },
+      { label: 'Deals', value: thesis.dealsAnalyzedCount },
+      { label: 'Portfolio', value: thesis.portfolioCount },
       { label: 'Lead rate', value: `${thesis.leadRatePct}%` },
-      { label: 'Follow-on rate', value: `${thesis.followOnRatePct}%` },
-      { label: 'Median round size', value: formatEur(thesis.medianRoundSizeEurM) },
-      { label: 'Primary cluster', value: `${topSector} · ${topCountry}` }
+      { label: 'Follow-on', value: `${thesis.followOnRatePct}%` },
+      { label: 'Median round', value: formatEur(thesis.medianRoundSizeEurM) },
+      { label: 'Core cluster', value: `${topSector} · ${topCountry}` }
     ];
     stripEl.innerHTML = metrics
       .map(
@@ -1360,15 +1320,15 @@ function renderThesisTab() {
     `;
 
     distEl.innerHTML =
-      renderBars('Sector concentration', thesis.sectorMix) +
-      renderBars('Stage distribution', thesis.stageMix) +
-      renderBars('Geography footprint', thesis.geographyMix);
+      renderBars('Sectors', thesis.sectorMix) +
+      renderBars('Stages', thesis.stageMix) +
+      renderBars('Geography', thesis.geographyMix);
   }
 
   const statedEl = document.getElementById('statedVsRevealedPanel');
   if (statedEl) {
     statedEl.innerHTML = `
-      <p><strong>Stated positioning:</strong> ${esc(thesis.statedThesis)}</p>
+      <p><strong>Stated:</strong> ${esc(thesis.statedThesis)}</p>
       <ul class="stated-diff-list">
         ${(thesis.statedVsRevealed || []).map((line) => `<li>${esc(line)}</li>`).join('')}
       </ul>
@@ -1379,8 +1339,8 @@ function renderThesisTab() {
   const btNote = document.getElementById('backtestSummaryNote');
   if (btPanel && btNote) {
     if (!backtest) {
-      btNote.textContent = 'Point-in-time backtest requires an indexed fund with historical rounds.';
-      btPanel.innerHTML = '<p class="card-note">Switch Configuration to an indexed venture fund to evaluate 12-month out-of-time precision.</p>';
+      btNote.textContent = 'Available when benchmarking an indexed fund.';
+      btPanel.innerHTML = '';
     } else {
       btNote.textContent = backtest.summaryText;
       btPanel.innerHTML = `
@@ -1388,11 +1348,11 @@ function renderThesisTab() {
           <table class="data-table">
             <thead>
               <tr>
-                <th>Hidden subsequent deal</th>
+                <th>Hidden deal</th>
                 <th>Stage</th>
-                <th>Actual deal date</th>
+                <th>Date</th>
                 <th>Predicted rank</th>
-                <th>Co-investor bridge clue</th>
+                <th>Co-investor bridge</th>
               </tr>
             </thead>
             <tbody>
@@ -1422,23 +1382,20 @@ function updateBudgetReadout() {
   if (!el) return;
   const b = state.calaBudget || state.bootstrap?.coverageStats?.calaBudget;
   if (!b) {
-    el.textContent = 'Local snapshot active';
+    el.textContent = 'Local cache';
     return;
   }
   const { remaining, max, cached } = getBudgetNumbers(b);
-  el.textContent = `Cala budget: ${remaining} / ${max} live calls remaining (${cached} cached)`;
+  el.textContent = `${remaining}/${max} live calls left (${cached} cached)`;
 }
 
 function formatCalaLiveHtml(res) {
   const live = res.liveSummary;
   if (!live) {
-    return `<p>No matching live Cala entity found for "${esc(res.queryName)}".</p>`;
+    return `<p>No live Cala entity found for "${esc(res.queryName)}".</p>`;
   }
 
-  const cacheStatus = res.fromCache
-    ? 'Served from local Cala disk cache (0 live credits consumed)'
-    : 'Fetched live from Cala API and persisted to local disk cache';
-
+  const cacheStatus = res.fromCache ? 'Cached (0 credits used)' : 'Live Cala response (cached)';
   const investedList = (live.investedIn || [])
     .slice(0, 8)
     .map((item) => esc(item.name || item.title || item.id))
@@ -1448,19 +1405,14 @@ function formatCalaLiveHtml(res) {
     .slice(0, 6)
     .map(
       (r) =>
-        `<li><strong>${esc(r.name || r.roundType || 'Funding round')}</strong>${r.isLead ? ' (Lead)' : ''}${r.amount ? ` · ${esc(r.amount)}` : ''}</li>`
+        `<li><strong>${esc(r.name || r.roundType || 'Round')}</strong>${r.isLead ? ' (Lead)' : ''}${r.amount ? ` · ${esc(r.amount)}` : ''}</li>`
     )
     .join('');
 
   return `
-    <p><strong>${esc(live.name)}</strong> (${esc(live.entityType || 'Entity')}) · UUID ${esc(live.id)}</p>
-    <p class="disambig-meta">${esc(cacheStatus)}</p>
+    <p><strong>${esc(live.name)}</strong> (${esc(live.entityType || 'Entity')}) · ${esc(cacheStatus)}</p>
     ${live.description ? `<p>${esc(live.description)}</p>` : ''}
-    ${
-      live.investedInCount > 0
-        ? `<p><strong>Cala INVESTED_IN (${esc(live.investedInCount)}):</strong> ${investedList}</p>`
-        : ''
-    }
+    ${live.investedInCount > 0 ? `<p><strong>Portfolio (${esc(live.investedInCount)}):</strong> ${investedList}</p>` : ''}
     ${roundsRows ? `<ul>${roundsRows}</ul>` : ''}
     ${res.knowledgeAnswer ? `<p><strong>Knowledge Search:</strong> ${esc(res.knowledgeAnswer)}</p>` : ''}
   `;
@@ -1486,7 +1438,7 @@ async function handleLiveCalaVerify(type, name, includeKnowledgeSearch, outputEl
     outputEl.innerHTML = formatCalaLiveHtml(res);
     outputEl.hidden = false;
   } catch (err) {
-    outputEl.innerHTML = `<p>${esc(err.message || 'Live Cala API call failed.')}</p>`;
+    outputEl.innerHTML = `<p>${esc(err.message || 'Verification failed.')}</p>`;
     outputEl.hidden = false;
   } finally {
     triggerBtn.disabled = false;
@@ -1540,7 +1492,7 @@ function bindEvents() {
     });
   });
 
-  // Inline Calibration Bar (on AI Search Stage)
+  // Inline Calibration Controls
   document.querySelectorAll('[data-quick-role]').forEach((btn) => {
     btn.addEventListener('click', () => {
       syncRoleSelection(btn.getAttribute('data-quick-role'));
@@ -1568,7 +1520,7 @@ function bindEvents() {
       try {
         const res = await apiGet(`/api/search?q=${encodeURIComponent(q)}`);
         if (!res.funds || !res.funds.length) {
-          resultsBox.innerHTML = '<div class="disambig-option">No matching indexed funds found.</div>';
+          resultsBox.innerHTML = '<div class="disambig-option">No matching funds.</div>';
           resultsBox.hidden = false;
           return;
         }
@@ -1661,7 +1613,6 @@ function bindEvents() {
     });
   });
 
-  // Global keyboard shortcuts: '/' focuses AI Search; Escape / Arrows control Drawer
   document.addEventListener('keydown', (e) => {
     const tag = document.activeElement?.tagName;
     const isTyping = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
@@ -1690,7 +1641,6 @@ function bindEvents() {
     }
   });
 
-  // Drawer Export & Live Cala Verify
   document.getElementById('drawerExportMdBtn')?.addEventListener('click', () => {
     if (!state.activeStartupId) return;
     const item = state.allKnownItems.get(state.activeStartupId);
@@ -1752,7 +1702,7 @@ async function bootstrap() {
     await runAnalysisAndSwitch(false);
     switchPrimaryTab('config');
   } catch (err) {
-    document.getElementById('telemetryLine').textContent = `Bootstrap error: ${err.message}`;
+    document.getElementById('telemetryLine').textContent = `Error: ${err.message}`;
   }
 }
 
