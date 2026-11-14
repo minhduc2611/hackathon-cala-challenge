@@ -447,7 +447,7 @@
             type="text"
             id="aiSearchInput"
             class="floating-search-input"
-            placeholder="Ask AI or search: 'Slush 2026 DeepTech raising soon', 'Why not Oura?', VoltGrid..."
+            placeholder="Search any company or startup (e.g. McDonald's, KFC, Slush 2026)..."
             autocomplete="off"
           />
           <kbd class="search-kbd-hint" id="searchKbdHint" aria-hidden="true">/</kbd>
@@ -485,6 +485,10 @@
             <span class="ex-kind">Ask</span>
             <span class="ex-val">Why not Oura?</span>
           </button>
+          <button type="button" class="example-btn" data-query="McDonald's">
+            <span class="ex-kind">Registry</span>
+            <span class="ex-val">McDonald's</span>
+          </button>
           <span class="strip-sep" aria-hidden="true">|</span>
           <button
             type="button"
@@ -509,6 +513,14 @@
         </div>
 
         <div class="filter-strip" id="collapsibleFilterStrip" hidden>
+          <div class="filter-control">
+            <label for="filterEntityScope" class="filter-label">Scope</label>
+            <select id="filterEntityScope" class="select-input">
+              <option value="startups">Startups only</option>
+              <option value="all">All companies (+Registries)</option>
+            </select>
+          </div>
+
           <div class="filter-control">
             <label for="filterStage" class="filter-label">Stage</label>
             <select id="filterStage" class="select-input">
@@ -618,6 +630,15 @@
           >
             <span>Compare</span>
             <b class="num-tabular" id="compareCallListCountBadge">0</b>
+          </button>
+          <button
+            type="button"
+            class="call-list-pill"
+            id="discoverRegistriesBtn"
+            title="Fetch startups &amp; companies from free official corporate registries (PRH / GLEIF)"
+          >
+            <span>Sync Registries</span>
+            <b class="num-tabular" id="registryDiscoveredBadge">Free API</b>
           </button>
           <button
             type="button"

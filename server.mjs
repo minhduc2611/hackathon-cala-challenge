@@ -3,11 +3,14 @@ import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { COMPANIES, FUNDS, REFERENCE_DATE, SOURCES } from './src/data.mjs';
+import { COMPANIES, FUNDS, PEER_INVESTORS, REFERENCE_DATE, SOURCES } from './src/data.mjs';
 import { createCalaClient, loadEnvFile } from './src/calaClient.mjs';
+import { createRegistryClient, extractRegistryLookupTerm } from './src/registryClient.mjs';
+import { compileSearchQuery, narrateBriefWithCitationGate } from './src/llmControlPlane.mjs';
 import {
   buildStartupBrief,
   ingestLiveCalaEntities,
+  ingestRegistryEntities,
   refineShortlist,
   runFullAnalysis,
   searchEntities
@@ -37,6 +40,7 @@ const ENTITY_LEGAL_SUFFIX_RE = /\b(?:oyj|oy|ab|aps|a\/s|as|ltd|limited|plc|inc|c
 function normalizeEntityCoreName(name = '') {
   return String(name || '')
     .toLowerCase()
+    .replace(/['’`]/g, '')
     .replace(ENTITY_LEGAL_SUFFIX_RE, ' ')
     .replace(/[^a-z0-9\s]/g, ' ')
     .replace(/\s+/g, ' ')
@@ -192,13 +196,19 @@ function summarizeLiveCalaEntity(entityData) {
 }
 
 function getCachedAnalysis(payload) {
+  const entityScope = payload.entityScope === 'all' ? 'all' : 'startups';
+  const includeCompanyNames = Array.isArray(payload.includeCompanyNames)
+    ? [...payload.includeCompanyNames].sort()
+    : [];
   const key = JSON.stringify({
     mode: payload.mode || 'fund',
     fundId: payload.fundId || null,
     companyIds: Array.isArray(payload.companyIds) ? [...payload.companyIds].sort() : [],
     rankingMode: payload.rankingMode || 'balanced',
     statedThesisOverride: payload.statedThesisOverride || '',
-    seenCompanyNames: Array.isArray(payload.seenCompanyNames) ? [...payload.seenCompanyNames].sort() : []
+    seenCompanyNames: Array.isArray(payload.seenCompanyNames) ? [...payload.seenCompanyNames].sort() : [],
+    entityScope,
+    includeCompanyNames
   });
 
   if (analysisCache.has(key)) {
@@ -213,7 +223,9 @@ function getCachedAnalysis(payload) {
     {
       rankingMode: payload.rankingMode || 'balanced',
       statedThesisOverride: payload.statedThesisOverride || '',
-      seenCompanyNames: payload.seenCompanyNames || []
+      seenCompanyNames: payload.seenCompanyNames || [],
+      entityScope,
+      includeCompanyNames
     }
   );
   if (analysisCache.size > 60) {
@@ -463,6 +475,11 @@ async function discoverStartupsFromCala(calaClient, { queryText = '', mode = 'ec
 
 export function createAppServer(options = {}) {
   const calaClient = options.calaClient || createCalaClient({ maxLiveCalls: options.maxLiveCalls ?? 250 });
+  const registryClient = options.registryClient || createRegistryClient();
+  const cachedReg = registryClient.getCachedCompanies();
+  if (cachedReg.length > 0) {
+    ingestRegistryEntities(cachedReg);
+  }
 
   return http.createServer(async (req, res) => {
     try {
@@ -488,7 +505,9 @@ export function createAppServer(options = {}) {
             sector: c.sector,
             country: c.country,
             region: c.region,
-            latestStage: c.rounds[c.rounds.length - 1]?.type || 'Seed'
+            latestStage:
+              c.rounds[c.rounds.length - 1]?.type ||
+              (c.entityCategory === 'established_corp' ? 'Public / Mature' : 'Registered (Unfunded)')
           })),
           coverageStats: {
             fundsIndexed: FUNDS.length,
@@ -496,9 +515,12 @@ export function createAppServer(options = {}) {
             roundsIndexed: COMPANIES.reduce((s, c) => s + c.rounds.length, 0),
             sourcesIndexed: Object.keys(SOURCES).length,
             companiesHouseIndexed: COMPANIES.filter((c) => Boolean(c.companiesHouseNumber)).length,
+            registryEntitiesIndexed: COMPANIES.filter((c) => Boolean(c.isRegistryDiscovered)).length,
             timeSeriesPointsIndexed: COMPANIES.reduce((s, c) => s + (c.employeeCountSeries?.length || 0), 0),
             liveCalaConfigured: Boolean(process.env.CALA_API_KEY),
-            calaBudget: calaClient.getBudgetStatus()
+            anthropicConfigured: Boolean(process.env.ANTHROPIC_API_KEY),
+            calaBudget: calaClient.getBudgetStatus(),
+            registryStatus: registryClient.getStatus()
           }
         });
         return;
@@ -551,7 +573,8 @@ export function createAppServer(options = {}) {
           ...(knowledgeRes?.data?.entities || [])
         ].filter(Boolean);
         const verifyIng = ingestLiveCalaEntities(verifyPool, {
-          slush2026: type === 'event' || /slush/i.test(name)
+          slush2026: type === 'event' || /slush/i.test(name),
+          allowGeneralCompanies: type === 'company'
         });
         const fundMatch = FUNDS.find((f) => f.name.toLowerCase() === String(entityRes?.data?.name || name || '').toLowerCase());
         const invPool = entityRes?.data?.relationships?.outgoing?.INVESTED_IN || [];
@@ -602,11 +625,17 @@ export function createAppServer(options = {}) {
       if (req.method === 'GET' && pathname === '/api/brief') {
         const startupId = reqUrl.searchParams.get('startupId');
         const fundId = reqUrl.searchParams.get('fundId');
+        const narrate = reqUrl.searchParams.get('narrate');
         if (!startupId) {
           sendJson(res, 400, { error: 'Missing required query parameter: startupId.' });
           return;
         }
         const brief = buildStartupBrief(startupId, fundId);
+        if (narrate === '1' || narrate === 'true') {
+          const narrative = await narrateBriefWithCitationGate(brief);
+          sendJson(res, 200, { ...brief, narrative });
+          return;
+        }
         sendJson(res, 200, brief);
         return;
       }
@@ -652,6 +681,31 @@ export function createAppServer(options = {}) {
         return;
       }
 
+      if (req.method === 'POST' && pathname === '/api/discover-registries') {
+        const body = await readJsonBody(req);
+        const regRes = await registryClient.discoverFromRegistries({
+          queryText: body.queryText || '',
+          companyQuery: body.companyQuery || '',
+          country: body.country || '',
+          sectors: Array.isArray(body.sectors) ? body.sectors : [],
+          mode: body.mode || (body.queryText || body.companyQuery ? 'query' : 'sync_recent_startups'),
+          maxResults: body.maxResults || 12
+        });
+        const ing = ingestRegistryEntities(regRes.companies);
+        if (ing.ingestedCount > 0 || ing.enrichedCount > 0) {
+          analysisCache.clear();
+        }
+        sendJson(res, 200, {
+          ...regRes,
+          ingestedCount: ing.ingestedCount,
+          enrichedCount: ing.enrichedCount,
+          totalCompaniesIndexed: COMPANIES.length,
+          registryStatus: registryClient.getStatus(),
+          calaBudget: calaClient.getBudgetStatus()
+        });
+        return;
+      }
+
       if (req.method === 'POST' && pathname === '/api/refine') {
         const body = await readJsonBody(req);
         let liveDiscoveredCount = 0;
@@ -669,30 +723,149 @@ export function createAppServer(options = {}) {
             // Non-fatal in offline/test environments
           }
         }
-        const analysis = getCachedAnalysis(body);
-        const refined = refineShortlist(analysis.thesis, analysis.allRanked, {
-          region: body.region,
-          stageFilter: body.stageFilter,
-          excludeSector: body.excludeSector,
-          raisingSoonOnly: body.raisingSoonOnly,
-          untappedOnly: body.untappedOnly,
+        const compiled = body.queryText
+          ? await compileSearchQuery(body.queryText, {
+              fundId: body.fundId,
+              knownInvestors: Object.values(PEER_INVESTORS)
+            })
+          : { controlPlaneMode: 'deterministic-parser', filters: null, fromCache: false };
+        const cf = compiled.filters || {};
+        let effectiveEntityScope =
+          body.entityScope === 'all' || cf.entityScope === 'all' ? 'all' : 'startups';
+        let effectiveCompanyQuery = body.companyQuery || cf.companyQuery || null;
+        if (!effectiveCompanyQuery && body.queryText && !cf.sectors?.length && !cf.investorQuery) {
+          const fallbackTerm = extractRegistryLookupTerm(body.queryText);
+          if (
+            fallbackTerm.length >= 2 &&
+            fallbackTerm.split(/\s+/).length <= 3 &&
+            !/\b(slush|raising|untapped|founders|startups?|seed|series|nordics|dach|fintech|deeptech|healthtech|climate|saas)\b/i.test(fallbackTerm)
+          ) {
+            effectiveCompanyQuery = fallbackTerm;
+          }
+        }
+        const effectiveCountries =
+          Array.isArray(body.countries) && body.countries.length
+            ? body.countries
+            : cf.countryHint
+              ? [cf.countryHint]
+              : undefined;
+
+        const refinementPayload = {
+          entityScope: effectiveEntityScope,
+          intent: body.intent || cf.intent,
+          region: body.region && body.region !== 'all' ? body.region : (cf.region || body.region),
+          stageFilter:
+            body.stageFilter && body.stageFilter !== 'all' ? body.stageFilter : (cf.stageFilter || body.stageFilter),
+          excludeSector:
+            body.excludeSector && body.excludeSector !== 'none'
+              ? body.excludeSector
+              : (cf.excludeSector || body.excludeSector),
+          raisingSoonOnly: Boolean(body.raisingSoonOnly || cf.raisingSoonOnly),
+          untappedOnly: Boolean(body.untappedOnly || cf.untappedOnly),
           highVelocityOnly: body.highVelocityOnly,
           feederOnly: body.feederOnly,
           filingOnly: body.filingOnly,
-          alumniOnly: body.alumniOnly,
-          sectors: body.sectors,
-          countries: body.countries,
+          alumniOnly: Boolean(body.alumniOnly || body.requireAlumniFounder || cf.requireAlumniFounder),
+          requireAlumniFounder: Boolean(body.requireAlumniFounder || body.alumniOnly || cf.requireAlumniFounder),
+          minHeadcountGrowthPct: body.minHeadcountGrowthPct ?? cf.minHeadcountGrowthPct,
+          investorQuery: body.investorQuery || cf.investorQuery,
+          companyQuery: effectiveCompanyQuery,
+          whyNotCompany: body.whyNotCompany || cf.whyNotCompany,
+          expandedKeywords:
+            Array.isArray(cf.expandedKeywords) && cf.expandedKeywords.length
+              ? cf.expandedKeywords
+              : body.expandedKeywords,
+          sectors:
+            compiled.controlPlaneMode === 'anthropic-query-compiler'
+              ? cf.sectors || []
+              : Array.isArray(body.sectors) && body.sectors.length
+                ? body.sectors
+                : cf.sectors,
+          countries: effectiveCountries,
           maxEmployees: body.maxEmployees,
-          slush2026Only: body.slush2026Only,
+          slush2026Only: Boolean(body.slush2026Only || cf.slushOnly),
           preferWarm: body.preferWarm,
           limit: body.limit,
           queryText: body.queryText
+        };
+
+        let analysis = getCachedAnalysis({
+          ...body,
+          entityScope: effectiveEntityScope,
+          includeCompanyNames: effectiveCompanyQuery ? [effectiveCompanyQuery] : []
         });
+        let refined = refineShortlist(analysis.thesis, analysis.allRanked, refinementPayload);
+
+        let registryDiscovery = null;
+        const isWhyNot = refined.searchIntent === 'why_not' || /^\s*why not\s+/i.test(String(body.queryText || ''));
+        const exactMatchesCount = refined.usedSoftFallback ? 0 : refined.totalMatches;
+        const hasExactCompanyInIndex =
+          effectiveCompanyQuery && COMPANIES.some((c) => isStrongEntityNameMatch(effectiveCompanyQuery, c.name));
+        const shouldDiscoverRegistries =
+          !isWhyNot &&
+          body.discoverRegistries !== false &&
+          Boolean(String(body.queryText || '').trim()) &&
+          (exactMatchesCount === 0 ||
+            Boolean(effectiveCompanyQuery && !hasExactCompanyInIndex) ||
+            (effectiveEntityScope === 'all' && !hasExactCompanyInIndex));
+
+        if (shouldDiscoverRegistries) {
+          try {
+            const regRes = await registryClient.discoverFromRegistries({
+              queryText: body.queryText,
+              companyQuery: effectiveCompanyQuery || '',
+              country: cf.countryHint || (effectiveCountries?.[0] || ''),
+              sectors: refinementPayload.sectors || [],
+              mode: 'query',
+              maxResults: 10
+            });
+            const regIng = ingestRegistryEntities(regRes.companies);
+            if (regRes.companies.some((c) => c.entityCategory === 'established_corp')) {
+              effectiveEntityScope = 'all';
+              refinementPayload.entityScope = 'all';
+            }
+            if (regIng.ingestedCount > 0 || regIng.enrichedCount > 0 || effectiveEntityScope === 'all') {
+              analysisCache.clear();
+              const includeNames = [
+                ...(effectiveCompanyQuery ? [effectiveCompanyQuery] : []),
+                ...regRes.companies.map((c) => c.name)
+              ];
+              analysis = getCachedAnalysis({
+                ...body,
+                entityScope: effectiveEntityScope,
+                includeCompanyNames: includeNames
+              });
+              refined = refineShortlist(analysis.thesis, analysis.allRanked, refinementPayload);
+            }
+            registryDiscovery = {
+              triggered: true,
+              discoveredCount: regRes.companies.length,
+              ingestedCount: regIng.ingestedCount,
+              enrichedCount: regIng.enrichedCount,
+              sourcesUsed: regRes.sourcesUsed,
+              cacheHits: regRes.cacheHits,
+              errors: regRes.errors
+            };
+            if (regRes.companies.length > 0) {
+              refined.aiTrace.unshift(
+                `Official Registries (${regRes.sourcesUsed.join(' + ') || 'PRH/GLEIF'}): fetched ${regRes.companies.length} corporate records (${regIng.ingestedCount} new)`
+              );
+            }
+          } catch {
+            // Non-fatal in offline/timeout environments
+          }
+        }
+
         sendJson(res, 200, {
           ...refined,
+          entityScope: effectiveEntityScope,
+          controlPlaneMode: compiled.controlPlaneMode,
+          compiledQuery: compiled.filters,
           liveDiscoveredCount,
           knowledgeAnswer,
+          registryDiscovery,
           totalCompaniesIndexed: COMPANIES.length,
+          registryStatus: registryClient.getStatus(),
           calaBudget: calaClient.getBudgetStatus()
         });
         return;

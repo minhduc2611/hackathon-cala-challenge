@@ -1789,7 +1789,12 @@ for (const [id, src] of Object.entries(SOURCES)) {
     else src.sourceRank = 'PRESS';
   }
   if (!src.datePrecision) {
-    src.datePrecision = /^\d{4}-\d{2}-\d{2}$/.test(String(src.date || '')) ? 'day' : 'month';
+    const dtStr = String(src.date || '');
+    src.datePrecision = /^\d{4}-\d{2}-\d{2}$/.test(dtStr)
+      ? 'day'
+      : /^\d{4}-\d{2}$/.test(dtStr)
+        ? 'month'
+        : 'year';
   }
 }
 
@@ -1797,38 +1802,41 @@ const UK_FINANCIAL_PROFILES = {
   vectormesh: {
     companiesHouseNumber: '15482910',
     financialMetrics: [
-      { periodEnd: '2025-09-30', filingDate: '2025-10-25', cashEurM: 2.1, netAssetsEurM: 1.85, creditorsEurM: 0.25, runwayMonthsEst: 16, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' },
-      { periodEnd: '2026-06-30', filingDate: '2026-08-30', cashEurM: 4.9, netAssetsEurM: 4.4, creditorsEurM: 0.42, runwayMonthsEst: 22, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' }
+      { year: 2025, periodEnd: '2025-09-30', filingDate: '2025-10-25', cashEurM: 2.1, netAssetsEurM: 1.85, creditorsEurM: 0.25, runwayMonthsEst: 16, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' },
+      { year: 2026, periodEnd: '2026-06-30', filingDate: '2026-08-30', cashEurM: 4.9, netAssetsEurM: 4.4, creditorsEurM: 0.42, runwayMonthsEst: 22, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' }
     ]
   },
   'synthos-bio': {
     companiesHouseNumber: '15319402',
     financialMetrics: [
-      { periodEnd: '2025-09-30', filingDate: '2025-10-28', cashEurM: 1.45, netAssetsEurM: 1.28, creditorsEurM: 0.19, runwayMonthsEst: 13, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' }
+      { year: 2025, periodEnd: '2025-09-30', filingDate: '2025-10-28', cashEurM: 1.45, netAssetsEurM: 1.28, creditorsEurM: 0.19, runwayMonthsEst: 13, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' }
     ]
   },
   synthesia: {
     companiesHouseNumber: '10829754',
     financialMetrics: [
-      { periodEnd: '2025-12-31', filingDate: '2026-08-30', cashEurM: 64.0, netAssetsEurM: 58.2, creditorsEurM: 9.4, runwayMonthsEst: 36, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' }
+      { year: 2024, periodEnd: '2024-12-31', filingDate: '2025-09-15', cashEurM: 41.5, netAssetsEurM: 36.8, creditorsEurM: 6.9, runwayMonthsEst: 32, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' },
+      { year: 2025, periodEnd: '2025-12-31', filingDate: '2026-08-30', cashEurM: 64.0, netAssetsEurM: 58.2, creditorsEurM: 9.4, runwayMonthsEst: 36, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' }
     ]
   },
   wayve: {
     companiesHouseNumber: '11076214',
     financialMetrics: [
-      { periodEnd: '2025-12-31', filingDate: '2026-08-30', cashEurM: 140.0, netAssetsEurM: 126.5, creditorsEurM: 18.0, runwayMonthsEst: 30, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' }
+      { year: 2024, periodEnd: '2024-12-31', filingDate: '2025-09-10', cashEurM: 175.0, netAssetsEurM: 158.0, creditorsEurM: 14.5, runwayMonthsEst: 34, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' },
+      { year: 2025, periodEnd: '2025-12-31', filingDate: '2026-08-30', cashEurM: 140.0, netAssetsEurM: 126.5, creditorsEurM: 18.0, runwayMonthsEst: 30, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' }
     ]
   },
   truelayer: {
     companiesHouseNumber: '10278299',
     financialMetrics: [
-      { periodEnd: '2025-12-31', filingDate: '2026-08-30', cashEurM: 48.0, netAssetsEurM: 41.0, creditorsEurM: 11.2, runwayMonthsEst: 28, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' }
+      { year: 2024, periodEnd: '2024-12-31', filingDate: '2025-09-12', cashEurM: 59.5, netAssetsEurM: 52.0, creditorsEurM: 9.8, runwayMonthsEst: 31, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' },
+      { year: 2025, periodEnd: '2025-12-31', filingDate: '2026-08-30', cashEurM: 48.0, netAssetsEurM: 41.0, creditorsEurM: 11.2, runwayMonthsEst: 28, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' }
     ]
   },
   fintry: {
     companiesHouseNumber: '14910483',
     financialMetrics: [
-      { periodEnd: '2025-12-31', filingDate: '2026-08-30', cashEurM: 1.15, netAssetsEurM: 0.94, creditorsEurM: 0.21, runwayMonthsEst: 11, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' }
+      { year: 2025, periodEnd: '2025-12-31', filingDate: '2026-08-30', cashEurM: 1.15, netAssetsEurM: 0.94, creditorsEurM: 0.21, runwayMonthsEst: 11, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' }
     ]
   }
 };
@@ -1978,7 +1986,9 @@ for (const company of COMPANIES) {
       type: 'FINANCING_RAISED_OR_FACILITY_ENTERED',
       name: `${latestRnd.type} Allotment Filing (${company.name})`,
       eventDate: latestRnd.date,
+      amountEurM: latestRnd.amountEurM,
       role: 'ISSUER',
+      deduplicatedAgainstRound: true,
       unannouncedFiling: false,
       summary: `Statutory share issue filing matching ${latestRnd.type} (EUR ${latestRnd.amountEurM}M).`,
       sourceRank: 'FILING',
@@ -1990,7 +2000,9 @@ for (const company of COMPANIES) {
       type: 'FINANCING_RAISED_OR_FACILITY_ENTERED',
       name: company.country === 'United Kingdom' ? 'SH01 Share Allotment & Charge Notice' : 'PRH / Register Convertible Facility Notice',
       eventDate: '2026-09-12',
+      amountEurM: null,
       role: 'ISSUER',
+      deduplicatedAgainstRound: false,
       unannouncedFiling: true,
       summary: `Unannounced ${company.country === 'United Kingdom' ? 'Companies House SH01' : 'statutory registry'} capital facility filing ahead of press coverage.`,
       sourceRank: 'FILING',

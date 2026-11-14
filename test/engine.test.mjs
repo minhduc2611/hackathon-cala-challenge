@@ -5,6 +5,7 @@ import {
   computeRevealedThesis,
   enforceFactCitations,
   ingestLiveCalaEntities,
+  ingestRegistryEntities,
   interpolateHeadcountAtDate,
   refineShortlist,
   runFullAnalysis,
@@ -355,6 +356,169 @@ test('ingestLiveCalaEntities expands COMPANIES + SOURCES, scores in full analysi
   // Clean up runtime test companies so baseline remains tidy
   for (const calaId of ['00541f9a-8af0-5d33-b013-c32d90ba3076', 'test-unlocated-slush-1', 'test-singular-photonics']) {
     const idx = COMPANIES.findIndex((c) => c.calaEntityId === calaId);
+    if (idx !== -1) COMPANIES.splice(idx, 1);
+  }
+});
+
+test('timeTravelProfile, upstreamFeeders lift, non-leakage interpolateHeadcountAtDate, and missing-data neutrality work deterministically', () => {
+  const result = runFullAnalysis({ mode: 'fund', fundId: 'lifeline-ventures', rankingMode: 'balanced' });
+  const tt = result.thesis.timeTravelProfile;
+  assert.ok(tt);
+  assert.ok(tt.medianEntryHeadcount > 0);
+  assert.ok(tt.entryHeadcountP25 > 0);
+  assert.ok(tt.entryHeadcountP75 >= tt.entryHeadcountP25);
+  assert.ok(tt.medianEntryAgeMonths > 0);
+  assert.ok(tt.filingVerifiedSharePct > 0);
+
+  const feeders = result.thesis.upstreamFeeders || [];
+  assert.ok(feeders.length > 0);
+  assert.ok(typeof feeders[0].lift === 'number' && feeders[0].lift > 0);
+  for (let i = 1; i < feeders.length; i += 1) {
+    assert.ok(feeders[i - 1].lift >= feeders[i].lift);
+  }
+
+  // Point-in-time non-leakage check on interpolateHeadcountAtDate
+  const vectormesh = COMPANIES.find((c) => c.id === 'vectormesh');
+  assert.ok(vectormesh);
+  assert.ok(vectormesh.employeeCountSeries.length >= 2);
+  const earliestObs = [...vectormesh.employeeCountSeries].sort((a, b) => a.date.localeCompare(b.date))[0];
+  const latestObs = [...vectormesh.employeeCountSeries].sort((a, b) => a.date.localeCompare(b.date)).slice(-1)[0];
+  const cut = interpolateHeadcountAtDate(vectormesh, latestObs.date, earliestObs.date);
+  assert.equal(cut.headcount, earliestObs.value);
+
+  // Backtest exposes recallAt15, recallAt50, mrr
+  assert.ok(typeof result.backtest.recallAt15 === 'number');
+  assert.ok(typeof result.backtest.recallAt50 === 'number');
+  assert.ok(typeof result.backtest.mrr === 'number');
+
+  // VectorMesh has full series + UK Companies House -> must NOT list "Historical employee growth curve" as missing
+  const vmBrief = buildStartupBrief('vectormesh', 'lifeline-ventures');
+  assert.ok(vmBrief.employeeCountSeries.length >= 2);
+  assert.ok(vmBrief.financialMetrics.length >= 2);
+  assert.ok(vmBrief.companiesHouseNumber);
+  assert.equal(
+    vmBrief.notFoundInCala.some((g) => /Historical employee growth curve/i.test(g.field)),
+    false
+  );
+
+  // Sparse stealth startup without time-series or people coverage gets exact 0.50 neutral momentum baseline
+  ingestLiveCalaEntities([
+    {
+      id: 'test-sparse-neutral-1',
+      name: 'SparseStealth Oy',
+      entity_type: 'Company',
+      description: 'Pre-seed AI infrastructure startup founded in 2025 in Helsinki, Finland.'
+    }
+  ]);
+  const withSparse = runFullAnalysis({ mode: 'fund', fundId: 'lifeline-ventures', rankingMode: 'balanced' });
+  const sparseCand = withSparse.allRanked.find((c) => c.calaEntityId === 'test-sparse-neutral-1');
+  assert.ok(sparseCand);
+  assert.equal(sparseCand.dataConfidence.grade, 'Early / Sparse');
+  assert.equal(sparseCand.scoreBreakdown.momentum.earned, Math.round(withSparse.weights.momentum * 0.5 * 10) / 10);
+
+  const sparseBrief = buildStartupBrief(sparseCand.id, 'lifeline-ventures');
+  assert.equal(
+    sparseBrief.notFoundInCala.some((g) => /Historical employee growth curve/i.test(g.field)),
+    true
+  );
+
+  const sparseIdx = COMPANIES.findIndex((c) => c.calaEntityId === 'test-sparse-neutral-1');
+  if (sparseIdx !== -1) COMPANIES.splice(sparseIdx, 1);
+
+  // Deterministic refinement supports expandedKeywords, minHeadcountGrowthPct, and requireAlumniFounder
+  const filtered = refineShortlist(result.thesis, result.allRanked, {
+    requireAlumniFounder: true,
+    minHeadcountGrowthPct: 20,
+    expandedKeywords: ['grid', 'storage', 'aiven', 'nordic']
+  });
+  assert.ok(filtered.shortlist.every((item) => Boolean(item.alumniSpinout) && item.headcountGrowthPct >= 20));
+});
+
+test('ingestRegistryEntities handles unfunded startups & established_corp without fake VC rounds or backtest leakage', () => {
+  const baselineBacktest = runPointInTimeBacktest('lifeline-ventures');
+
+  const regResult = ingestRegistryEntities([
+    {
+      id: 'reg-test-mcdonalds-corp',
+      name: "McDonald's Corporation (Test)",
+      oneLiner: 'Global restaurant operator · GLEIF LEI.',
+      description: "McDonald's Corporation registered via GLEIF LEI.",
+      sector: 'Gaming & Consumer',
+      subSectors: ['Consumer', 'Hospitality'],
+      country: 'United States',
+      region: 'Global',
+      hqCity: 'Chicago',
+      foundedYear: 1965,
+      foundingDate: '1965-03-01',
+      website: 'https://www.mcdonalds.com',
+      entityCategory: 'established_corp',
+      registryInfo: {
+        registryName: 'GLEIF Global LEI',
+        provider: 'GLEIF',
+        registrationNumber: '549300TESTMCD1234',
+        legalForm: 'Corporation',
+        industryCode: 'LEI-GENERAL',
+        industryDescription: 'Corporate entity',
+        status: 'ACTIVE',
+        registryUrl: 'https://search.gleif.org/#/record/549300TESTMCD1234'
+      },
+      source: {
+        id: 'src-reg-test-mcd',
+        title: "GLEIF LEI: McDonald's Corporation (Test)",
+        publisher: 'GLEIF Global LEI Registry',
+        url: 'https://search.gleif.org/#/record/549300TESTMCD1234',
+        date: '1965-03-01',
+        sourceRank: 'FILING',
+        datePrecision: 'day',
+        snippet: 'Test GLEIF corporate filing.'
+      }
+    }
+  ]);
+
+  assert.equal(regResult.ingestedCount, 1);
+
+  try {
+    const startupOnly = runFullAnalysis(
+      { mode: 'fund', fundId: 'lifeline-ventures' },
+      { entityScope: 'startups' }
+    );
+    assert.equal(
+      startupOnly.allRanked.some((c) => c.id === 'reg-test-mcdonalds-corp'),
+      false
+    );
+
+    const allScope = runFullAnalysis(
+      { mode: 'fund', fundId: 'lifeline-ventures' },
+      { entityScope: 'all' }
+    );
+    const mcd = allScope.allRanked.find((c) => c.id === 'reg-test-mcdonalds-corp');
+    assert.ok(mcd);
+    assert.equal(mcd.isRegistryDiscovered, true);
+    assert.equal(mcd.entityCategory, 'established_corp');
+    assert.equal(mcd.lastRoundAmountEurM, null);
+    assert.equal(mcd.stage, 'Public / Mature');
+    assert.equal(mcd.dataConfidence.topSourceRank, 'FILING');
+    assert.ok(mcd.reasons.length >= 1);
+
+    const refined = refineShortlist(allScope.thesis, allScope.allRanked, {
+      queryText: "McDonald's",
+      entityScope: 'all',
+      companyQuery: "McDonald's Corporation (Test)"
+    });
+    assert.equal(refined.shortlist.length, 1);
+    assert.equal(refined.shortlist[0].id, 'reg-test-mcdonalds-corp');
+
+    const brief = buildStartupBrief('reg-test-mcdonalds-corp', 'lifeline-ventures');
+    assert.equal(brief.rounds.length, 0);
+    assert.ok(brief.notFoundInCala.some((g) => /VC funding rounds/i.test(g.field)));
+    assert.match(brief.memoMarkdown, /GLEIF Global LEI/);
+
+    const afterBacktest = runPointInTimeBacktest('lifeline-ventures');
+    assert.equal(afterBacktest.hiddenDealsCount, baselineBacktest.hiddenDealsCount);
+    assert.equal(afterBacktest.hitsInTop15, baselineBacktest.hitsInTop15);
+    assert.equal(afterBacktest.hitsInTop50, baselineBacktest.hitsInTop50);
+  } finally {
+    const idx = COMPANIES.findIndex((c) => c.id === 'reg-test-mcdonalds-corp');
     if (idx !== -1) COMPANIES.splice(idx, 1);
   }
 });

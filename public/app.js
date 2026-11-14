@@ -436,30 +436,30 @@ const WEIGHT_PROFILES = {
   balanced: {
     label: "Balanced fit",
     items: [
-      { name: "Sector", pct: 30 },
-      { name: "Stage", pct: 25 },
+      { name: "Sector", pct: 26 },
+      { name: "Stage", pct: 22 },
       { name: "Syndicate", pct: 20 },
-      { name: "Geo", pct: 15 },
-      { name: "Size", pct: 10 }
+      { name: "Momentum", pct: 18 },
+      { name: "Geo", pct: 14 }
     ]
   },
   untapped: {
     label: "Untapped whitespace",
     items: [
-      { name: "Sector", pct: 36 },
-      { name: "Stage", pct: 30 },
-      { name: "Geo", pct: 20 },
-      { name: "Size", pct: 14 }
+      { name: "Sector", pct: 32 },
+      { name: "Stage", pct: 26 },
+      { name: "Momentum", pct: 24 },
+      { name: "Geo", pct: 18 }
     ]
   },
   warm_network: {
     label: "Warmest intro",
     items: [
-      { name: "Warm bridge", pct: 35 },
-      { name: "Sector", pct: 25 },
-      { name: "Stage", pct: 20 },
-      { name: "Geo", pct: 12 },
-      { name: "Size", pct: 8 }
+      { name: "Syndicate", pct: 35 },
+      { name: "Sector", pct: 22 },
+      { name: "Stage", pct: 18 },
+      { name: "Momentum", pct: 15 },
+      { name: "Geo", pct: 10 }
     ]
   }
 };
@@ -970,7 +970,8 @@ async function runAnalysis() {
     companyIds: state.selectedCompanyIds,
     rankingMode: mapScoringModeToApi(state.scoringMode),
     statedThesisOverride: statedRaw || undefined,
-    seenCompanyNames: getSeenCompanyNamesList()
+    seenCompanyNames: getSeenCompanyNamesList(),
+    entityScope: document.getElementById("filterEntityScope")?.value || "startups"
   };
 
   const result = await fetchJson("/api/analyze", {
@@ -1283,12 +1284,18 @@ function renderStartupGrid(shortlist) {
             .replace(/^Hiring surge\s*/i, "Team ")
         : "";
 
-      let primarySignal = `${item.stage} · ${formatEur(item.lastRoundAmountEurM)}`;
-      let signalClass = "";
+      let primarySignal = item.lastRoundAmountEurM != null
+        ? `${item.stage} · ${formatEur(item.lastRoundAmountEurM)}`
+        : `${item.stage || "Registered"} · No VC round`;
+      let signalClass = item.lastRoundAmountEurM == null ? "is-untapped" : "";
 
       if (item.isLiveCalaDiscovered) {
         primarySignal = `LIVE CALA · ${item.attendingSlush2026 ? "Slush 2026" : item.hqCity || item.country} · ${item.stage}`;
         signalClass = "is-live-cala";
+      } else if (item.isRegistryDiscovered) {
+        const regNo = item.registryInfo?.registrationNumber ? ` #${item.registryInfo.registrationNumber}` : "";
+        primarySignal = `${item.registryInfo?.registryName || "Registry"}${regNo} · ${item.entityCategory === "established_corp" ? "Corp" : "Registered"}`;
+        signalClass = "is-untapped";
       } else if (state.role === "analyst") {
         if (shortTrigger) {
           primarySignal = `Cala: ${shortTrigger}`;
@@ -1402,12 +1409,14 @@ function renderAlsoScreenedSection(analysisResult) {
    ========================================================================== */
 
 function countActiveRefineFilters() {
+  const entityScope = document.getElementById("filterEntityScope")?.value || "startups";
   const stage = document.getElementById("filterStage")?.value || "all";
   const region = document.getElementById("filterRegion")?.value || "all";
   const excludeSector = document.getElementById("filterExcludeSector")?.value || "";
   const raisingSoonOnly = Boolean(document.getElementById("filterRaisingSoon")?.checked);
   const untappedOnly = Boolean(document.getElementById("filterUntappedOnly")?.checked);
   let count = 0;
+  if (entityScope !== "startups") count += 1;
   if (stage !== "all") count += 1;
   if (region !== "all") count += 1;
   if (excludeSector) count += 1;
@@ -1589,8 +1598,10 @@ function parseNaturalLanguageSearchQuery(rawQuery) {
   if (/\b(healthtech|health|medtech|clinical|diagnostics|bio)\b/i.test(q) && !/\b(exclude health|no health)\b/i.test(q)) {
     res.sectors.push("HealthTech");
   }
-  if (/\b(climate|energy|grid|clean|carbon|solar|battery)\b/i.test(q) && !/\b(exclude climate|no climate)\b/i.test(q)) {
+  if (/\b(climate|energy|clean|carbon|solar)\b/i.test(q) && !/\b(exclude climate|no climate)\b/i.test(q)) {
     res.sectors.push("Climate Tech");
+  } else if (/\b(grid|battery|storage)\b/i.test(q) && !/\b(exclude climate|no climate)\b/i.test(q)) {
+    res.sectors.push("Climate Tech", "AI & ML");
   }
   if (/\b(b2b saas|saas|automation|workflow)\b/i.test(q) && !/\b(exclude saas|no saas)\b/i.test(q)) {
     res.sectors.push("B2B SaaS");
@@ -1675,6 +1686,7 @@ async function executeSearchRefinement(customQuery) {
       : parsed.region || "all";
   const excludeSector = document.getElementById("filterExcludeSector")?.value || "";
   const raisingSoonOnly = Boolean(document.getElementById("filterRaisingSoon")?.checked) || parsed.raisingSoonOnly;
+  const entityScope = document.getElementById("filterEntityScope")?.value || "startups";
   const untappedOnly = Boolean(document.getElementById("filterUntappedOnly")?.checked) || parsed.untappedOnly;
   const filterCount = countActiveRefineFilters();
 
@@ -1694,6 +1706,7 @@ async function executeSearchRefinement(customQuery) {
       rankingMode: mapScoringModeToApi(state.scoringMode),
       statedThesisOverride: state.statedThesisOverride || undefined,
       seenCompanyNames: getSeenCompanyNamesList(),
+      entityScope,
       queryText,
       stageFilter,
       region,
@@ -1709,7 +1722,7 @@ async function executeSearchRefinement(customQuery) {
       maxEmployees: parsed.maxEmployees,
       slush2026Only: parsed.slush2026Only,
       preferWarm: parsed.preferWarm,
-      discoverLive: Boolean(queryText.trim()) && !parsed.isWhyNot
+      discoverLive: false
     })
   });
 
@@ -1740,10 +1753,14 @@ async function executeSearchRefinement(customQuery) {
       why_not: "Portfolio audit",
       general: parsed.isNaturalLanguage ? "AI Copilot" : "AI filter"
     };
+    const cpModeLabel =
+      res.controlPlaneMode === "anthropic-query-compiler"
+        ? "Anthropic Query Compiler"
+        : "Deterministic Cala Parser";
     if (intentBadge) {
       intentBadge.textContent = parsed.isNaturalLanguage
-        ? `4-Agent Copilot · ${state.DisplayedShortlist.length} matches`
-        : intentNames[res.searchIntent] || res.intentLabel || "AI Search";
+        ? `${cpModeLabel} · ${state.DisplayedShortlist.length} matches`
+        : `${intentNames[res.searchIntent] || res.intentLabel || "AI Search"} · ${cpModeLabel}`;
     }
     if (explanationEl) {
       explanationEl.textContent = parsed.isNaturalLanguage
@@ -1753,10 +1770,25 @@ async function executeSearchRefinement(customQuery) {
     if (opsEl) {
       const pipelineSteps = (res.agentPipeline || []).map((st) => `${st.step}. ${st.agent}`);
       const tags = [...parsed.constraintTags];
-      if (!tags.length && Array.isArray(res.aiTrace) && res.aiTrace.length > 0) {
-        tags.push(res.aiTrace[0]);
-      }
       const af = res.appliedFilters || {};
+      const cq = res.compiledQuery || {};
+      const minGrowth = af.minHeadcountGrowthPct ?? cq.minHeadcountGrowthPct;
+      const alumniReq = Boolean(af.alumniOnly || af.requireAlumniFounder || cq.requireAlumniFounder);
+      const expKw = (af.expandedKeywords?.length ? af.expandedKeywords : cq.expandedKeywords) || [];
+      if (minGrowth > 0 && !tags.some((t) => t.includes("growth"))) {
+        tags.push(`Headcount growth >= +${minGrowth}%`);
+      }
+      if (alumniReq && !tags.some((t) => t.toLowerCase().includes("alumni"))) {
+        tags.push("Alumni founder lineage (Cala)");
+      }
+      if (expKw.length > 0) {
+        tags.push(`Keywords: ${expKw.slice(0, 4).join(", ")}`);
+      }
+      if (Array.isArray(res.aiTrace)) {
+        res.aiTrace.forEach((tr) => {
+          if (!tags.includes(tr)) tags.push(tr);
+        });
+      }
       if (af.stageFilter && af.stageFilter !== "all" && !tags.some((t) => t.startsWith("Stage"))) {
         tags.push(`Stage: ${TARGET_STAGE_LABELS[af.stageFilter] || af.stageFilter}`);
       }
@@ -1769,7 +1801,14 @@ async function executeSearchRefinement(customQuery) {
       if (af.sectorFilter && !tags.some((t) => t.startsWith("Sector"))) {
         tags.push(`Sector: ${af.sectorFilter}`);
       }
-      opsEl.innerHTML = [...tags.slice(0, 3), ...pipelineSteps.slice(0, 4)]
+      if (res.entityScope === "all" && !tags.some((t) => t.startsWith("Scope"))) {
+        tags.push("Scope: All companies (+Registries)");
+      }
+      if (res.registryDiscovery?.triggered && res.registryDiscovery.discoveredCount > 0) {
+        const regSrc = (res.registryDiscovery.sourcesUsed || ["Official Registry"]).join(" + ");
+        tags.push(`Registries (${regSrc}): ${res.registryDiscovery.discoveredCount} filings`);
+      }
+      opsEl.innerHTML = [...tags.slice(0, 4), ...pipelineSteps.slice(0, 2)]
         .slice(0, 6)
         .map((op) => `<span class="trace-op-tag">${escapeHtml(String(op))}</span>`)
         .join("");
@@ -1801,6 +1840,8 @@ async function resetSearchAndFilters() {
   state.onlySlush2026 = false;
   const stageSel = document.getElementById("targetStageSelect");
   if (stageSel) stageSel.value = "all";
+  const filterEntityScopeEl = document.getElementById("filterEntityScope");
+  if (filterEntityScopeEl) filterEntityScopeEl.value = "startups";
   const filterStageEl = document.getElementById("filterStage");
   if (filterStageEl) filterStageEl.value = "all";
   const regionEl = document.getElementById("filterRegion");
@@ -1847,37 +1888,46 @@ function getScoreBreakdownRows(item) {
   const sb = item?.scoreBreakdown;
   if (!sb) return [];
   const coName = item?.coInvestorPath?.coInvestorName;
-  const roundAmt = formatEur(item?.lastRoundAmountEurM);
+  const syn = sb.syndicate || sb.coInvestor;
+  const mom = sb.momentum || sb.roundSize;
+  const growthStr = item?.headcountGrowthPct > 0 ? `+${item.headcountGrowthPct}% hiring velocity` : "Steady baseline";
+  const feederNote = item?.coInvestorPath?.isUpstreamFeeder
+    ? `Upstream feeder ${coName || ""} (Round N-1 -> lead)`
+    : coName
+      ? `Shared Cala rounds alongside ${coName}`
+      : "Evaluated against benchmark syndicate graph";
   return [
     {
       label: "Sector fit",
       points: Number(sb.sector?.earned || 0).toFixed(1),
-      maxPoints: sb.sector?.max || 30,
+      maxPoints: sb.sector?.max || 26,
       detail: `Cala-verified ${item?.sector || "sector"} conviction vs. fund check history`
     },
     {
-      label: "Stage timing",
+      label: "Stage & entry DNA",
       points: Number(sb.stage?.earned || 0).toFixed(1),
-      maxPoints: sb.stage?.max || 25,
+      maxPoints: sb.stage?.max || 22,
       detail: `${item?.stage || "Current stage"} cadence toward ${item?.likelyNextStage || "next"} window`
     },
     {
-      label: "Co-investor overlap",
-      points: Number(sb.coInvestor?.earned || 0).toFixed(1),
-      maxPoints: sb.coInvestor?.max || 20,
-      detail: coName ? `Shared Cala rounds alongside ${coName}` : "Evaluated against benchmark syndicate graph"
+      label: "Syndicate & feeders",
+      points: Number(syn?.earned || 0).toFixed(1),
+      maxPoints: syn?.max ?? 20,
+      detail: feederNote
+    },
+    {
+      label: "Team momentum",
+      points: Number(mom?.earned || 0).toFixed(1),
+      maxPoints: mom?.max || 18,
+      detail: item?.alumniSpinout
+        ? `Ex-${item.alumniSpinout.priorCompany} founder lineage · ${growthStr}`
+        : `${growthStr} from dated Cala headcount series`
     },
     {
       label: "Geography match",
       points: Number(sb.geography?.earned || 0).toFixed(1),
-      maxPoints: sb.geography?.max || 15,
+      maxPoints: sb.geography?.max || 14,
       detail: `${item?.hqCity || "Hub"}, ${item?.country || "EU"} domicile alignment`
-    },
-    {
-      label: "Round size fit",
-      points: Number(sb.roundSize?.earned || 0).toFixed(1),
-      maxPoints: sb.roundSize?.max || 10,
-      detail: `Last indexed check (${roundAmt}) vs. historical ticket range`
     }
   ];
 }
@@ -1920,6 +1970,7 @@ function getInvestorReliabilityMeta(candidate, brief, calaProfile) {
   const rounds = brief?.rounds || candidate.roundHistory || [];
   const latestRound = rounds[rounds.length - 1] || null;
   const sigs = brief?.arbitrageSignals || candidate.arbitrageSignals || [];
+  const dc = brief?.dataConfidence || candidate?.dataConfidence || null;
   const allSources = [];
   const seenUrls = new Set();
 
@@ -1943,6 +1994,7 @@ function getInvestorReliabilityMeta(candidate, brief, calaProfile) {
 
   const rankPriority = { FILING: 3, PRIMARY: 2, PRESS: 1, AGGREGATOR: 0 };
   const candidateRanks = [
+    dc?.topSourceRank,
     ...(latestRound?.sources || []).map((s) => s.sourceRank),
     ...sigs.map((s) => s.sourceRank),
     ...allSources.map((s) => s.sourceRank)
@@ -1962,17 +2014,18 @@ function getInvestorReliabilityMeta(candidate, brief, calaProfile) {
     topRank = "PRIMARY";
   }
 
-  let badgeLabel = "Verified Company Records";
+  const gradeText = dc?.grade || (topRank === "FILING" ? "High" : "Medium");
+  let badgeLabel = `Confidence: ${gradeText} · Verified Records`;
   let explanation =
     "Confirmed from direct company disclosures, investor announcements, and Cala AI records.";
   if (topRank === "FILING") {
-    badgeLabel = "High reliability · Official filings";
+    badgeLabel = `Confidence: ${gradeText} · Official Filings`;
     explanation =
       "Key figures come directly from official national business registries and regulatory filings indexed by Cala AI.";
-  } else if (topRank === "PRESS" || topRank === "AGGREGATOR") {
-    badgeLabel = "Public news & graph data";
+  } else if (dc?.grade === "Early / Sparse" || topRank === "PRESS" || topRank === "AGGREGATOR") {
+    badgeLabel = `Confidence: ${gradeText} · Public Records`;
     explanation =
-      "Summarized from public startup announcements and Cala AI records. Click Verify live data to check the latest filings.";
+      "Based on initial public records; some team growth or financial history is still incomplete. Click Verify live data to check Cala.";
   }
 
   const leadSrc =
@@ -1984,6 +2037,7 @@ function getInvestorReliabilityMeta(candidate, brief, calaProfile) {
 
   return {
     topRank,
+    confidenceGrade: gradeText,
     badgeLabel,
     explanation,
     sourceSummary,
@@ -2025,12 +2079,14 @@ function buildCompanyOverviewModel(candidate, brief, calaProfile, isLinkedin) {
   const roundDate = latestRound?.date ? formatReadableMonth(latestRound.date) : "";
   const fundingValue = latestRound
     ? `${latestRound.type || candidate.stage || "Round"} · ${formatEur(latestRound.amountEurM)}`
-    : candidate.stage || "Early stage";
+    : candidate.stage || (candidate.entityCategory === "established_corp" ? "Public / Mature" : "Registered (Unfunded)");
   const fundingSub = latestRound
     ? [roundDate, latestRound.leadInvestorName ? `Led by ${latestRound.leadInvestorName}` : ""]
         .filter(Boolean)
         .join(" · ") || "Recorded funding round"
-    : "No formal round amount reported";
+    : candidate.registryInfo?.registryName
+      ? `${candidate.registryInfo.registryName} #${candidate.registryInfo.registrationNumber} · No VC rounds in Cala`
+      : "No VC funding rounds indexed in Cala";
 
   const teamValue = currentHc ? `${currentHc} people` : "Early team";
   const teamSub =
@@ -2110,7 +2166,29 @@ function buildFitAccordionHtml(candidate, brief) {
   `;
 }
 
-function buildEvidenceAccordionHtml(candidate, brief, calaProfile, model) {
+function buildQuickPillsHtml(candidate, brief, calaProfile) {
+  const dc = brief?.dataConfidence || candidate?.dataConfidence;
+  const whyNow = brief?.whyNowTrigger || candidate?.whyNowTrigger;
+  const pills = [];
+  if (whyNow) {
+    pills.push(`<span class="meta-pill">${escapeHtml(whyNow)}</span>`);
+  }
+  if (dc?.grade) {
+    pills.push(`<span class="meta-pill">Confidence: ${escapeHtml(dc.grade)}</span>`);
+  }
+  if (calaProfile?.slush2026?.attending || candidate?.attendingSlush2026) {
+    pills.push(`<span class="meta-pill slush-attendee-chip">Slush 2026</span>`);
+  }
+  return pills.join("");
+}
+
+function buildEvidenceAccordionHtml(
+  candidate,
+  brief,
+  calaProfile,
+  model,
+  timeSeriesContainerId = "drawerTimeSeriesAndLeadership"
+) {
   const rel = model.reliability;
   const sourcesHtml = rel.sources.length
     ? rel.sources
@@ -2151,30 +2229,58 @@ function buildEvidenceAccordionHtml(candidate, brief, calaProfile, model) {
         .join("")
     : `<p class="note" style="margin:0">No formal funding rounds publicly indexed.</p>`;
 
-  const finMetrics = brief?.financialMetrics || candidate.financialMetrics || [];
-  const latestFin = finMetrics[finMetrics.length - 1];
-  const finHtml = latestFin
-    ? `<div class="ev-callout-box"><strong>Companies House balance sheet (${escapeHtml(String(latestFin.year || "Latest"))}):</strong> Reported cash EUR ${escapeHtml(String(latestFin.cashEurM))}M · Net assets EUR ${escapeHtml(String(latestFin.netAssetsEurM))}M.</div>`
+  const regInfo = brief?.registryInfo || candidate.registryInfo;
+  const regHtml = regInfo
+    ? `<div class="ev-callout-box" style="margin-top:6px"><strong>${escapeHtml(regInfo.registryName || "Official Registry")}${regInfo.registrationNumber ? ` #${escapeHtml(regInfo.registrationNumber)}` : ""}:</strong> Status ${escapeHtml(regInfo.status || "Active")}${regInfo.legalForm ? ` · ${escapeHtml(regInfo.legalForm)}` : ""}${regInfo.industryDescription ? ` · ${escapeHtml(regInfo.industryDescription)}` : ""}${regInfo.registryUrl ? ` <a href="${escapeHtml(regInfo.registryUrl)}" target="_blank" rel="noopener noreferrer" class="source-row-link">Filing &#8599;</a>` : ""}</div>`
     : "";
 
-  const rolesList = calaProfile?.leadershipRelationships || [];
+  const finMetrics = brief?.financialMetrics || candidate.financialMetrics || [];
+  const chNum = brief?.companiesHouseNumber || candidate.companiesHouseNumber;
+  const finHtml =
+    regHtml +
+    (finMetrics.length
+      ? finMetrics
+          .slice(-2)
+          .reverse()
+          .map(
+            (fin) =>
+              `<div class="ev-callout-box" style="margin-top:6px"><strong>UK Companies House ${chNum ? `#${escapeHtml(chNum)} ` : ""}(${escapeHtml(String(fin.year || "Latest"))}):</strong> Cash EUR ${escapeHtml(String(fin.cashEurM))}M · Net assets EUR ${escapeHtml(String(fin.netAssetsEurM))}M${fin.creditorsEurM != null ? ` · Creditors EUR ${escapeHtml(String(fin.creditorsEurM))}M` : ""}.</div>`
+          )
+          .join("")
+      : "");
+
+  const rolesList =
+    (brief?.peopleCoverage?.roles?.length ? brief.peopleCoverage.roles : candidate.peopleCoverage?.roles) ||
+    calaProfile?.leadershipRelationships ||
+    [];
   const alumni = brief?.alumniSpinout || candidate.alumniSpinout || rolesList.find((r) => r.priorCompany);
-  const leadersSummary = rolesList.length
+  const leadersHtml = rolesList.length
     ? rolesList
-        .slice(0, 3)
+        .slice(0, 4)
         .map((r) => {
           const name = r.person || r.name || "Founder";
-          const prior = r.priorCompany ? ` (previously at ${r.priorCompany})` : "";
           const role = formatLeadershipTitle(r.relation || r.role);
-          return `${name} · ${role}${prior}`;
+          const spanParts = [r.validSince ? `since ${formatReadableMonth(r.validSince) || r.validSince}` : ""];
+          if (r.validUntil && r.validUntil !== "present") {
+            spanParts.push(`until ${formatReadableMonth(r.validUntil) || r.validUntil}`);
+          }
+          const prior = r.priorCompany
+            ? ` (ex-${r.priorCompany}${r.priorValidUntil ? ` through ${r.priorValidUntil}` : ""})`
+            : "";
+          const spanText = spanParts.filter(Boolean).join(", ");
+          return `<div class="ev-detail-row"><div class="ev-detail-main"><strong>${escapeHtml(name)} · ${escapeHtml(role)}</strong><span class="note">${escapeHtml(`${prior ? prior.trim() : "Active leadership"}${spanText ? ` · ${spanText}` : ""}`)}</span></div></div>`;
         })
-        .join(" · ")
-    : `${candidate.name} founding team`;
+        .join("")
+    : `<p class="note" style="margin:0">${escapeHtml(candidate.peopleCoverage?.note || `${candidate.name} leadership lineage not yet indexed in Cala.`)}</p>`;
 
-  const obsText =
-    model.obsList.length >= 2
-      ? `${formatReadableMonth(model.obsList[0].date) || "Earlier"}: ${model.startHc} people -> Latest: ${model.currentHc} people (${model.growthPct > 0 ? `+${model.growthPct}%` : "steady"})`
-      : `Current estimated headcount: ${model.currentHc || "--"} people`;
+  const obsPts = model.obsList || [];
+  const obsTrail =
+    obsPts.length >= 2
+      ? `${model.startHc} -> ${model.currentHc} people (${model.growthPct > 0 ? `+${model.growthPct}%` : "steady"}): ${obsPts
+          .slice(-4)
+          .map((pt) => `${formatReadableMonth(pt.date) || pt.date}: ${pt.value}`)
+          .join(" -> ")}`
+      : `Historical employee growth curve not reported yet (latest estimate: ${model.currentHc || "--"} people).`;
 
   const gaps = brief?.notFoundInCala || [
     "Private annual revenue (ARR) and monthly cash burn rate are not publicly filed in Cala.",
@@ -2189,23 +2295,23 @@ function buildEvidenceAccordionHtml(candidate, brief, calaProfile, model) {
       </div>
 
       <div class="ev-subblock">
-        <h4 class="ev-subhead">Funding history &amp; financials</h4>
+        <h4 class="ev-subhead">Funding history</h4>
         <div class="ev-rows-list">${roundsHtml}</div>
-        ${finHtml}
       </div>
 
-      <div class="ev-subblock">
-        <h4 class="ev-subhead">Leadership &amp; team growth</h4>
-        <p class="ev-copy">${escapeHtml(leadersSummary)}</p>
-        ${alumni ? `<p class="ev-callout-box" style="margin-top:6px"><strong>Repeat operator signal:</strong> ${escapeHtml(`${alumni.name || alumni.person} previously worked at ${alumni.priorCompany}.`)}</p>` : ""}
-        <p class="note" style="margin:6px 0 0">${escapeHtml(obsText)}</p>
+      <div class="ev-subblock" id="${escapeHtml(timeSeriesContainerId)}">
+        <h4 class="ev-subhead">Team trajectory, founder lineage &amp; registry filings</h4>
+        <p class="ev-copy" style="margin-bottom:6px">${escapeHtml(obsTrail)}</p>
+        <div class="ev-rows-list">${leadersHtml}</div>
+        ${alumni ? `<p class="ev-callout-box" style="margin-top:6px"><strong>Repeat operator signal:</strong> ${escapeHtml(`${alumni.name || alumni.person} previously worked at ${alumni.priorCompany}${alumni.validSince ? ` (current role since ${formatReadableMonth(alumni.validSince) || alumni.validSince})` : ""}.`)}</p>` : ""}
+        ${finHtml}
       </div>
 
       <div class="ev-subblock">
         <h4 class="ev-subhead">Not available in public records</h4>
         <ul class="ev-gap-list">
           ${gaps
-            .slice(0, 3)
+            .slice(0, 4)
             .map((g) => {
               const label = typeof g === "string" ? g : `${g.field}: ${g.reason || g.status || "Not publicly reported"}`;
               return `<li>${escapeHtml(label)}</li>`;
@@ -2313,7 +2419,7 @@ function renderTalkScreen() {
         <div class="overview-summary-col">
           <div class="overview-verdict-row">
             <span class="overview-fit-label">${escapeHtml(model.fitVerdict.label)}</span>
-            ${calaProf?.slush2026?.attending ? `<span class="meta-pill slush-attendee-chip">Slush 2026</span>` : ""}
+            ${buildQuickPillsHtml(candidate, brief, calaProf)}
           </div>
           <p class="overview-oneliner">${escapeHtml(model.oneLiner)}</p>
         </div>
@@ -2408,7 +2514,7 @@ function renderTalkScreen() {
             </span>
           </button>
           <div class="info-expand-panel" id="talkExpandEvidencePanel" hidden>
-            ${buildEvidenceAccordionHtml(candidate, brief, calaProf, model)}
+            ${buildEvidenceAccordionHtml(candidate, brief, calaProf, model, "talkTimeSeriesAndLeadership")}
             <div style="margin-top:12px">
               <button type="button" class="btn sm" id="talkExportMdBtn">Export Memo (.md)</button>
             </div>
@@ -2805,9 +2911,7 @@ function renderDrawerBriefPane(brief, candidate) {
 
   const pillsEl = document.getElementById("drawerQuickPills");
   if (pillsEl) {
-    pillsEl.innerHTML = calaProfile?.slush2026?.attending
-      ? `<span class="meta-pill slush-attendee-chip">Slush 2026</span>`
-      : "";
+    pillsEl.innerHTML = buildQuickPillsHtml(candidate, brief, calaProfile);
   }
 
   const fundingValEl = document.getElementById("drawerFactFundingVal");
@@ -2847,7 +2951,13 @@ function renderDrawerBriefPane(brief, candidate) {
   const expandEvidencePanel = document.getElementById("expandEvidencePanel");
   const expandEvidenceHint = document.getElementById("expandEvidenceHint");
   if (expandEvidencePanel) {
-    expandEvidencePanel.innerHTML = buildEvidenceAccordionHtml(candidate, brief, calaProfile, model);
+    expandEvidencePanel.innerHTML = buildEvidenceAccordionHtml(
+      candidate,
+      brief,
+      calaProfile,
+      model,
+      "drawerTimeSeriesAndLeadership"
+    );
   }
   if (expandEvidenceHint) {
     const sCount = model.reliability.sources.length;
@@ -3293,32 +3403,36 @@ function renderThesisAndBacktest(result) {
   const thesisHeroEl = document.getElementById("thesisHeroKpis");
   const tt = thesis.timeTravelProfile || {};
   const feeders = thesis.upstreamFeeders || [];
+  const iqrStr =
+    tt.entryHeadcountP25 != null && tt.entryHeadcountP75 != null
+      ? `P25-P75 ${tt.entryHeadcountP25}-${tt.entryHeadcountP75}`
+      : tt.entryHeadcountBand || "early team";
   if (thesisHeroEl) {
     const hits = backtest?.hitsInTop15 ?? 3;
     const totalDeals = backtest?.totalActualDeals ?? 3;
     const hitRate = totalDeals > 0 ? Math.round((hits / totalDeals) * 100) : 100;
     thesisHeroEl.innerHTML = `
       <div class="hk-card">
-        <span class="hk-kicker">Median Entry Team</span>
+        <span class="hk-kicker">Time-Travel Entry Baseline</span>
         <b class="hk-val num-tabular">${tt.medianEntryHeadcount != null ? `${tt.medianEntryHeadcount} people` : `${thesis.dealsAnalyzedCount} deals`}</b>
-        <span class="hk-lab">~${Math.round(tt.medianEntryAgeMonths || 24)}m age · ${tt.filingVerifiedSharePct ?? 60}% filing verified</span>
+        <span class="hk-lab">${escapeHtml(iqrStr)} · ${Math.round(tt.medianEntryAgeMonths || 24)}m old · ${tt.filingVerifiedSharePct ?? 60}% filing verified</span>
       </div>
       <div class="hk-card">
         <span class="hk-kicker">Backtest Recovery</span>
         <b class="hk-val num-tabular" style="color:var(--green)">${hitRate}%</b>
-        <span class="hk-lab">${hits} of ${totalDeals} future deals in Top 15</span>
+        <span class="hk-lab">${hits}/${totalDeals} Top 15 · R@50 ${Math.round((backtest?.recallAt50 ?? 1) * 100)}% · MRR ${(backtest?.mrr ?? 0).toFixed(2)}</span>
       </div>
       <div class="hk-card">
         <span class="hk-kicker">Upstream Feeders &amp; Size</span>
         <b class="hk-val num-tabular">${formatEur(thesis.medianRoundSizeEurM)}</b>
-        <span class="hk-lab">${feeders.length} feeder funds · ${thesis.leadRatePct}% lead</span>
+        <span class="hk-lab">${feeders[0] ? `Top: ${escapeHtml(feeders[0].name)} (lift ${feeders[0].lift ?? feeders[0].fedDealsCount})` : `${thesis.leadRatePct}% lead rate`}</span>
       </div>
     `;
   }
 
   const confBadge = document.getElementById("thesisConfidenceBadge");
   if (confBadge) {
-    confBadge.textContent = `${thesis.dealsAnalyzedCount} rounds · ${tt.filingVerifiedSharePct ?? 60}% FILING/PRIMARY`;
+    confBadge.textContent = `${thesis.dealsAnalyzedCount} rounds · ${tt.filingVerifiedSharePct ?? 60}% FILING/PRIMARY verified`;
   }
 
   const driftBadge = document.getElementById("driftScoreBadge");
@@ -3367,7 +3481,7 @@ function renderThesisAndBacktest(result) {
   if (insightsEl) {
     const diffLine = (thesis.statedVsRevealed || [])[0] || thesis.driftSummary || "";
     const topFeederSummary = feeders.length
-      ? `Round N-1 feeders before follow-on entry: ${feeders.slice(0, 3).map((f) => `${f.name} (${f.fedDealsCount}x: ${f.companies.slice(0, 2).join(", ")})`).join("; ")}.`
+      ? `Top Round N-1 feeders before follow-on entry (volume-normalized lift): ${feeders.slice(0, 3).map((f) => `${f.name} (${f.fedDealsCount}x, lift ${f.lift ?? f.fedDealsCount}: ${f.companies.slice(0, 2).join(", ")})`).join("; ")}.`
       : `Direct entry at Seed/Pre-Seed (${thesis.leadRatePct}% lead rate, ${thesis.followOnRatePct}% follow-on rate across ${thesis.dealsAnalyzedCount} rounds).`;
     insightsEl.innerHTML = `
       <li>
@@ -3384,8 +3498,8 @@ function renderThesisAndBacktest(result) {
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m9 12 2 2 4-4"/></svg>
         </div>
         <div>
-          <b>Time-travel entry DNA</b>
-          Invests at a median of ${escapeHtml(String(tt.medianEntryHeadcount ?? "--"))} employees (${escapeHtml(tt.entryHeadcountBand || "early team")}), ~${escapeHtml(String(tt.medianEntryAgeMonths ?? "--"))} months after founding, with ${escapeHtml(String(tt.filingVerifiedSharePct ?? 0))}% FILING/PRIMARY provenance.
+          <b>Time-travel entry baseline</b>
+          Invests at a median of ${escapeHtml(String(tt.medianEntryHeadcount ?? "--"))} team size (${escapeHtml(iqrStr)}), ${escapeHtml(String(tt.medianEntryAgeMonths ?? "--"))} months old, ${escapeHtml(String(tt.filingVerifiedSharePct ?? 0))}% Filing/Primary verified.
         </div>
       </li>
       <li>
@@ -3393,7 +3507,7 @@ function renderThesisAndBacktest(result) {
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
         </div>
         <div>
-          <b>Upstream feeder syndicate &amp; 4-agent provenance gate</b>
+          <b>Upstream feeders &amp; provenance gate</b>
           ${escapeHtml(topFeederSummary)}
         </div>
       </li>
@@ -3404,8 +3518,10 @@ function renderThesisAndBacktest(result) {
     const totalDeals = backtest.totalActualDeals || 3;
     const hits = backtest.hitsInTop15 || 3;
     const hitRate = Math.round((hits / totalDeals) * 100);
+    const r50 = Math.round((backtest.recallAt50 ?? 1) * 100);
+    const mrrVal = (backtest.mrr ?? 0).toFixed(2);
     document.getElementById("backtestHitRate").textContent = `${hitRate}%`;
-    document.getElementById("backtestPrecision").textContent = `${hits}/${totalDeals} in Top 15`;
+    document.getElementById("backtestPrecision").textContent = `${hits}/${totalDeals} Top 15 · R@50 ${r50}% · MRR ${mrrVal}`;
     document.getElementById("backtestSummaryText").textContent = backtest.summaryText;
 
     const hitsEl = document.getElementById("backtestHitsList");
@@ -3875,6 +3991,51 @@ async function verifyThesisFundInLiveCala({ silent = false } = {}) {
     }
   } finally {
     if (btn) btn.disabled = false;
+  }
+}
+
+async function triggerRegistryDiscovery() {
+  const btn = document.getElementById("discoverRegistriesBtn");
+  const badge = document.getElementById("registryDiscoveredBadge");
+  if (btn) {
+    btn.disabled = true;
+    btn.classList.add("is-loading");
+  }
+  if (badge) badge.textContent = "Syncing";
+
+  try {
+    const q = document.getElementById("aiSearchInput")?.value?.trim() || "";
+    const parsed = parseNaturalLanguageSearchQuery(q);
+    const res = await fetchJson("/api/discover-registries", {
+      method: "POST",
+      body: JSON.stringify({
+        queryText: q || undefined,
+        country: parsed.country || undefined,
+        sectors: parsed.sectors,
+        mode: q ? "query" : "sync_recent_startups",
+        maxResults: 12
+      })
+    });
+
+    if (res.calaBudget) {
+      updateTelemetryMasthead(res.calaBudget);
+    }
+    const count = res.companies?.length || 0;
+    if (badge) badge.textContent = `${count} filings`;
+    await runAnalysis();
+    if (q || countActiveRefineFilters() > 0) {
+      await executeSearchRefinement(q);
+    }
+    const sourcesLabel = (res.sourcesUsed || []).join(" + ") || "PRH/GLEIF";
+    showUiToast(`Synced ${count} records from ${sourcesLabel} (${res.ingestedCount || 0} new; 0 Cala credits used)`);
+  } catch (err) {
+    if (badge) badge.textContent = "Retry";
+    showUiToast(`Registry sync notice: ${err.message}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.remove("is-loading");
+    }
   }
 }
 
@@ -4430,7 +4591,7 @@ function bindEvents() {
     await executeSearchRefinement(pill.dataset.query);
   });
 
-  ["filterStage", "filterRegion", "filterExcludeSector", "filterRaisingSoon", "filterUntappedOnly"].forEach(
+  ["filterEntityScope", "filterStage", "filterRegion", "filterExcludeSector", "filterRaisingSoon", "filterUntappedOnly"].forEach(
     (id) => {
       document.getElementById(id)?.addEventListener("change", () => {
         if (id === "filterStage") {
@@ -4594,6 +4755,7 @@ function bindEvents() {
   document.getElementById("verifyLiveCalaBtn")?.addEventListener("click", triggerLiveCalaVerification);
   document.getElementById("modalHeaderLiveCalaBtn")?.addEventListener("click", triggerLiveCalaVerification);
   document.getElementById("expandUniverseCalaBtn")?.addEventListener("click", triggerLiveCalaPoolExpansion);
+  document.getElementById("discoverRegistriesBtn")?.addEventListener("click", triggerRegistryDiscovery);
   document.getElementById("searchLiveCalaBtn")?.addEventListener("click", () => {
     runSearchLiveCalaLookup();
   });
@@ -4657,7 +4819,7 @@ function syncNetworkSourceButtons() {
 async function init() {
   const placeholder = document.querySelector("#aiSearchInput");
   if (placeholder && placeholder.placeholder.length > 72) {
-    placeholder.placeholder = "Ask AI or search: 'Slush 2026 DeepTech', 'Why not Oura?', company";
+    placeholder.placeholder = "Search startups or companies (e.g. McDonald's, KFC, Slush 2026)...";
   }
   applyTheme(getActiveTheme());
   const hasSavedCallList = loadPrefsFromStorage();

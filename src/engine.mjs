@@ -45,10 +45,22 @@ export function median(values) {
   return Math.round(((nums[mid - 1] + nums[mid]) / 2) * 10) / 10;
 }
 
+export function quantile(values, q) {
+  const nums = values.filter((v) => typeof v === 'number' && Number.isFinite(v)).sort((a, b) => a - b);
+  if (!nums.length) return null;
+  const clamped = Math.max(0, Math.min(1, Number(q) || 0));
+  const pos = clamped * (nums.length - 1);
+  const lo = Math.floor(pos);
+  const hi = Math.ceil(pos);
+  if (lo === hi) return Math.round(nums[lo] * 10) / 10;
+  const val = nums[lo] + (nums[hi] - nums[lo]) * (pos - lo);
+  return Math.round(val * 10) / 10;
+}
+
 export function interpolateHeadcountAtDate(company, isoDate, cutoffDate = null) {
   const rawSeries = Array.isArray(company?.employeeCountSeries) ? company.employeeCountSeries : [];
   const series = rawSeries
-    .filter((obs) => !cutoffDate || obs.date < cutoffDate)
+    .filter((obs) => !cutoffDate || obs.date <= cutoffDate)
     .sort((a, b) => a.date.localeCompare(b.date));
 
   if (!series.length) {
@@ -243,13 +255,24 @@ function analyzeStatedVsRevealed(statedText, sectorMix, geographyMix, stageMix, 
     );
   }
   if (timeTravelProfile?.medianEntryHeadcount != null) {
-    findings.push(
-      `Time-travel entry DNA: writes checks at a median of ${timeTravelProfile.medianEntryHeadcount} employees (${timeTravelProfile.entryHeadcountBand}), ~${timeTravelProfile.medianEntryAgeMonths} months post-incorporation (${timeTravelProfile.filingVerifiedSharePct}% FILING/PRIMARY verified).`
-    );
+    const earliestClaimed = /(day[- ]?zero|day[- ]?one|pre[- ]?product|first check|two founders)/i.test(text);
+    const p25 = timeTravelProfile.entryHeadcountP25;
+    const p75 = timeTravelProfile.entryHeadcountP75;
+    const iqrText = p25 != null && p75 != null ? `P25–P75 ${p25}–${p75}` : timeTravelProfile.entryHeadcountBand;
+    if (earliestClaimed && timeTravelProfile.medianEntryHeadcount >= 12) {
+      findings.push(
+        `Stated copy emphasizes day-one/pre-product entry, yet time-travel reconstruction shows checks land at a median of ${timeTravelProfile.medianEntryHeadcount} employees (${iqrText}), ~${timeTravelProfile.medianEntryAgeMonths} months post-founding.`
+      );
+    } else {
+      findings.push(
+        `Time-travel entry DNA: writes checks at a median of ${timeTravelProfile.medianEntryHeadcount} employees (${iqrText}), ~${timeTravelProfile.medianEntryAgeMonths} months post-incorporation (${timeTravelProfile.filingVerifiedSharePct}% FILING/PRIMARY verified).`
+      );
+    }
   }
   if (upstreamFeeders.length > 0) {
+    const topFeeders = upstreamFeeders.slice(0, 2);
     findings.push(
-      `Upstream feeder reliance: ${upstreamFeeders.slice(0, 2).map((f) => `${f.name} (${f.fedDealsCount}x prior round)`).join(' and ')} backed Round N-1 ahead of follow-on entry.`
+      `Upstream feeder reliance: ${topFeeders.map((f) => `${f.name} (${f.fedDealsCount}x prior round, lift ${f.lift ?? f.fedDealsCount})`).join(' and ')} backed Round N-1 ahead of follow-on entry.`
     );
   }
   if (!findings.length) {
@@ -279,6 +302,7 @@ export function computeRevealedThesis(input, options = {}) {
     }
 
     for (const company of COMPANIES) {
+      if (company.isRegistryDiscovered || company.entityCategory === 'established_corp') continue;
       if (cutoffDate && company.isLiveCalaDiscovered) continue;
       for (const round of company.rounds) {
         if (cutoffDate && round.date >= cutoffDate) continue;
@@ -423,6 +447,18 @@ export function computeRevealedThesis(input, options = {}) {
     }
   }
 
+  // Investor total deal counts (respected strictly <= cutoffDate) for normalized feeder lift
+  const investorTotalDealsMap = {};
+  for (const c of COMPANIES) {
+    if (cutoffDate && c.isLiveCalaDiscovered) continue;
+    for (const r of c.rounds || []) {
+      if (cutoffDate && r.date >= cutoffDate) continue;
+      for (const invId of r.investorIds || []) {
+        investorTotalDealsMap[invId] = (investorTotalDealsMap[invId] || 0) + 1;
+      }
+    }
+  }
+
   // Upstream "Feeder" Syndicate Graph: Round N-1 investors before target fund entered Round N
   const upstreamFeederMap = {};
   for (const compId of portfolioCompanyIds) {
@@ -462,15 +498,21 @@ export function computeRevealedThesis(input, options = {}) {
   }
 
   const upstreamFeeders = Object.values(upstreamFeederMap)
-    .map((f) => ({
-      id: f.id,
-      name: f.name,
-      fedDealsCount: f.fedDealsCount,
-      companies: [...f.companies],
-      relationshipType: f.relationshipType,
-      sourceIds: [...f.sourceIds]
-    }))
-    .sort((a, b) => b.fedDealsCount - a.fedDealsCount || a.name.localeCompare(b.name));
+    .map((f) => {
+      const totalDeals = Math.max(f.fedDealsCount, investorTotalDealsMap[f.id] || f.fedDealsCount);
+      const lift = Math.round((f.fedDealsCount / Math.sqrt(Math.max(1, totalDeals))) * 100) / 100;
+      return {
+        id: f.id,
+        name: f.name,
+        fedDealsCount: f.fedDealsCount,
+        totalDeals,
+        lift,
+        companies: [...f.companies],
+        relationshipType: f.relationshipType,
+        sourceIds: [...f.sourceIds]
+      };
+    })
+    .sort((a, b) => b.lift - a.lift || b.fedDealsCount - a.fedDealsCount || a.name.localeCompare(b.name));
 
   const sortedHc = [...entryHeadcounts].sort((a, b) => a - b);
   const lowHc = sortedHc.length ? sortedHc[Math.floor(sortedHc.length * 0.2)] : null;
@@ -484,6 +526,8 @@ export function computeRevealedThesis(input, options = {}) {
 
   const timeTravelProfile = {
     medianEntryHeadcount: median(entryHeadcounts),
+    entryHeadcountP25: quantile(entryHeadcounts, 0.25),
+    entryHeadcountP75: quantile(entryHeadcounts, 0.75),
     entryHeadcountBand,
     medianEntryAgeMonths: median(entryAgeMonthsList),
     medianPreRoundVelocityPct: median(preRoundVelocities) ?? 0,
@@ -602,13 +646,21 @@ export function computeRevealedThesis(input, options = {}) {
 }
 
 function getWeights(rankingMode) {
+  let weights;
   if (rankingMode === 'untapped') {
-    return { sector: 36, stage: 30, coInvestor: 0, geography: 20, roundSize: 14 };
+    weights = { sector: 32, stage: 26, syndicate: 0, momentum: 24, geography: 18 };
+  } else if (rankingMode === 'warmest') {
+    weights = { sector: 22, stage: 18, syndicate: 35, momentum: 15, geography: 10 };
+  } else {
+    weights = { sector: 26, stage: 22, syndicate: 20, momentum: 18, geography: 14 };
   }
-  if (rankingMode === 'warmest') {
-    return { sector: 25, stage: 20, coInvestor: 35, geography: 12, roundSize: 8 };
-  }
-  return { sector: 30, stage: 25, coInvestor: 20, geography: 15, roundSize: 10 };
+  Object.defineProperty(weights, 'coInvestor', {
+    get() {
+      return this.syndicate;
+    },
+    enumerable: false
+  });
+  return weights;
 }
 
 function buildCoInvestorPath(thesis, company, visibleRounds) {
@@ -624,7 +676,8 @@ function buildCoInvestorPath(thesis, company, visibleRounds) {
       const isLead = round.leadInvestorId === invId;
       const sharedCount = ci?.sharedRounds || 0;
       const feederCount = feeder?.fedDealsCount || 0;
-      const rankScore = sharedCount * 2 + feederCount * 2 + (isLead ? 1 : 0);
+      const feederLift = feeder?.lift || 0;
+      const rankScore = sharedCount * 2 + (feeder ? feederCount + feederLift * 3 : 0) + (isLead ? 1 : 0);
       if (!bestPath || rankScore > bestPath.rankScore) {
         const invName = ci?.name || feeder?.name || PEER_INVESTORS[invId] || invId;
         const sampleCompanies = (ci?.companies || feeder?.companies || []).slice(0, 2);
@@ -644,6 +697,7 @@ function buildCoInvestorPath(thesis, company, visibleRounds) {
           coInvestorName: invName,
           sharedCount,
           feederDealsCount: feederCount,
+          feederLift,
           isUpstreamFeeder: Boolean(feeder),
           pathwayType: feeder ? 'feeder_to_lead' : 'same_round_syndicate',
           sharedPortfolioSample: sampleCompanies,
@@ -659,11 +713,74 @@ function buildCoInvestorPath(thesis, company, visibleRounds) {
   return bestPath;
 }
 
+const SOURCE_RANK_PRIORITY = {
+  FILING: 4,
+  PRIMARY: 3,
+  PRESS: 2,
+  AGGREGATOR: 1
+};
+
+export function computeDataConfidence(company, visibleRounds = [], signals = null) {
+  const roundSources = resolveSources((visibleRounds || []).flatMap((r) => r.sourceIds || []));
+  const sigRanks = (signals?.arbitrageSignals || []).map((s) => s.sourceRank).filter(Boolean);
+  const series = signals?.visibleSeries || company?.employeeCountSeries || [];
+  const finMetrics = signals?.visibleFinMetrics || company?.financialMetrics || [];
+  const corpEvents = signals?.visibleCorpEvents || company?.corporateEvents || [];
+  const roles = company?.peopleCoverage?.roles || [];
+
+  const allRanks = [
+    ...roundSources.map((s) => s.sourceRank),
+    ...sigRanks,
+    ...series.map((p) => p.sourceRank),
+    ...finMetrics.map((m) => m.sourceRank),
+    ...corpEvents.map((ev) => ev.sourceRank),
+    ...roles.map((r) => r.sourceRank)
+  ].filter(Boolean);
+
+  let topSourceRank = 'AGGREGATOR';
+  let bestPrio = 0;
+  for (const r of allRanks) {
+    const p = SOURCE_RANK_PRIORITY[String(r).toUpperCase()] || 1;
+    if (p > bestPrio) {
+      bestPrio = p;
+      topSourceRank = String(r).toUpperCase();
+    }
+  }
+  if (!allRanks.length && company?.isLiveCalaDiscovered) {
+    topSourceRank = 'PRIMARY';
+    bestPrio = 3;
+  }
+
+  const rankPts = topSourceRank === 'FILING' ? 45 : topSourceRank === 'PRIMARY' ? 32 : topSourceRank === 'PRESS' ? 18 : 8;
+  const hasTimeSeries = series.length >= 2;
+  const seriesPts = series.length >= 3 ? 30 : series.length === 2 ? 22 : series.length === 1 ? 10 : 0;
+  const hasPeopleCoverage = Boolean(company?.peopleCoverage?.available && roles.length >= 1);
+  const peoplePts = hasPeopleCoverage ? (roles.length >= 2 ? 25 : 15) : 0;
+
+  const provenanceScore = Math.min(100, rankPts + seriesPts + peoplePts);
+  let grade = 'Early / Sparse';
+  if ((topSourceRank === 'FILING' || topSourceRank === 'PRIMARY') && provenanceScore >= 75) {
+    grade = 'High';
+  } else if (provenanceScore >= 45) {
+    grade = 'Medium';
+  }
+
+  return {
+    grade,
+    score: provenanceScore,
+    topSourceRank,
+    hasTimeSeries,
+    hasPeopleCoverage,
+    seriesPointsCount: series.length,
+    peopleRolesCount: roles.length
+  };
+}
+
 function extractCandidateSignals(company, visibleRounds, evalDate, cutoffDate = null, coInvestorPath = null) {
   const sortedRounds = [...(visibleRounds || [])].sort((a, b) => a.date.localeCompare(b.date));
   const latestRound = sortedRounds[sortedRounds.length - 1] || null;
   const visibleSeries = (company.employeeCountSeries || [])
-    .filter((pt) => !cutoffDate || pt.date < cutoffDate)
+    .filter((pt) => !cutoffDate || pt.date <= cutoffDate)
     .sort((a, b) => a.date.localeCompare(b.date));
   const visibleCorpEvents = (company.corporateEvents || [])
     .filter((ev) => !cutoffDate || ev.eventDate < cutoffDate)
@@ -777,6 +894,10 @@ function extractCandidateSignals(company, visibleRounds, evalDate, cutoffDate = 
     whyNowTrigger = `${NEXT_STAGE[latestRound.type] || 'Next'} window (${Math.round(monthsSince)}m post-${latestRound.type})`;
   } else if (latestRound) {
     whyNowTrigger = `${latestRound.type} (${latestRound.date.slice(0, 7)}) · ${headcountAtLastRound}->${currentObservedEmp} team`;
+  } else if (company.registryInfo?.registrationNumber) {
+    whyNowTrigger = `${company.registryInfo.registryName} #${company.registryInfo.registrationNumber}${company.foundingDate ? ` (${company.foundingDate.slice(0, 7)})` : ''}`;
+  } else if (company.entityCategory === 'established_corp') {
+    whyNowTrigger = 'Established / corporate entity (no VC rounds indexed)';
   }
 
   return {
@@ -863,6 +984,10 @@ export function scoreAndRankCandidates(thesis, options = {}) {
   const cutoffDate = options.cutoffDate || null;
   const evalDate = cutoffDate || thesis.evalDate || REFERENCE_DATE;
   const limit = options.limit ?? 200;
+  const entityScope = options.entityScope === 'all' ? 'all' : 'startups';
+  const includeCompanySet = new Set(
+    (options.includeCompanyNames || []).map((n) => String(n || '').trim().toLowerCase()).filter(Boolean)
+  );
   const seenSet = new Set((options.seenCompanyNames || []).map((n) => n.trim().toLowerCase()).filter(Boolean));
   const excludedIds = new Set(thesis.portfolioCompanyIds || []);
   const weights = getWeights(rankingMode);
@@ -876,72 +1001,164 @@ export function scoreAndRankCandidates(thesis, options = {}) {
   const scored = [];
 
   for (const company of COMPANIES) {
-    if (cutoffDate && company.isLiveCalaDiscovered) continue;
+    if (cutoffDate && (company.isLiveCalaDiscovered || company.isRegistryDiscovered || company.entityCategory === 'established_corp')) continue;
     if (excludedIds.has(company.id)) continue;
     if (seenSet.has(company.name.toLowerCase())) continue;
+
+    const explicitlyIncluded = includeCompanySet.has(company.name.toLowerCase());
+    if (entityScope !== 'all' && company.entityCategory === 'established_corp' && !explicitlyIncluded) continue;
 
     const visibleRounds = cutoffDate
       ? company.rounds.filter((r) => r.date < cutoffDate)
       : [...company.rounds];
-    if (!visibleRounds.length) continue;
+    const allowUnfunded =
+      !cutoffDate && (company.isRegistryDiscovered || company.entityCategory === 'established_corp' || entityScope === 'all' || explicitlyIncluded);
+    if (!visibleRounds.length && !allowUnfunded) continue;
 
     visibleRounds.sort((a, b) => a.date.localeCompare(b.date));
-    const latestRound = visibleRounds[visibleRounds.length - 1];
-    const monthsSince = monthsBetween(latestRound.date, evalDate);
+    const latestRound = visibleRounds[visibleRounds.length - 1] || null;
+    const monthsSince = latestRound ? monthsBetween(latestRound.date, evalDate) : null;
 
-    // 1. Sector score
+    // 1. Sector fit
     const exactSectorShare = sectorShareMap[company.sector] || 0;
     const adjacentMatch = (SECTOR_ADJACENCY[company.sector] || []).some((adj) => topSectorSet.has(adj));
     const sectorRatio = Math.min(1, exactSectorShare * 2.1 + (exactSectorShare === 0 && adjacentMatch ? 0.45 : 0));
     const sectorPts = Math.round(weights.sector * sectorRatio * 10) / 10;
 
-    // 2. Stage score (aligned with likely next round or current stage)
-    const likelyNextStage = NEXT_STAGE[latestRound.type] || 'Seed';
-    const currentStageShare = stageShareMap[latestRound.type] || 0;
-    const nextStageShare = stageShareMap[likelyNextStage] || 0;
-    const stageRatio = Math.min(1, Math.max(nextStageShare * 1.8, currentStageShare * 1.4));
-    const stagePts = Math.round(weights.stage * stageRatio * 10) / 10;
-
-    // 3. Co-investor link
+    // 2. Syndicate & Upstream Feeder link + Signals + Provenance
     const coInvestorPath = buildCoInvestorPath(thesis, company, visibleRounds);
     const hasAngelOnly =
-      latestRound.investorIds.length === 1 && latestRound.investorIds[0] === 'angel-syndicate';
-    let coInvestorPts = 0;
-    if (weights.coInvestor > 0 && coInvestorPath) {
-      const strength = Math.min(1, 0.55 + coInvestorPath.sharedCount * 0.15);
-      coInvestorPts = Math.round(weights.coInvestor * strength * 10) / 10;
+      Boolean(latestRound && latestRound.investorIds.length === 1 && latestRound.investorIds[0] === 'angel-syndicate');
+    const signals = extractCandidateSignals(company, visibleRounds, evalDate, cutoffDate, coInvestorPath);
+    const dataConfidence = computeDataConfidence(company, visibleRounds, signals);
+
+    // 3. Stage & Time-Travel Entry Kernel (70% next-stage/ticket fit + 30% entry kernel)
+    const likelyNextStage = latestRound
+      ? NEXT_STAGE[latestRound.type] || 'Seed'
+      : company.entityCategory === 'established_corp'
+        ? 'Public / Mature'
+        : 'Pre-Seed / Angel';
+    let stageTicketRatio = company.entityCategory === 'established_corp' ? 0.12 : 0.55;
+    if (latestRound) {
+      const currentStageShare = stageShareMap[latestRound.type] || 0;
+      const nextStageShare = stageShareMap[likelyNextStage] || 0;
+      const nextStageRatio = Math.min(1, Math.max(nextStageShare * 1.8, currentStageShare * 1.4));
+
+      let bestSizeFit = 0.5;
+      if (thesis.medianRoundSizeEurM && latestRound.amountEurM) {
+        const expectedNextSize = latestRound.amountEurM * 2.2;
+        const ratioCurrent =
+          Math.min(latestRound.amountEurM, thesis.medianRoundSizeEurM) /
+          Math.max(latestRound.amountEurM, thesis.medianRoundSizeEurM);
+        const ratioNext =
+          Math.min(expectedNextSize, thesis.medianRoundSizeEurM) /
+          Math.max(expectedNextSize, thesis.medianRoundSizeEurM);
+        bestSizeFit = Math.max(ratioCurrent, ratioNext);
+      }
+      stageTicketRatio = Math.min(1, 0.65 * nextStageRatio + 0.35 * bestSizeFit);
     }
 
-    // 4. Geography score
+    let hcKernel = 0.5;
+    const tp = thesis.timeTravelProfile || {};
+    if (tp.medianEntryHeadcount && (signals.visibleSeries.length > 0 || company.employeeCount)) {
+      const emp = signals.currentObservedEmp;
+      if (
+        tp.entryHeadcountP25 != null &&
+        tp.entryHeadcountP75 != null &&
+        emp >= tp.entryHeadcountP25 &&
+        emp <= tp.entryHeadcountP75
+      ) {
+        hcKernel = 1.0;
+      } else {
+        hcKernel = Math.max(
+          0.2,
+          Math.min(1, Math.min(emp, tp.medianEntryHeadcount) / Math.max(1, Math.max(emp, tp.medianEntryHeadcount)))
+        );
+      }
+    }
+    let ageKernel = 0.5;
+    const foundingStr = company.foundingDate || (company.foundedYear ? `${company.foundedYear}-02-15` : null);
+    if (tp.medianEntryAgeMonths && foundingStr) {
+      const companyAgeMonths = Math.max(1, monthsBetween(foundingStr, evalDate));
+      const sigma = Math.max(12, tp.medianEntryAgeMonths * 0.6);
+      ageKernel = Math.max(0.2, Math.exp(-0.5 * Math.pow((companyAgeMonths - tp.medianEntryAgeMonths) / sigma, 2)));
+    }
+    const stageRatio = Math.min(1, 0.7 * stageTicketRatio + 0.3 * (0.6 * hcKernel + 0.4 * ageKernel));
+    const stagePts = Math.round(weights.stage * stageRatio * 10) / 10;
+
+    // 4. Syndicate score (same-round co-investors + upstream feeder lift + lead bonus)
+    let syndicatePts = 0;
+    if (weights.syndicate > 0 && coInvestorPath) {
+      const baseStrength = 0.5 + Math.min(0.25, (coInvestorPath.sharedCount || 0) * 0.12);
+      const feederLiftBonus = coInvestorPath.isUpstreamFeeder
+        ? Math.min(0.25, 0.1 + (coInvestorPath.feederLift || 0) * 0.12)
+        : 0;
+      const leadBonus = coInvestorPath.startupRole === 'led' ? 0.15 : 0;
+      const strength = Math.min(1, baseStrength + feederLiftBonus + leadBonus);
+      syndicatePts = Math.round(weights.syndicate * strength * 10) / 10;
+    }
+
+    // 5. Team Momentum & Lineage (60% post-round headcount velocity + 40% temporal alumni lineage; neutral 0.50 baseline when missing)
+    let velocityRatio = 0.5;
+    if (signals.visibleSeries.length >= 2 && signals.headcountAtLastRound > 0) {
+      velocityRatio = Math.max(0.25, Math.min(1, 0.35 + signals.headcountGrowthPct / 100));
+    }
+    let alumniRatio = 0.5;
+    const peopleRoles = company.peopleCoverage?.roles || [];
+    if (signals.alumniSpinout) {
+      alumniRatio = 1.0;
+    } else if (company.peopleCoverage?.available && peopleRoles.length > 0) {
+      alumniRatio = 0.65;
+    }
+    const momentumRatio = Math.min(1, 0.6 * velocityRatio + 0.4 * alumniRatio);
+    const momentumPts = Math.round(weights.momentum * momentumRatio * 10) / 10;
+
+    // 6. Geography score
     const countryShare = countryShareMap[company.country] || 0;
     const regionShare = regionShareMap[company.region] || 0;
     const geoRatio = Math.min(1, countryShare * 2.2 + (countryShare === 0 ? regionShare * 0.75 : 0));
     const geoPts = Math.round(weights.geography * geoRatio * 10) / 10;
 
-    // 5. Round size score
-    let roundSizePts = Math.round(weights.roundSize * 0.5 * 10) / 10;
-    if (thesis.medianRoundSizeEurM && latestRound.amountEurM) {
-      const expectedNextSize = latestRound.amountEurM * 2.2;
-      const ratioCurrent = Math.min(latestRound.amountEurM, thesis.medianRoundSizeEurM) / Math.max(latestRound.amountEurM, thesis.medianRoundSizeEurM);
-      const ratioNext = Math.min(expectedNextSize, thesis.medianRoundSizeEurM) / Math.max(expectedNextSize, thesis.medianRoundSizeEurM);
-      const bestSizeFit = Math.max(ratioCurrent, ratioNext);
-      roundSizePts = Math.round(weights.roundSize * bestSizeFit * 10) / 10;
-    }
-
-    // Timing, Untapped Discovery & Agentic Arbitrage nudges (deterministic)
-    const raisingSoon = monthsSince >= 12 && monthsSince <= 24;
+    // 7. Continuous Timing Window (peaking 14-22m) & Filing/Runway Arbitrage Bonus (0..+5 pts)
+    const raisingSoon = monthsSince !== null && monthsSince >= 12 && monthsSince <= 24;
     const untappedBoost = rankingMode === 'untapped' && hasAngelOnly ? 4 : 0;
-    const signals = extractCandidateSignals(company, visibleRounds, evalDate, cutoffDate, coInvestorPath);
-    const hasFilingArbitrage = signals.visibleCorpEvents.some((ev) => ev.unannouncedFiling);
-    const agenticBoost = Math.min(
-      2,
-      (signals.headcountGrowthPct >= 40 ? 1 : 0) +
-        (coInvestorPath?.isUpstreamFeeder || hasFilingArbitrage ? 1 : 0)
+    const timingWindowPts =
+      monthsSince !== null
+        ? 2.5 * Math.exp(-0.5 * Math.pow((monthsSince - 18) / 4.5, 2))
+        : company.entityCategory === 'established_corp'
+          ? 0
+          : 0.8;
+    const hasFilingArbitrage = signals.visibleCorpEvents.some(
+      (ev) =>
+        ev.unannouncedFiling ||
+        (ev.eventType === 'FINANCING_RAISED_OR_FACILITY_ENTERED' &&
+          (ev.sourceRank === 'FILING' || SOURCES[ev.sourceId]?.sourceRank === 'FILING'))
     );
+    const latestFin = signals.visibleFinMetrics[signals.visibleFinMetrics.length - 1] || null;
+    const finArbitragePts = latestFin ? (latestFin.runwayMonthsEst <= 16 ? 1.0 : 0.5) : 0;
+    const arbitrageBonus = Math.min(
+      5,
+      Math.round((timingWindowPts + (hasFilingArbitrage ? 1.5 : 0) + finArbitragePts) * 10) / 10
+    );
+
     const totalScore = Math.min(
       99,
-      Math.round(sectorPts + stagePts + coInvestorPts + geoPts + roundSizePts + untappedBoost + agenticBoost)
+      Math.round(sectorPts + stagePts + syndicatePts + momentumPts + geoPts + untappedBoost + arbitrageBonus)
     );
+    const scoreBreakdown = {
+      sector: { earned: sectorPts, max: weights.sector },
+      stage: { earned: stagePts, max: weights.stage },
+      syndicate: { earned: syndicatePts, max: weights.syndicate },
+      momentum: { earned: momentumPts, max: weights.momentum },
+      geography: { earned: geoPts, max: weights.geography },
+      arbitrageBonus: { earned: arbitrageBonus, max: 5 }
+    };
+    Object.defineProperty(scoreBreakdown, 'coInvestor', {
+      get() {
+        return this.syndicate;
+      },
+      enumerable: false
+    });
 
     const directCompetitorOf = thesis.portfolioCompetitorGroups[company.competitorGroup] || null;
 
@@ -955,15 +1172,28 @@ export function scoreAndRankCandidates(thesis, options = {}) {
       })
       .slice(0, 2);
 
-    // Build source-grounded reasons (every sentence must carry a Cala source ID)
+    // Build source-grounded reasons (every sentence must carry a Cala or registry source ID)
     const candidateReasons = [];
-    const primarySourceIds = latestRound.sourceIds || [];
+    const primarySourceIds = latestRound
+      ? latestRound.sourceIds || []
+      : [
+          company.registryInfo?.sourceId,
+          ...(company.corporateEvents || []).map((ev) => ev.sourceId)
+        ].filter((id) => id && SOURCES[id]);
     const portfolioSourceIds = similarPortfolio.flatMap((p) => p.sourceIds || []).slice(0, 1);
 
     const sameSectorPortfolioCount = thesis.portfolioCompanies.filter((p) => p.sector === company.sector).length;
     const sameCountryPortfolioCount = thesis.portfolioCompanies.filter((p) => p.country === company.country).length;
 
-    if (sameSectorPortfolioCount > 0 || sameCountryPortfolioCount > 0) {
+    if (company.entityCategory === 'established_corp') {
+      const regText = company.registryInfo
+        ? `${company.registryInfo.registryName} #${company.registryInfo.registrationNumber}${company.registryInfo.industryDescription ? ` (${company.registryInfo.industryDescription})` : ''}`
+        : 'Cala knowledge graph';
+      candidateReasons.push({
+        text: `Established / corporate entity verified via ${regText}; no early-stage VC rounds indexed.`,
+        sourceIds: primarySourceIds
+      });
+    } else if (sameSectorPortfolioCount > 0 || sameCountryPortfolioCount > 0) {
       const parts = [];
       if (sameSectorPortfolioCount > 0) parts.push(`${company.sector} (${sameSectorPortfolioCount} portfolio deals)`);
       if (sameCountryPortfolioCount > 0) parts.push(`${company.country} (${sameCountryPortfolioCount} portfolio deals)`);
@@ -983,21 +1213,26 @@ export function scoreAndRankCandidates(thesis, options = {}) {
         text: coInvestorPath.summary,
         sourceIds: coInvestorPath.sourceIds
       });
-    } else if (hasAngelOnly) {
+    } else if (hasAngelOnly && latestRound) {
       candidateReasons.push({
         text: `Untapped institutional profile: ${latestRound.type} backed by angel syndicate (€${latestRound.amountEurM}M) with no competing VC lead yet.`,
         sourceIds: primarySourceIds
       });
     }
 
-    if (raisingSoon) {
+    if (raisingSoon && latestRound) {
       candidateReasons.push({
         text: `Likely raising ${likelyNextStage} soon: ${monthsSince} months since €${latestRound.amountEurM}M ${latestRound.type} (${latestRound.date.slice(0, 7)}).`,
         sourceIds: primarySourceIds
       });
-    } else {
+    } else if (latestRound) {
       candidateReasons.push({
         text: `Latest round was €${latestRound.amountEurM}M ${latestRound.type} on ${latestRound.date.slice(0, 7)} (${monthsSince} months ago).`,
+        sourceIds: primarySourceIds
+      });
+    } else if (company.registryInfo) {
+      candidateReasons.push({
+        text: `Official filing in ${company.registryInfo.registryName} (#${company.registryInfo.registrationNumber}, status: ${company.registryInfo.status}); VC rounds not indexed in Cala.`,
         sourceIds: primarySourceIds
       });
     }
@@ -1093,6 +1328,10 @@ export function scoreAndRankCandidates(thesis, options = {}) {
       id: company.id,
       calaEntityId: company.calaEntityId,
       isLiveCalaDiscovered: Boolean(company.isLiveCalaDiscovered),
+      isRegistryDiscovered: Boolean(company.isRegistryDiscovered),
+      entityCategory: company.entityCategory || 'startup',
+      registryInfo: company.registryInfo || null,
+      website: company.website || null,
       attendingSlush2026: Boolean(company.attendingSlush2026),
       name: company.name,
       oneLiner: company.oneLiner,
@@ -1102,7 +1341,7 @@ export function scoreAndRankCandidates(thesis, options = {}) {
       country: company.country,
       region: company.region,
       hqCity: company.hqCity,
-      foundingDate: company.foundingDate || `${company.foundedYear}-02-15`,
+      foundingDate: company.foundingDate || (company.foundedYear ? `${company.foundedYear}-02-15` : null),
       employeeCount: signals.currentObservedEmp,
       headcountAtLastRound: signals.headcountAtLastRound,
       headcountGrowthPct: signals.headcountGrowthPct,
@@ -1115,22 +1354,21 @@ export function scoreAndRankCandidates(thesis, options = {}) {
       corporateEvents: signals.visibleCorpEvents,
       domainHistory: signals.visibleDomains,
       peopleCoverage: company.peopleCoverage,
-      stage: latestRound.type,
+      dataConfidence,
+      stage: latestRound
+        ? latestRound.type
+        : company.entityCategory === 'established_corp'
+          ? 'Public / Mature'
+          : 'Registered (Unfunded)',
       likelyNextStage,
-      lastRoundDate: latestRound.date,
-      lastRoundAmountEurM: latestRound.amountEurM,
+      lastRoundDate: latestRound ? latestRound.date : null,
+      lastRoundAmountEurM: latestRound ? latestRound.amountEurM : null,
       monthsSinceLastRound: monthsSince,
       raisingSoon,
       untappedSignal: hasAngelOnly,
       directCompetitorOf,
       suitabilityScore: totalScore,
-      scoreBreakdown: {
-        sector: { earned: sectorPts, max: weights.sector },
-        stage: { earned: stagePts, max: weights.stage },
-        coInvestor: { earned: coInvestorPts, max: weights.coInvestor },
-        geography: { earned: geoPts, max: weights.geography },
-        roundSize: { earned: roundSizePts, max: weights.roundSize }
-      },
+      scoreBreakdown,
       reasons,
       coInvestorPath,
       linkedinNetwork: linkedinGraph,
@@ -1229,6 +1467,11 @@ export function runPointInTimeBacktest(fundId) {
 
   const hitsTop15 = evaluatedHidden.filter((d) => d.inTop15).length;
   const hitsTop50 = evaluatedHidden.filter((d) => d.inTop50).length;
+  const totalActual = evaluatedHidden.length;
+  const recallAt15 = totalActual > 0 ? Math.round((hitsTop15 / totalActual) * 1000) / 1000 : 0;
+  const recallAt50 = totalActual > 0 ? Math.round((hitsTop50 / totalActual) * 1000) / 1000 : 0;
+  const mrrSum = evaluatedHidden.reduce((sum, d) => sum + (d.predictedRank ? 1 / d.predictedRank : 0), 0);
+  const mrr = totalActual > 0 ? Math.round((mrrSum / totalActual) * 1000) / 1000 : 0;
 
   return {
     fundId: fund.id,
@@ -1236,12 +1479,16 @@ export function runPointInTimeBacktest(fundId) {
     cutoffDate,
     preCutoffDealsCount: preCutoffThesis.dealsAnalyzedCount,
     candidatePoolAtCutoff: backtestRun.totalCandidatesEvaluated,
-    hiddenDealsCount: evaluatedHidden.length,
+    hiddenDealsCount: totalActual,
+    totalActualDeals: totalActual,
     hitsInTop15: hitsTop15,
     hitsInTop50: hitsTop50,
+    recallAt15,
+    recallAt50,
+    mrr,
     summaryText:
-      evaluatedHidden.length > 0
-        ? `Using only deals before ${cutoffDate} (${preCutoffThesis.dealsAnalyzedCount} deals, zero post-cutoff leakage), ${hitsTop15} of ${evaluatedHidden.length} actual investments made in the last 12 months ranked in the Top 15 (${hitsTop50}/${evaluatedHidden.length} in Top 50).`
+      totalActual > 0
+        ? `Using only deals before ${cutoffDate} (${preCutoffThesis.dealsAnalyzedCount} deals, zero post-cutoff leakage), ${hitsTop15} of ${totalActual} actual investments made in the last 12 months ranked in the Top 15 (${hitsTop50}/${totalActual} in Top 50, MRR ${mrr}).`
         : `No post-cutoff (${cutoffDate}) new portfolio deals available in Cala snapshot for this fund.`,
     hiddenDeals: evaluatedHidden
   };
@@ -1258,7 +1505,11 @@ export function buildStartupBrief(startupId, fundId = null) {
   let matchContext = null;
   if (fundId && fundId !== 'custom-proxy') {
     const thesis = computeRevealedThesis({ mode: 'fund', fundId });
-    const ranked = scoreAndRankCandidates(thesis, { limit: 50 });
+    const ranked = scoreAndRankCandidates(thesis, {
+      limit: 200,
+      entityScope: 'all',
+      includeCompanyNames: [company.name]
+    });
     matchContext = ranked.allRanked.find((r) => r.id === startupId) || null;
   }
 
@@ -1281,6 +1532,7 @@ export function buildStartupBrief(startupId, fundId = null) {
     null,
     matchContext?.coInvestorPath || null
   );
+  const dataConfidence = computeDataConfidence(company, company.rounds, signals);
 
   const allSourcesMap = new Map();
   const extraSourceIds = [
@@ -1305,28 +1557,50 @@ export function buildStartupBrief(startupId, fundId = null) {
     { field: 'Personal founder-partner connections', status: 'Not found in Cala', reason: 'Personal relationships reside in LinkedIn or private CRMs (not scraped).' },
     { field: 'Customer cohort retention and net revenue churn', status: 'Not found in Cala', reason: 'Private unit economics and cohort retention metrics are not disclosed in statutory filings.' }
   ];
+  if (signals.visibleSeries.length < 2) {
+    notFoundInCala.push({
+      field: 'Historical employee growth curve',
+      status: 'Not found in Cala',
+      reason: 'Fewer than 2 dated employee_count observations are currently indexed in Cala for this company.'
+    });
+  }
+  if (!roundsWithSources.length) {
+    notFoundInCala.push({
+      field: 'VC funding rounds & valuation',
+      status: 'Not found in Cala',
+      reason: company.isRegistryDiscovered
+        ? 'Discovered via official government corporate registry; no VC funding rounds are indexed in Cala.'
+        : 'No equity venture rounds are currently indexed in Cala for this entity.'
+    });
+  }
 
   const memoLines = [
     `# Investment Brief: ${company.name}`,
-    `Cala Entity ID: ${company.calaEntityId}`,
-    `HQ: ${company.hqCity}, ${company.country} | Sector: ${company.sector} | Employees: ${company.employeeCount} | Founded: ${company.foundingDate || company.foundedYear}`,
+    `Cala Entity ID: ${company.calaEntityId || 'Not indexed in Cala (Official Registry Record)'}`,
+    ...(company.registryInfo
+      ? [`Official Registry: ${company.registryInfo.registryName} #${company.registryInfo.registrationNumber} (${company.registryInfo.status})`]
+      : []),
+    `HQ: ${company.hqCity || 'Unknown'}, ${company.country} | Sector: ${company.sector} | Employees: ${company.employeeCount ?? 'Not in Cala'} | Founded: ${company.foundingDate || company.foundedYear || 'Unknown'}`,
+    `Data Confidence: ${dataConfidence.grade} (${dataConfidence.topSourceRank})`,
     ``,
     `## Overview`,
     `${company.description}`,
     ``,
     matchContext ? `## Fit vs. ${matchContext.suitabilityScore}/100 Suitability Score` : `## Fit Context`,
-    ...(matchContext ? matchContext.reasons.map((r) => `- ${r.text} [${r.sources.map((s) => s.title).join('; ')}]`) : ['- Standalone Cala company profile']),
+    ...(matchContext ? matchContext.reasons.map((r) => `- ${r.text} [${r.sources.map((s) => s.title).join('; ')}]`) : ['- Standalone Cala/Registry company profile']),
     ``,
     `## Time-Series & Filing Arbitrage Signals`,
-    `- Why Now: ${signals.whyNowTrigger}`,
+    `- Why Now: ${signals.whyNowTrigger || 'No recent round trigger indexed'}`,
     `- Headcount Velocity: ${signals.headcountAtLastRound} -> ${signals.currentObservedEmp} employees (+${signals.headcountGrowthPct}% since latest round)`,
     ...signals.arbitrageSignals.map((sig) => `- [${sig.sourceRank}] ${sig.label}: ${sig.detail} (${sig.date})`),
     ``,
     `## Funding History (Cala Sourced)`,
-    ...roundsWithSources.map(
-      (r) =>
-        `- ${r.date} | ${r.type} | EUR ${r.amountEurM}M | Lead: ${r.leadInvestorName} | Investors: ${r.investorNames.join(', ')} | Sources: ${r.sources.map((s) => s.url).join(', ')}`
-    ),
+    ...(roundsWithSources.length
+      ? roundsWithSources.map(
+          (r) =>
+            `- ${r.date} | ${r.type} | EUR ${r.amountEurM}M | Lead: ${r.leadInvestorName} | Investors: ${r.investorNames.join(', ')} | Sources: ${r.sources.map((s) => s.url).join(', ')}`
+        )
+      : ['- No VC funding rounds indexed in Cala.']),
     ``,
     `## Explicit Coverage Gaps (Not Found in Cala)`,
     ...notFoundInCala.map((g) => `- ${g.field}: ${g.status} (${g.reason})`)
@@ -1335,6 +1609,11 @@ export function buildStartupBrief(startupId, fundId = null) {
   return {
     id: company.id,
     calaEntityId: company.calaEntityId,
+    isLiveCalaDiscovered: Boolean(company.isLiveCalaDiscovered),
+    isRegistryDiscovered: Boolean(company.isRegistryDiscovered),
+    entityCategory: company.entityCategory || 'startup',
+    registryInfo: company.registryInfo || null,
+    website: company.website || null,
     name: company.name,
     oneLiner: company.oneLiner,
     description: company.description,
@@ -1351,6 +1630,7 @@ export function buildStartupBrief(startupId, fundId = null) {
     employeeCountSeries: signals.visibleSeries,
     whyNowTrigger: signals.whyNowTrigger,
     arbitrageSignals: signals.arbitrageSignals,
+    dataConfidence,
     alumniSpinout: signals.alumniSpinout,
     companiesHouseNumber: company.companiesHouseNumber || null,
     financialMetrics: signals.visibleFinMetrics,
@@ -1509,7 +1789,7 @@ function inferCalaGeography(outRels = {}, props = {}, name = '', description = '
   return { country: 'Global / Unlisted', region: 'Other', hqCity: 'Cala Graph' };
 }
 
-function parseCalaFoundedAndHeadcount(props = {}, description = '') {
+function parseCalaFoundedAndHeadcount(props = {}, description = '', numericalObservations = []) {
   let foundingDate = String(props.founding_date?.value || '').trim();
   let foundedYear = 2023;
   if (/^\d{4}-\d{2}-\d{2}$/.test(foundingDate)) {
@@ -1523,24 +1803,32 @@ function parseCalaFoundedAndHeadcount(props = {}, description = '') {
     foundingDate = `${foundedYear}-05-15`;
   }
 
-  let employeeCount = 18;
+  const realSeries = (Array.isArray(numericalObservations) ? numericalObservations : [])
+    .filter((obs) => (obs?.metric === 'employee_count' || obs?.name === 'employee_count') && Number.isFinite(Number(obs?.value)) && obs?.date)
+    .map((obs) => ({
+      date: String(obs.date).slice(0, 10),
+      value: Math.max(1, Math.round(Number(obs.value))),
+      metric: 'employee_count',
+      sourceRank: obs.source_rank || obs.sourceRank || 'PRIMARY',
+      datePrecision: obs.date_precision || obs.datePrecision || 'day',
+      sourceId: obs.sourceId || null
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  let employeeCount = realSeries.length ? realSeries[realSeries.length - 1].value : 18;
   const empRange = props.employee_count_range?.value;
-  if (Array.isArray(empRange) && empRange.length > 0) {
-    const nums = empRange.map(Number).filter((n) => Number.isFinite(n) && n > 0);
-    if (nums.length >= 2) employeeCount = Math.round((nums[0] + nums[1]) / 2);
-    else if (nums.length === 1) employeeCount = nums[0];
-  } else if (typeof empRange === 'number' && empRange > 0) {
-    employeeCount = empRange;
+  if (!realSeries.length) {
+    if (Array.isArray(empRange) && empRange.length > 0) {
+      const nums = empRange.map(Number).filter((n) => Number.isFinite(n) && n > 0);
+      if (nums.length >= 2) employeeCount = Math.round((nums[0] + nums[1]) / 2);
+      else if (nums.length === 1) employeeCount = nums[0];
+    } else if (typeof empRange === 'number' && empRange > 0) {
+      employeeCount = empRange;
+    }
+    employeeCount = Math.max(6, Math.min(220, Math.round(employeeCount)));
   }
-  employeeCount = Math.max(6, Math.min(220, Math.round(employeeCount)));
 
-  const employeeCountSeries = [
-    { date: '2024-12-31', value: Math.max(4, Math.round(employeeCount * 0.56)), metric: 'employee_count', sourceRank: 'FILING', datePrecision: 'day' },
-    { date: '2025-11-30', value: Math.max(6, Math.round(employeeCount * 0.78)), metric: 'employee_count', sourceRank: 'FILING', datePrecision: 'day' },
-    { date: '2026-10-15', value: employeeCount, metric: 'employee_count', sourceRank: 'PRIMARY', datePrecision: 'day' }
-  ];
-
-  return { foundedYear, foundingDate, employeeCount, employeeCountSeries };
+  return { foundedYear, foundingDate, employeeCount, employeeCountSeries: realSeries };
 }
 
 function mapCalaRoundType(rawStage) {
@@ -1625,7 +1913,11 @@ export function ingestLiveCalaEntities(rawEntities = [], context = {}) {
 
     const { sector, subSectors } = inferCalaSector(outRels.OPERATES_IN_INDUSTRY, rawDescription, cleanName, context.sectorHint);
     const { country, region, hqCity } = inferCalaGeography(outRels, props, cleanName, rawDescription, isSlush);
-    const { foundedYear, foundingDate, employeeCount, employeeCountSeries } = parseCalaFoundedAndHeadcount(props, rawDescription);
+    const { foundedYear, foundingDate, employeeCount, employeeCountSeries } = parseCalaFoundedAndHeadcount(
+      props,
+      rawDescription,
+      item.numerical_observations
+    );
 
     const existing = COMPANIES.find((c) => c.calaEntityId === entityId || c.name.toLowerCase() === cleanName.toLowerCase());
     const issuerRoundsRaw = (outRels.PARTICIPATES_IN_FUNDING_ROUND || []).filter(
@@ -1647,7 +1939,8 @@ export function ingestLiveCalaEntities(rawEntities = [], context = {}) {
         /\b(?:publicly[- ]traded|nasdaq|nyse|stock exchange|subsidiary of|division of|merger of|largest suppliers|fortune 500|founded in 19\d\d|founded in 200\d|founded in 201[0-4])\b/i.test(
           rawDescription
         ));
-    if (isLegacyOrPublicCorp) continue;
+    if (isLegacyOrPublicCorp && !context.allowGeneralCompanies) continue;
+    const entityCategory = isLegacyOrPublicCorp ? 'established_corp' : 'startup';
 
     const idSlug = cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 'entity';
     const srcSlug = entityId.replace(/[^a-z0-9]/gi, '').slice(0, 12);
@@ -1699,30 +1992,53 @@ export function ingestLiveCalaEntities(rawEntities = [], context = {}) {
             sourceIds: [srcId]
           };
         })
-      : [
-          {
-            id: `rnd-live-${srcSlug}-1`,
-            calaRoundId: `cala_rnd_${srcSlug}_1`,
-            type: defaultStage,
-            date: `${Math.max(foundedYear + 1, 2025)}-04-15`,
-            amountEurM: defaultAmount,
-            valuationEurM: null,
-            leadInvestorId: mappedInvestors[0],
-            investorIds: mappedInvestors,
-            sourceIds: [srcId]
-          }
-        ];
+      : isLegacyOrPublicCorp
+        ? []
+        : [
+            {
+              id: `rnd-live-${srcSlug}-1`,
+              calaRoundId: `cala_rnd_${srcSlug}_1`,
+              type: defaultStage,
+              date: `${Math.max(foundedYear + 1, 2025)}-04-15`,
+              amountEurM: defaultAmount,
+              valuationEurM: null,
+              leadInvestorId: mappedInvestors[0],
+              investorIds: mappedInvestors,
+              sourceIds: [srcId]
+            }
+          ];
 
     const leaderRels = [
-      ...(inRels.FOUNDED || []).map((p) => ({ relation: 'FOUNDED', name: p.name, role: 'Founder', validSince: p.properties?.valid_since || foundingDate })),
-      ...(inRels.IS_CEO_OF || []).map((p) => ({ relation: 'IS_CEO_OF', name: p.name, role: 'Chief Executive Officer', validSince: p.properties?.valid_since || foundingDate })),
-      ...(inRels.IS_CTO_OF || []).map((p) => ({ relation: 'IS_CTO_OF', name: p.name, role: 'Chief Technology Officer', validSince: p.properties?.valid_since || foundingDate }))
+      ...(inRels.FOUNDED || []).map((p) => ({
+        relation: 'FOUNDED',
+        name: p.name,
+        role: 'Founder',
+        validSince: p.properties?.valid_since || foundingDate,
+        priorCompany: p.properties?.prior_company || null,
+        priorRole: p.properties?.prior_role || null,
+        priorValidUntil: p.properties?.prior_valid_until || null
+      })),
+      ...(inRels.IS_CEO_OF || []).map((p) => ({
+        relation: 'IS_CEO_OF',
+        name: p.name,
+        role: 'Chief Executive Officer',
+        validSince: p.properties?.valid_since || foundingDate,
+        priorCompany: p.properties?.prior_company || null,
+        priorRole: p.properties?.prior_role || null,
+        priorValidUntil: p.properties?.prior_valid_until || null
+      })),
+      ...(inRels.IS_CTO_OF || []).map((p) => ({
+        relation: 'IS_CTO_OF',
+        name: p.name,
+        role: 'Chief Technology Officer',
+        validSince: p.properties?.valid_since || foundingDate,
+        priorCompany: p.properties?.prior_company || null,
+        priorRole: p.properties?.prior_role || null,
+        priorValidUntil: p.properties?.prior_valid_until || null
+      }))
     ].filter((r) => Boolean(r.name));
 
-    const roles = (leaderRels.length > 0
-      ? leaderRels
-      : [{ relation: 'FOUNDED', name: `${cleanName} Founding Team`, role: 'Founder', validSince: foundingDate }]
-    ).map((r) => ({
+    const roles = leaderRels.map((r) => ({
       relation: r.relation,
       name: r.name,
       role: r.role,
@@ -1730,9 +2046,9 @@ export function ingestLiveCalaEntities(rawEntities = [], context = {}) {
       endDate: null,
       validSince: r.validSince,
       validUntil: null,
-      priorCompany: null,
-      priorRole: null,
-      priorValidUntil: null,
+      priorCompany: r.priorCompany || null,
+      priorRole: r.priorRole || null,
+      priorValidUntil: r.priorValidUntil || null,
       sourceRank: 'PRIMARY',
       sourceId: srcId
     }));
@@ -1757,8 +2073,10 @@ export function ingestLiveCalaEntities(rawEntities = [], context = {}) {
         existing.employeeCountSeries = employeeCountSeries;
         existing.domainHistory = domainHistory;
         existing.peopleCoverage = {
-          available: true,
-          note: 'Retrieved live from Cala AI knowledge graph.',
+          available: roles.length > 0,
+          note: roles.length > 0
+            ? 'Retrieved live from Cala AI knowledge graph.'
+            : 'Leadership lineage not yet indexed in Cala for this entity.',
           roles
         };
         if (issuerRoundsRaw.length > 0) existing.rounds = rounds;
@@ -1771,6 +2089,7 @@ export function ingestLiveCalaEntities(rawEntities = [], context = {}) {
       id: `cala-live-${idSlug}-${entityId.slice(0, 6)}`,
       calaEntityId: entityId,
       isLiveCalaDiscovered: true,
+      entityCategory,
       attendingSlush2026: isSlush,
       name: cleanName,
       oneLiner,
@@ -1786,11 +2105,24 @@ export function ingestLiveCalaEntities(rawEntities = [], context = {}) {
       employeeCount,
       employeeCountSeries,
       financialMetrics: [],
-      corporateEvents: [],
+      corporateEvents: [
+        {
+          id: `ev-cala-${idSlug}-${entityId.slice(0, 6)}`,
+          name: 'Cala Knowledge Graph Record',
+          summary: `${cleanName} indexed via Cala (${eType}).`,
+          eventType: 'CALA_INDEX_RECORD',
+          eventDate: foundingDate,
+          sourceRank: 'PRIMARY',
+          sourceId: srcId,
+          unannouncedFiling: false
+        }
+      ],
       domainHistory,
       peopleCoverage: {
-        available: true,
-        note: 'Discovered live from Cala AI knowledge graph.',
+        available: roles.length > 0,
+        note: roles.length > 0
+          ? 'Discovered live from Cala AI knowledge graph.'
+          : 'Leadership lineage not yet indexed in Cala for this entity.',
         roles
       },
       rounds
@@ -1802,14 +2134,138 @@ export function ingestLiveCalaEntities(rawEntities = [], context = {}) {
   return { ingestedCount: ingested.length, enrichedCount: enriched.length, companies: [...ingested, ...enriched] };
 }
 
+/**
+ * Ingests normalized entities from official government corporate registries (PRH/YTJ, GLEIF LEI, UK Companies House)
+ * into COMPANIES + SOURCES without creating synthetic VC funding rounds or distorting backtests.
+ */
+export function ingestRegistryEntities(normalizedRecords = []) {
+  const ingested = [];
+  const enriched = [];
+
+  for (const item of normalizedRecords || []) {
+    if (!item || !item.id || !item.name || !item.source?.id) continue;
+
+    if (!SOURCES[item.source.id]) {
+      SOURCES[item.source.id] = { ...item.source };
+    }
+
+    const cleanLower = item.name.trim().toLowerCase();
+    const regNo = item.registryInfo?.registrationNumber ? String(item.registryInfo.registrationNumber).trim() : null;
+    const chNo = item.companiesHouseNumber ? String(item.companiesHouseNumber).trim() : null;
+
+    const existing = COMPANIES.find(
+      (c) =>
+        (chNo && c.companiesHouseNumber === chNo) ||
+        (regNo && c.registryInfo?.registrationNumber === regNo) ||
+        c.name.trim().toLowerCase() === cleanLower
+    );
+
+    const regEvent = {
+      id: `ev-reg-${item.id}`,
+      name: `${item.registryInfo?.registryName || 'Official Registry'} Filing`,
+      summary: `Active official entity #${regNo || 'N/A'}${item.registryInfo?.industryCode ? ` (${item.registryInfo.industryCode})` : ''}.`,
+      eventType: 'OFFICIAL_REGISTRY_RECORD',
+      eventDate: item.foundingDate || item.source.date,
+      sourceRank: 'FILING',
+      sourceId: item.source.id,
+      unannouncedFiling: false
+    };
+
+    if (existing) {
+      let updated = false;
+      if (!existing.registryInfo && item.registryInfo) {
+        existing.registryInfo = { ...item.registryInfo, sourceId: item.source.id };
+        updated = true;
+      }
+      if (chNo && !existing.companiesHouseNumber) {
+        existing.companiesHouseNumber = chNo;
+        updated = true;
+      }
+      if (!existing.website && item.website) {
+        existing.website = item.website;
+        updated = true;
+      }
+      existing.corporateEvents = existing.corporateEvents || [];
+      if (!existing.corporateEvents.some((ev) => ev.id === regEvent.id)) {
+        existing.corporateEvents.push(regEvent);
+        updated = true;
+      }
+      if (updated) enriched.push(existing);
+      continue;
+    }
+
+    const domainHost = item.website
+      ? String(item.website).replace(/^https?:\/\//i, '').split('/')[0]
+      : null;
+
+    const record = {
+      id: item.id,
+      calaEntityId: null,
+      isLiveCalaDiscovered: false,
+      isRegistryDiscovered: true,
+      entityCategory: item.entityCategory === 'established_corp' ? 'established_corp' : 'startup',
+      attendingSlush2026: false,
+      name: item.name,
+      oneLiner: item.oneLiner,
+      description: item.description,
+      sector: item.sector,
+      subSectors: item.subSectors || [item.sector],
+      competitorGroup: item.id,
+      country: item.country,
+      region: item.region,
+      hqCity: item.hqCity,
+      foundedYear: item.foundedYear || null,
+      foundingDate: item.foundingDate || null,
+      employeeCount: null,
+      employeeCountSeries: [],
+      companiesHouseNumber: chNo,
+      website: item.website || null,
+      registryInfo: {
+        ...(item.registryInfo || {}),
+        sourceId: item.source.id
+      },
+      financialMetrics: [],
+      corporateEvents: [regEvent],
+      domainHistory: domainHost
+        ? [{ domain: domainHost, status: 'ACTIVE', validSince: item.foundingDate || item.source.date, validUntil: null, sourceRank: 'PRIMARY' }]
+        : [],
+      peopleCoverage: {
+        available: false,
+        note: 'Official corporate registry record. Founder/executive lineage and VC rounds are not yet indexed in Cala.',
+        roles: []
+      },
+      rounds: []
+    };
+    COMPANIES.push(record);
+    ingested.push(record);
+  }
+
+  return { ingestedCount: ingested.length, enrichedCount: enriched.length, companies: [...ingested, ...enriched] };
+}
+
+function normalizeLookupName(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/['’`]/g, '')
+    .replace(/[.,()-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function buildCandidateHaystack(item) {
   return [
     item.name,
+    normalizeLookupName(item.name),
     item.hqCity,
     item.country,
     item.region,
     item.sector,
     item.stage,
+    item.entityCategory,
+    item.website,
+    item.registryInfo?.registryName,
+    item.registryInfo?.registrationNumber,
+    item.registryInfo?.industryDescription,
     item.oneLiner,
     item.description,
     item.whyNowTrigger,
@@ -1827,10 +2283,19 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
   const query = rawQuery.toLowerCase();
   const requestedSectors = Array.isArray(refinement.sectors) ? refinement.sectors.filter(Boolean) : [];
   const requestedCountries = Array.isArray(refinement.countries) ? refinement.countries.map((c) => c.toLowerCase()).filter(Boolean) : [];
+  const expandedKeywords = Array.isArray(refinement.expandedKeywords)
+    ? [...new Set(refinement.expandedKeywords.map((k) => String(k || '').toLowerCase().trim()).filter((k) => k.length >= 2))]
+    : [];
   const maxEmployees = Number.isFinite(Number(refinement.maxEmployees)) && refinement.maxEmployees !== null
     ? Number(refinement.maxEmployees)
     : null;
-  const slush2026Only = Boolean(refinement.slush2026Only);
+  const minHeadcountGrowthPct =
+    refinement.minHeadcountGrowthPct !== null &&
+    refinement.minHeadcountGrowthPct !== undefined &&
+    Number.isFinite(Number(refinement.minHeadcountGrowthPct))
+      ? Math.max(0, Number(refinement.minHeadcountGrowthPct))
+      : null;
+  const slush2026Only = Boolean(refinement.slush2026Only || refinement.slushOnly);
   const preferWarm = Boolean(refinement.preferWarm);
 
   let regionFilter = refinement.region || 'all';
@@ -1841,17 +2306,64 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
   let highVelocityOnly = Boolean(refinement.highVelocityOnly);
   let feederOnly = Boolean(refinement.feederOnly);
   let filingOnly = Boolean(refinement.filingOnly);
-  let alumniOnly = Boolean(refinement.alumniOnly);
+  let alumniOnly = Boolean(refinement.alumniOnly || refinement.requireAlumniFounder);
   let sectorFilter = null;
   let investorFilter = null;
   let companyMatchName = null;
   let freeTextQuery = null;
-  let searchIntent = 'general';
+  let searchIntent = refinement.intent && ['general', 'company', 'investor', 'industry', 'why_not'].includes(refinement.intent)
+    ? refinement.intent
+    : 'general';
   let explanation = null;
   const aiTrace = [];
 
-  if (query) {
-    let matchedStructured = false;
+  if (minHeadcountGrowthPct !== null && minHeadcountGrowthPct > 0) {
+    aiTrace.push(`Filter: Headcount growth >= +${minHeadcountGrowthPct}%`);
+  }
+  if (refinement.requireAlumniFounder && !alumniOnly) {
+    alumniOnly = true;
+  }
+  if (alumniOnly) {
+    aiTrace.push('Filter: Temporal FOUNDED / valid_until scaleup alumni spinout');
+  }
+  if (expandedKeywords.length > 0) {
+    aiTrace.push(`Expanded keywords: ${expandedKeywords.join(', ')}`);
+  }
+
+  if (refinement.investorQuery) {
+    const invQ = String(refinement.investorQuery).toLowerCase();
+    const matchedEntry = Object.entries(PEER_INVESTORS).find(
+      ([id, name]) => invQ.includes(name.toLowerCase()) || name.toLowerCase().includes(invQ) || (id !== 'angel-syndicate' && invQ.includes(id.replace('-', ' ')))
+    );
+    if (matchedEntry) {
+      searchIntent = 'investor';
+      investorFilter = matchedEntry[1];
+    }
+  }
+  if (refinement.companyQuery) {
+    const compQNorm = normalizeLookupName(refinement.companyQuery);
+    const matchedComp = COMPANIES.find((c) => {
+      const cNorm = normalizeLookupName(c.name);
+      return cNorm.includes(compQNorm) || compQNorm.includes(cNorm);
+    });
+    searchIntent = 'company';
+    companyMatchName = matchedComp ? matchedComp.name : refinement.companyQuery;
+    if (matchedComp && !requestedSectors.length) sectorFilter = matchedComp.sector;
+  }
+
+  const explicitWhyName = refinement.whyNotCompany ? String(refinement.whyNotCompany).trim() : null;
+
+  if (query || explicitWhyName) {
+    let matchedStructured = Boolean(
+      requestedSectors.length ||
+      requestedCountries.length ||
+      minHeadcountGrowthPct !== null ||
+      alumniOnly ||
+      slush2026Only ||
+      raisingSoonOnly ||
+      untappedOnly ||
+      expandedKeywords.length
+    );
     if (query.includes('nordic')) {
       regionFilter = 'Nordics';
       matchedStructured = true;
@@ -1903,14 +2415,16 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
     if (/(alumni founder|spinout|operator lineage|ex-iceye|ex-aiven|ex-iqm|ex-oura|ex-silo)/i.test(query)) {
       alumniOnly = true;
       matchedStructured = true;
-      aiTrace.push('Filter: Temporal FOUNDED / valid_until scaleup alumni spinout');
+      if (!aiTrace.some((t) => t.includes('alumni spinout'))) {
+        aiTrace.push('Filter: Temporal FOUNDED / valid_until scaleup alumni spinout');
+      }
     }
 
     const whyMatch = query.match(/why not\s+([a-z0-9\s.-]+)/i);
-    if (whyMatch) {
+    if (whyMatch || explicitWhyName) {
       searchIntent = 'why_not';
-      const targetName = whyMatch[1].replace(/\?+$/, '').trim();
-      const company = COMPANIES.find((c) => c.name.toLowerCase().includes(targetName));
+      const targetName = (explicitWhyName || whyMatch[1]).replace(/\?+$/, '').trim();
+      const company = COMPANIES.find((c) => c.name.toLowerCase().includes(targetName.toLowerCase()));
       if (!company) {
         explanation = `Company "${targetName}" was not found in the indexed European Cala universe.`;
       } else if (thesis.portfolioCompanyIds.includes(company.id)) {
@@ -1921,7 +2435,9 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
           explanation = `${company.name} had no indexed funding rounds matching the evaluation window.`;
         } else {
           const item = allRanked[idx];
-          explanation = `${company.name} ranks #${idx + 1} overall with ${item.suitabilityScore}/100 (Sector ${item.scoreBreakdown.sector.earned}/${item.scoreBreakdown.sector.max}, Stage ${item.scoreBreakdown.stage.earned}/${item.scoreBreakdown.stage.max}, Co-investor ${item.scoreBreakdown.coInvestor.earned}/${item.scoreBreakdown.coInvestor.max}, Geo ${item.scoreBreakdown.geography.earned}/${item.scoreBreakdown.geography.max}).`;
+          const synEarned = item.scoreBreakdown.syndicate?.earned ?? item.scoreBreakdown.coInvestor?.earned ?? 0;
+          const synMax = item.scoreBreakdown.syndicate?.max ?? item.scoreBreakdown.coInvestor?.max ?? 20;
+          explanation = `${company.name} ranks #${idx + 1} overall with ${item.suitabilityScore}/100 (Sector ${item.scoreBreakdown.sector.earned}/${item.scoreBreakdown.sector.max}, Stage ${item.scoreBreakdown.stage.earned}/${item.scoreBreakdown.stage.max}, Syndicate ${synEarned}/${synMax}, Geo ${item.scoreBreakdown.geography.earned}/${item.scoreBreakdown.geography.max}).`;
         }
       }
       aiTrace.push(`Intent: Portfolio exclusion audit for "${targetName}"`);
@@ -1971,19 +2487,22 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
         aiTrace.push(`Intent: Multi-sector filter (${requestedSectors.join(', ')})`);
       }
 
-      // Check Company archetype (explicit "Company:" or matching company name)
+      // Check Company archetype (explicit "Company:" or matching company name, ignoring "ex-<Company>" alumni mentions)
       const cleanedCompanyQuery = query.replace(/^company:\s*/i, '').replace(/^similar to\s+/i, '').trim();
-      const matchedComp = COMPANIES.find(
-        (c) =>
-          cleanedCompanyQuery.length >= 3 &&
-          (cleanedCompanyQuery.includes(c.name.toLowerCase()) || c.name.toLowerCase().includes(cleanedCompanyQuery))
-      );
-      if (query.startsWith('company:') || query.startsWith('similar to') || matchedComp) {
+      const cleanedCompanyNorm = normalizeLookupName(cleanedCompanyQuery);
+      const matchedComp = COMPANIES.find((c) => {
+        if (cleanedCompanyNorm.length < 2) return false;
+        const escaped = c.name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        if (new RegExp(`(?:ex-|former\\s+)${escaped}`, 'i').test(query)) return false;
+        const cNorm = normalizeLookupName(c.name);
+        return cNorm.includes(cleanedCompanyNorm) || (cNorm.length >= 3 && cleanedCompanyNorm.includes(cNorm));
+      });
+      if (query.startsWith('company:') || query.startsWith('similar to') || (matchedComp && !alumniOnly)) {
         searchIntent = 'company';
         companyMatchName = matchedComp ? matchedComp.name : cleanedCompanyQuery;
         if (matchedComp) {
           sectorFilter = matchedComp.sector;
-          aiTrace.push(`Intent: Company & sector-analog lookup (${matchedComp.name} in ${matchedComp.sector})`);
+          aiTrace.push(`Intent: Company & entity lookup (${matchedComp.name}${matchedComp.entityCategory === 'established_corp' ? ', corporate registry' : ` in ${matchedComp.sector}`})`);
         } else {
           aiTrace.push(`Intent: Company keyword search ("${cleanedCompanyQuery}")`);
         }
@@ -1999,13 +2518,26 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
     }
   }
 
+  const effectiveEntityScope = refinement.entityScope === 'all' ? 'all' : 'startups';
+  const targetCompanyNorm = companyMatchName ? normalizeLookupName(companyMatchName) : '';
+  const hasEstablishedCompanyMatch = Boolean(
+    targetCompanyNorm &&
+      allRanked.some(
+        (it) =>
+          normalizeLookupName(it.name).includes(targetCompanyNorm) &&
+          (it.entityCategory === 'established_corp' || it.isRegistryDiscovered)
+      )
+  );
+
   let filtered = allRanked.filter((item) => {
+    if (effectiveEntityScope !== 'all' && item.entityCategory === 'established_corp' && !hasEstablishedCompanyMatch) return false;
     if (regionFilter !== 'all' && item.region !== regionFilter) return false;
     if (!matchesStageGroup(item.stage, stageFilter)) return false;
     if (excludeSector !== 'none' && item.sector === excludeSector) return false;
     if (raisingSoonOnly && !item.raisingSoon) return false;
     if (untappedOnly && !item.untappedSignal) return false;
     if (highVelocityOnly && (item.headcountGrowthPct || 0) < 30) return false;
+    if (minHeadcountGrowthPct !== null && (item.headcountGrowthPct || 0) < minHeadcountGrowthPct) return false;
     if (feederOnly && !item.coInvestorPath?.isUpstreamFeeder) return false;
     if (filingOnly && !(item.arbitrageSignals || []).some((s) => s.sourceRank === 'FILING')) return false;
     if (alumniOnly && !item.alumniSpinout) return false;
@@ -2016,6 +2548,10 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
       const locHay = `${item.country || ''} ${item.hqCity || ''}`.toLowerCase();
       if (!requestedCountries.some((c) => locHay.includes(c))) return false;
     }
+    if (expandedKeywords.length > 0 && searchIntent !== 'company') {
+      const hay = buildCandidateHaystack(item);
+      if (!expandedKeywords.some((kw) => hay.includes(kw))) return false;
+    }
     if (investorFilter) {
       const hasInv =
         item.coInvestorPath?.coInvestorName === investorFilter ||
@@ -2023,8 +2559,10 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
       if (!hasInv) return false;
     }
     if (searchIntent === 'company' && companyMatchName) {
-      const exactMatch = item.name.toLowerCase().includes(companyMatchName.toLowerCase());
-      const sameSectorMatch = sectorFilter && item.sector === sectorFilter;
+      const itemNorm = normalizeLookupName(item.name);
+      const exactMatch = itemNorm.includes(targetCompanyNorm) || (refinement.companyQuery && itemNorm.includes(normalizeLookupName(refinement.companyQuery)));
+      const sameSectorMatch =
+        !hasEstablishedCompanyMatch && effectiveEntityScope !== 'all' && sectorFilter && item.sector === sectorFilter;
       if (!exactMatch && !sameSectorMatch) return false;
     } else if (sectorFilter && requestedSectors.length === 0) {
       const textMatch =
@@ -2033,16 +2571,24 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
         item.description.toLowerCase().includes(sectorFilter.toLowerCase().split(' ')[0]);
       if (!textMatch) return false;
     } else if (freeTextQuery) {
-      if (!buildCandidateHaystack(item).includes(freeTextQuery)) return false;
+      const hay = buildCandidateHaystack(item);
+      const freeNorm = normalizeLookupName(freeTextQuery);
+      if (!hay.includes(freeTextQuery) && (!freeNorm || !hay.includes(freeNorm))) return false;
     }
     return true;
   });
 
   // Soft-match recovery so combined constraints or novel terms never overlook startups
-  if (filtered.length === 0 && rawQuery && searchIntent !== 'why_not') {
-    const queryTokens = query
-      .split(/[^a-z0-9]+/)
-      .filter((t) => t.length >= 3 && !['the', 'and', 'for', 'with', 'find', 'show', 'under', 'startups', 'startup', 'raising', 'soon'].includes(t));
+  const exactMatchesBeforeFallback = filtered.length;
+  let usedSoftFallback = false;
+  if (filtered.length === 0 && (rawQuery || expandedKeywords.length > 0) && searchIntent !== 'why_not') {
+    usedSoftFallback = true;
+    const queryTokens = [
+      ...expandedKeywords,
+      ...query
+        .split(/[^a-z0-9]+/)
+        .filter((t) => t.length >= 3 && !['the', 'and', 'for', 'with', 'find', 'show', 'under', 'startups', 'startup', 'raising', 'soon'].includes(t))
+    ];
 
     const scoredFallback = allRanked
       .filter((item) => excludeSector === 'none' || item.sector !== excludeSector)
@@ -2056,6 +2602,7 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
         if (regionFilter !== 'all' && item.region === regionFilter) hits += 1;
         if (requestedCountries.some((c) => `${item.country} ${item.hqCity}`.toLowerCase().includes(c))) hits += 2;
         if (slush2026Only && item.attendingSlush2026) hits += 1;
+        if (alumniOnly && item.alumniSpinout) hits += 2;
         return { item, softScore: hits * 15 + (item.suitabilityScore || 0) * 0.25 };
       })
       .sort((a, b) => b.softScore - a.softScore);
@@ -2071,13 +2618,21 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
       const bHit = b.name.toLowerCase().includes(companyMatchName.toLowerCase()) ? 1 : 0;
       return bHit - aHit || b.suitabilityScore - a.suitabilityScore;
     });
+  } else if (expandedKeywords.length > 0) {
+    filtered.sort((a, b) => {
+      const hayA = buildCandidateHaystack(a);
+      const hayB = buildCandidateHaystack(b);
+      const hitsA = expandedKeywords.filter((k) => hayA.includes(k)).length;
+      const hitsB = expandedKeywords.filter((k) => hayB.includes(k)).length;
+      return hitsB - hitsA || (b.suitabilityScore || 0) - (a.suitabilityScore || 0);
+    });
   } else if (preferWarm) {
     filtered.sort((a, b) => {
       const aw = a.linkedinNetwork ? 1 : 0;
       const bw = b.linkedinNetwork ? 1 : 0;
       return bw - aw || (b.suitabilityScore || 0) - (a.suitabilityScore || 0);
     });
-  } else if (highVelocityOnly) {
+  } else if (highVelocityOnly || minHeadcountGrowthPct !== null) {
     filtered.sort((a, b) => (b.headcountGrowthPct || 0) - (a.headcountGrowthPct || 0) || b.suitabilityScore - a.suitabilityScore);
   }
 
@@ -2097,24 +2652,31 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
     aiTrace,
     agentPipeline,
     appliedFilters: {
+      entityScope: effectiveEntityScope,
       region: regionFilter,
       stageFilter,
       excludeSector,
       raisingSoonOnly,
       untappedOnly,
       highVelocityOnly,
+      minHeadcountGrowthPct,
       feederOnly,
       filingOnly,
       alumniOnly,
+      requireAlumniFounder: alumniOnly,
       sectors: requestedSectors,
       countries: requestedCountries,
       maxEmployees,
       slush2026Only,
+      slushOnly: slush2026Only,
+      expandedKeywords,
       sectorFilter,
       investorFilter,
       queryText: rawQuery
     },
     explanation,
+    usedSoftFallback,
+    exactMatchesBeforeFallback,
     totalMatches: filtered.length,
     shortlist: filtered.slice(0, refinement.limit ?? 200)
   };
@@ -2125,20 +2687,41 @@ export function runFullAnalysis(input, options = {}) {
   const ranking = scoreAndRankCandidates(thesis, {
     rankingMode: options.rankingMode || 'balanced',
     seenCompanyNames: options.seenCompanyNames || [],
+    entityScope: options.entityScope || input?.entityScope || 'startups',
+    includeCompanyNames: options.includeCompanyNames || input?.includeCompanyNames || [],
     limit: options.limit ?? 200
   });
   const backtest = thesis.mode === 'fund' ? runPointInTimeBacktest(thesis.fundId) : null;
   const agentPipeline = buildAgentPipeline(thesis, ranking.shortlist);
 
   const uniqueSourceIds = new Set();
+  const confidenceCounts = { high: 0, medium: 0, sparse: 0 };
   for (const item of ranking.shortlist) {
     for (const r of item.reasons) {
       for (const sId of r.sourceIds) uniqueSourceIds.add(sId);
     }
+    const g = item.dataConfidence?.grade;
+    if (g === 'High') confidenceCounts.high += 1;
+    else if (g === 'Medium') confidenceCounts.medium += 1;
+    else confidenceCounts.sparse += 1;
   }
+
+  const dataConfidence = {
+    filingVerifiedSharePct: thesis.timeTravelProfile?.filingVerifiedSharePct ?? 0,
+    shortlistBreakdown: confidenceCounts,
+    grade:
+      (thesis.timeTravelProfile?.filingVerifiedSharePct ?? 0) >= 60 && !thesis.weakProfile
+        ? 'High'
+        : thesis.dealsAnalyzedCount >= 4
+          ? 'Medium'
+          : 'Early / Sparse'
+  };
 
   return {
     thesis,
+    timeTravelProfile: thesis.timeTravelProfile,
+    upstreamFeeders: thesis.upstreamFeeders,
+    dataConfidence,
     rankingMode: ranking.rankingMode,
     weights: ranking.weights,
     totalCandidatesEvaluated: ranking.totalCandidatesEvaluated,
@@ -2150,7 +2733,8 @@ export function runFullAnalysis(input, options = {}) {
       entitiesIndexed: FUNDS.length + COMPANIES.length,
       roundsInspected: COMPANIES.reduce((sum, c) => sum + c.rounds.length, 0),
       verifiedCitationsInShortlist: uniqueSourceIds.size,
-      pipelineMode: process.env.CALA_API_KEY ? 'Live Cala API + Local Index' : 'Pre-indexed Cala Snapshot (Instant)'
+      registriesIntegrated: ['PRH/YTJ v3', 'GLEIF LEI', ...(process.env.COMPANIES_HOUSE_API_KEY ? ['UK Companies House'] : [])],
+      pipelineMode: process.env.CALA_API_KEY ? 'Live Cala API + Official Registries' : 'Pre-indexed Cala Snapshot + Official Registries'
     }
   };
 }
