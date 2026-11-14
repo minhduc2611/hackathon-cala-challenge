@@ -146,3 +146,13 @@
   - AI Search Copilot: keyword & basic criteria matching -> agentic intents (`fast headcount growth`, `feeder syndicate`, `filing signal`, `alumni founder`) with 4-agent trace pills (`1. Time-Travel DNA Profiler` -> `2. Upstream Syndicate Mapper` -> `3. Filing & Velocity Arbitrage Scout` -> `4. Provenance Gate`)
 - **Tests:** PASS (`15/15` sandboxed unit tests, `86.3ms`), `node --check` pass, zero `<details>` / `+` CSS / green / emoji / hygiene checks pass; Live Chrome verified (`final_step_1083.png`, `0` console/HTTP errors, `8/8` Cala preserved)
 - **Decision:** KEEP
+
+### [2026-11-14 13:35] — Exp 13: Zero-Scroll 3-Step Startup Modal, Cala AI Spotlight & Connected Warm Network Flow
+- **Hypothesis:** Replacing the fragmented 7-box modal and isolated Network tab with a unified 3-step decision flow (`1. Why This Startup Fits` -> `2. CALA AI GRAPH` Spotlight -> `3. Warm Network Path & Intro`) and fixing `.connected-net-bottom` grid track sizing (`minmax(0, ...)`) makes startup triage immediate, prominently showcases Cala AI's verified signals, and connects warm bridges, cluster peers, and intro outreach into a single zero-scroll modal view.
+- **Files touched:** `public/index.html`, `public/app.js`, `public/styles.css`
+- **Before -> After:**
+  - Startup modal brief: 7 fragmented boxes + duplicate hero KPIs + 5 tall bars + disconnected Network tab + overflowing footer (`786px` scrollHeight) -> clean zero-scroll 3-step view (`1. Why This Startup Fits` with single-line 5-chip factor strip, `2. CALA AI GRAPH` spotlight card with `Verify Live` & 4 Cala rows, `3. Warm Network Path & Intro` with live `LinkedIn Bridge` <-> `Cala Syndicate` toggle updating 3-hop chain & draft copy, inline peer pivots + header `#peerBackBtn`, `Open Graph Map ->`, and primary `Copy Warm Intro Note`), Step 3 finishing `-12px` above `.drawer-body` bottom (`scrollTop === 0`, `scrollHeight <= clientHeight`)
+  - CSS Grid `.connected-net-bottom`: unrestrained `0.85fr 1.15fr` crushed `.warm-intro-preview` to `154px` wide -> `minmax(0, 0.82fr) minmax(0, 1.18fr)` + `min-width: 0` gave `.warm-intro-preview` `565px` and kept `#copyWarmIntroBtn` a crisp `168 x 35.5px` single-line button
+  - Full-screen deep dive (`#panel-talk`) & grid tiles: aligned with `#talkVerifyCalaBtn`, 3-step structure, and `Cala` / warm bridge footers
+- **Tests:** PASS (`15/15` sandboxed unit tests, `84.1ms`), `node --check` pass, zero `<details>` / `+` CSS / green / emoji / hygiene checks pass; Live Chrome verified at `1440x900` (`final_step_1269.png`: 5 factor chips unclipped `515.19px <= 527.54px`, zero vertical overflow, `0` console/HTTP errors, `#telemetryLine` `4/8 Cala` untouched) & mobile `390x844` (`scrollWidth === 390px`)
+- **Decision:** KEEP

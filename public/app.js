@@ -1269,12 +1269,21 @@ function renderStartupGrid(shortlist) {
       const bridgePerson = item.linkedinNetwork?.bridgePerson?.split("(")[0]?.trim();
       const coInvestor = item.coInvestorPath?.coInvestorName;
       const roundCount = (item.roundHistory || []).length;
+      const shortTrigger = item.whyNowTrigger
+        ? item.whyNowTrigger
+            .replace(/^New registry filing\s*/i, "Filing ")
+            .replace(/^Companies House filing\s*/i, "CH filing ")
+            .replace(/^Hiring surge\s*/i, "Team ")
+        : "";
 
       let primarySignal = `${item.stage} · ${formatEur(item.lastRoundAmountEurM)}`;
       let signalClass = "";
 
       if (state.role === "analyst") {
-        if (roundCount > 0) {
+        if (shortTrigger) {
+          primarySignal = `Cala: ${shortTrigger}`;
+          signalClass = "is-untapped";
+        } else if (roundCount > 0) {
           primarySignal = `${roundCount} Cala round${roundCount === 1 ? "" : "s"} · ${item.stage}`;
         } else if (bridgePerson && state.networkSource === "linkedin") {
           primarySignal = `Via ${bridgePerson}`;
@@ -1285,8 +1294,11 @@ function renderStartupGrid(shortlist) {
           primarySignal = `Via ${bridgePerson}`;
           signalClass = "is-warm";
         } else if (coInvestor) {
-          primarySignal = `Via ${coInvestor}`;
+          primarySignal = `Cala: Via ${coInvestor}`;
           signalClass = "is-warm";
+        } else if (shortTrigger) {
+          primarySignal = `Cala: ${shortTrigger}`;
+          signalClass = "is-untapped";
         } else if (item.raisingSoon) {
           primarySignal = "Raising window";
           signalClass = "is-raising";
@@ -1326,8 +1338,8 @@ function renderStartupGrid(shortlist) {
                 <span class="tile-signal ${signalClass}">${escapeHtml(primarySignal)}</span>
               </div>
               <div class="tile-hover-bar">
-                <button type="button" class="tile-net-jump" data-open-tab="network">Network &rarr;</button>
-                <span class="tile-inspect-cue">Brief &rarr;</span>
+                <button type="button" class="tile-net-jump" data-open-tab="network">Graph &rarr;</button>
+                <span class="tile-inspect-cue">Deal &amp; Intro &rarr;</span>
               </div>
             </div>
           </div>
@@ -1887,6 +1899,27 @@ function renderTalkScreen() {
     : candidate.coInvestorPath?.coInvestorName || "Verified Cala syndicate";
   const isSaved = state.savedCallListIds.includes(candidate.id);
 
+  const calaProf = getStartupCalaFieldProfile(candidate);
+  const latestRound = rounds[rounds.length - 1] || null;
+  const topRank =
+    (latestRound?.sources || [])[0]?.sourceRank ||
+    (brief?.arbitrageSignals || candidate.arbitrageSignals || [])[0]?.sourceRank ||
+    "PRIMARY";
+  const rolesList = calaProf?.leadershipRelationships || [];
+  const alumni = brief?.alumniSpinout || candidate.alumniSpinout || rolesList.find((r) => r.priorCompany);
+  const primaryLeader = alumni || rolesList[0];
+  const obsList = calaProf?.numericalObservations || brief?.employeeCountSeries || candidate.employeeCountSeries || [];
+  const startHc = brief?.headcountAtLastRound ?? candidate.headcountAtLastRound ?? obsList[0]?.value ?? candidate.employeeCount;
+  const currentHc = candidate.employeeCount ?? obsList[obsList.length - 1]?.value ?? startHc;
+  const growthPct =
+    brief?.headcountGrowthPct ??
+    candidate.headcountGrowthPct ??
+    (startHc > 0 ? Math.max(0, Math.round(((currentHc - startHc) / startHc) * 100)) : 0);
+  const activeBridgeName = isLinkedin
+    ? (candidate.linkedinNetwork?.bridgePerson || "Warm connector").split("(")[0].trim()
+    : candidate.coInvestorPath?.coInvestorName || "Cala syndicate lead";
+  const targetFounderName = (candidate.linkedinNetwork?.targetLeader || primaryLeader?.person || `${candidate.name} team`).split("(")[0].trim();
+
   container.innerHTML = `
     <div class="head">
       <div class="talk-head-visuals">
@@ -1898,10 +1931,10 @@ function renderTalkScreen() {
         </div>
       </div>
       <div class="t">
-        <div class="eyebrow" style="margin-bottom: 6px">Startup deep dive</div>
+        <div class="eyebrow" style="margin-bottom: 6px">3-step startup deep dive</div>
         <h2>${escapeHtml(candidate.name)}</h2>
         <div class="m">
-          ${escapeHtml(candidate.hqCity)}, ${escapeHtml(candidate.country)} · ${escapeHtml(candidate.sector)} · ${escapeHtml(getStartupCalaFieldProfile(candidate)?.fundingStage || candidate.stage)} (${formatEur(candidate.lastRoundAmountEurM)})${getStartupCalaFieldProfile(candidate)?.slush2026?.attending ? " · Attending Slush 2026" : ""}
+          ${escapeHtml(candidate.hqCity)}, ${escapeHtml(candidate.country)} · ${escapeHtml(candidate.sector)} · ${escapeHtml(calaProf?.fundingStage || candidate.stage)} (${formatEur(candidate.lastRoundAmountEurM)})${calaProf?.slush2026?.attending ? " · Attending Slush 2026" : ""}
         </div>
       </div>
       <div class="talk-head-actions">
@@ -1913,65 +1946,31 @@ function renderTalkScreen() {
         >
           ${bookmarkIconSvg(13)} <span>${isSaved ? "Saved" : "Save to Call List"}</span>
         </button>
-        <button type="button" class="btn sm primary" id="talkCopyIntroBtn">Copy Warm Intro</button>
+        <button type="button" class="btn sm primary" id="talkCopyIntroBtn">Copy Warm Intro Note</button>
         <button type="button" class="btn sm" id="talkPrevStartupBtn">&larr; Prev</button>
         <button type="button" class="btn sm" id="talkNextStartupBtn">Next &rarr;</button>
       </div>
     </div>
 
-    <div class="hero-kpi-strip" style="margin-bottom: 18px">
-      <div class="hk-card">
-        <span class="hk-kicker">Cala Fit Score</span>
-        <b class="hk-val num-tabular" style="color:${scoreBand(candidate.suitabilityScore).col}">${candidate.suitabilityScore}/100</b>
-        <span class="hk-lab">${escapeHtml(scoreBand(candidate.suitabilityScore).lab)}</span>
-      </div>
-      <div class="hk-card">
-        <span class="hk-kicker">Latest Round</span>
-        <b class="hk-val num-tabular">${formatEur(candidate.lastRoundAmountEurM)}</b>
-        <span class="hk-lab">${escapeHtml(candidate.stage)}</span>
-      </div>
-      <div class="hk-card">
-        <span class="hk-kicker">Next Window</span>
-        <b class="hk-val">${escapeHtml(candidate.likelyNextStage || "Series A")}</b>
-        <span class="hk-lab">${candidate.raisingSoon ? "Active window" : "Standard cycle"}</span>
-      </div>
-      <div class="hk-card">
-        <span class="hk-kicker">Warmest Bridge</span>
-        <b class="hk-val hk-val-text">${escapeHtml(bridgeTitle.split("(")[0].trim())}</b>
-        <span class="hk-lab">${escapeHtml(isLinkedin ? "LinkedIn 2nd°" : "Cala syndicate")}</span>
-      </div>
-    </div>
-
     <div class="cols">
       <div class="card panel">
-        <h3><span class="n">1</span>Why now &amp; Cala score</h3>
+        <h3><span class="n">1</span>Thesis Fit &amp; Why to Call</h3>
         <p class="why-text">${escapeHtml(candidate.oneLiner || candidate.description)}</p>
         ${
-          candidate.whyNowTrigger || candidate.headcountGrowthPct
-            ? `<div class="quick-pills-row" style="margin-top:8px">
+          candidate.whyNowTrigger || growthPct > 0
+            ? `<div class="quick-pills-row" style="margin-bottom:10px">
                 ${candidate.whyNowTrigger ? `<span class="meta-pill">${escapeHtml(candidate.whyNowTrigger)}</span>` : ""}
-                ${candidate.headcountGrowthPct ? `<span class="meta-pill">${escapeHtml(`${candidate.headcountAtLastRound || "--"} -> ${candidate.employeeCount} people (+${candidate.headcountGrowthPct}%)`)}</span>` : ""}
+                ${growthPct > 0 ? `<span class="meta-pill">${escapeHtml(`${startHc} -> ${currentHc} people (+${growthPct}%)`)}</span>` : ""}
               </div>`
             : ""
         }
 
-        <div class="talk-subblock">
-          <h4 class="sub-label">Match breakdown</h4>
-          <div style="margin-top: 8px; display: grid; gap: 8px">
-            ${breakdown
-              .map(
-                (f) => `
-              <div>
-                <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700">
-                  <span>${escapeHtml(f.label)}</span>
-                  <span style="color:var(--green)">${f.points}/${f.maxPoints}</span>
-                </div>
-                <div class="bar"><i style="width:${Math.min(100, Math.round((Number(f.points) / f.maxPoints) * 100))}%"></i></div>
-              </div>
-            `
-              )
-              .join("")}
-          </div>
+        <div class="compact-factor-strip" style="margin-bottom:12px">
+          ${breakdown
+            .map(
+              (f) => `<span class="cf-chip"><span>${escapeHtml(f.label)}</span><b>${f.points}/${f.maxPoints}</b></span>`
+            )
+            .join("")}
         </div>
 
         <div class="talk-subblock">
@@ -1984,6 +1983,7 @@ function renderTalkScreen() {
               <li>
                 ${escapeHtml(r.text)}
                 ${(r.sources || [])
+                  .slice(0, 1)
                   .map(
                     (src, idx) =>
                       `<a href="${escapeHtml(src.url)}" target="_blank" rel="noopener">[${escapeHtml(src.publisher || `Source ${idx + 1}`)}]</a>`
@@ -1997,32 +1997,47 @@ function renderTalkScreen() {
         </div>
       </div>
 
-      <div class="card panel">
-        <h3><span class="n">2</span>Warm intro &amp; network graph</h3>
-        <div class="network-graph-stage" style="margin-bottom: 12px">
-          ${netData ? buildNetworkGraphSvg(netData, candidate.id) : ""}
+      <div class="card panel cala-spotlight-card">
+        <div class="step-card-head cala-spot-head" style="margin-bottom:10px">
+          <div class="step-title-wrap">
+            <span class="step-pill is-accent">2</span>
+            <span class="cala-brand-badge"><span class="live-dot" aria-hidden="true"></span> CALA AI GRAPH</span>
+          </div>
+          <button type="button" class="btn sm live-cala-pill-btn" id="talkVerifyCalaBtn">
+            <span class="live-dot" aria-hidden="true"></span>
+            <span>Verify Live on Cala</span>
+          </button>
+        </div>
+
+        <div id="talkLiveCalaBanner" class="live-cala-intel-card cala-inline-banner" hidden></div>
+
+        <div class="cala-ts-list" style="margin-bottom:12px">
+          <div class="cala-ts-row">
+            <span>Cala Round &amp; Filing</span>
+            <strong class="cala-ts-val num-tabular">
+              ${escapeHtml(latestRound ? `${latestRound.type} · ${formatEur(latestRound.amountEurM)} (${String(latestRound.date || "").slice(0, 7)})` : candidate.stage)}
+              <span class="cala-rank-pill rank-${escapeHtml(String(topRank).toLowerCase())}">${escapeHtml(topRank)}</span>
+            </strong>
+          </div>
+          <div class="cala-ts-row">
+            <span>Why Now Signal</span>
+            <strong class="cala-ts-val">${escapeHtml(candidate.whyNowTrigger || (candidate.raisingSoon ? "Active fundraising window" : "Verified monitoring"))}</strong>
+          </div>
+          <div class="cala-ts-row">
+            <span>Headcount Velocity</span>
+            <strong class="cala-ts-val num-tabular">${escapeHtml(`${startHc} -> ${currentHc} employees (+${growthPct}%)`)}</strong>
+          </div>
+          <div class="cala-ts-row">
+            <span>Founder &amp; Feeder</span>
+            <strong class="cala-ts-val">${escapeHtml(
+              alumni
+                ? `${alumni.name || alumni.person} (ex-${alumni.priorCompany})`
+                : primaryLeader?.person || candidate.coInvestorPath?.coInvestorName || "Verified team"
+            )}</strong>
+          </div>
         </div>
 
         <div class="talk-subblock">
-          <h4 class="sub-label">Connected cluster peers (${Math.min(4, peers.length)})</h4>
-          <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px">
-            ${peers
-              .slice(0, 4)
-              .map(
-                (p) => `
-              <button type="button" class="btn sm" data-talk-peer="${escapeHtml(p.id)}">
-                ${escapeHtml(p.name)} · <span style="color:var(--green)">${escapeHtml(p.bridgeLabel)}</span>
-              </button>
-            `
-              )
-              .join("")}
-          </div>
-        </div>
-      </div>
-
-      <div class="card panel">
-        <h3><span class="n">3</span>Syndicate &amp; partner memo</h3>
-        <div class="talk-subblock" style="margin-top: 4px; padding-top: 0; border-top: 0">
           <h4 class="sub-label">Funding rounds (${rounds.length})</h4>
           <div style="margin-top: 8px">
             ${
@@ -2045,10 +2060,48 @@ function renderTalkScreen() {
             }
           </div>
         </div>
+      </div>
 
-        <div class="badges" style="margin-top: 12px">
-          <span class="badge b-green">Grounded in Cala</span>
-          <span class="badge b-amber">Coverage-gap audit</span>
+      <div class="card panel">
+        <div class="step-card-head" style="margin-bottom:10px">
+          <h3 style="margin:0"><span class="n">3</span>Connected Warm Network &amp; Intro</h3>
+          <div class="net-source-switch" role="radiogroup" aria-label="Intro source">
+            <button type="button" class="net-src-btn ${isLinkedin ? "is-active" : ""}" data-talk-net-source="linkedin">LinkedIn</button>
+            <button type="button" class="net-src-btn ${!isLinkedin ? "is-active" : ""}" data-talk-net-source="cala">Cala</button>
+          </div>
+        </div>
+
+        <div class="inline-warm-chain" style="margin-bottom:10px">
+          <span class="iwc-node">${escapeHtml(getSelectedBenchmarkLabel())}</span>
+          <span class="iwc-arrow" aria-hidden="true">&rarr;</span>
+          <span class="iwc-node is-bridge">${escapeHtml(activeBridgeName)}</span>
+          <span class="iwc-arrow" aria-hidden="true">&rarr;</span>
+          <span class="iwc-node is-target">${escapeHtml(targetFounderName)}</span>
+        </div>
+
+        <div class="network-graph-stage" style="margin-bottom: 12px">
+          ${netData ? buildNetworkGraphSvg(netData, candidate.id) : ""}
+        </div>
+
+        <div class="warm-intro-preview" style="margin-bottom: 10px">
+          <div class="warm-intro-label">Warm intro draft (${escapeHtml(isLinkedin ? "LinkedIn 2nd°" : "Cala Syndicate")})</div>
+          <p class="warm-intro-text">${escapeHtml(buildWarmIntroDraftText(candidate))}</p>
+        </div>
+
+        <div class="talk-subblock">
+          <h4 class="sub-label">Connected cluster peers (${Math.min(4, peers.length)})</h4>
+          <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px">
+            ${peers
+              .slice(0, 4)
+              .map(
+                (p) => `
+              <button type="button" class="btn sm" data-talk-peer="${escapeHtml(p.id)}">
+                ${escapeHtml(p.name)} · <span style="color:var(--green)">${escapeHtml(p.bridgeLabel)}</span>
+              </button>
+            `
+              )
+              .join("")}
+          </div>
         </div>
 
         <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px">
@@ -2080,12 +2133,37 @@ function renderTalkScreen() {
     }
     const copyBtn = document.getElementById("talkCopyIntroBtn");
     if (copyBtn) {
-      copyBtn.textContent = "Copied Intro";
+      copyBtn.textContent = "Copied Intro Note";
       window.setTimeout(() => {
-        if (copyBtn.isConnected) copyBtn.textContent = "Copy Warm Intro";
+        if (copyBtn.isConnected) copyBtn.textContent = "Copy Warm Intro Note";
       }, 1800);
     }
     showUiToast(`Copied warm intro note for ${candidate.name}`);
+  });
+  document.getElementById("talkVerifyCalaBtn")?.addEventListener("click", async () => {
+    const bannerEl = document.getElementById("talkLiveCalaBanner");
+    if (!bannerEl) return;
+    bannerEl.hidden = false;
+    bannerEl.innerHTML = `<p class="note" style="margin:0">Verifying <strong>${escapeHtml(candidate.name)}</strong> on Cala AI Graph...</p>`;
+    try {
+      await runCalaVerifyQuery({
+        name: candidate.name,
+        type: "company",
+        includeKnowledgeSearch: false,
+        targetEl: bannerEl,
+        context: "talk"
+      });
+    } catch (err) {
+      bannerEl.innerHTML = `<span class="note">Live Cala notice: ${escapeHtml(err.message)}</span>`;
+    }
+  });
+  container.querySelectorAll("[data-talk-net-source]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.networkSource = btn.dataset.talkNetSource;
+      syncNetworkSourceButtons();
+      renderTalkScreen();
+      renderStartupGrid(state.DisplayedShortlist);
+    });
   });
   document.getElementById("talkPrevStartupBtn")?.addEventListener("click", () => {
     stepStartupInList(-1);
@@ -2222,11 +2300,6 @@ async function openStartupInspector(companyId, options = {}) {
   }
 
   syncCallListUI();
-  const introBtn = document.getElementById("copyWarmIntroBtn");
-  if (introBtn) {
-    introBtn.classList.remove("is-copied");
-    introBtn.textContent = "Copy intro note";
-  }
 
   switchDrawerTab(options.tab === "network" ? "network" : "brief");
 
@@ -2265,11 +2338,23 @@ function closeStartupInspector() {
 function buildWarmIntroDraftText(candidate) {
   if (!candidate) return "";
   const fundLabel = getSelectedBenchmarkLabel();
-  const bridgeFull = candidate.linkedinNetwork?.bridgePerson || candidate.coInvestorPath?.coInvestorName || "a mutual syndicate partner";
-  const bridgeFirst = bridgeFull.split("(")[0].trim();
-  const targetLeader = candidate.linkedinNetwork?.targetLeader || `${candidate.name} team`;
   const roundAmt = formatEur(candidate.lastRoundAmountEurM);
-  return `Hi ${bridgeFirst}, hope you're well. Reviewing ${candidate.name} (${candidate.sector}, ${candidate.hqCity}) against ${fundLabel}'s active ${candidate.likelyNextStage || "Series A"} mandate (${candidate.suitabilityScore}/100 Cala thesis fit after their ${candidate.stage} round of ${roundAmt}). Would love a warm double-opt-in intro to ${targetLeader} if helpful.`;
+  const isLinkedin = state.networkSource !== "cala";
+  const coPath = candidate.coInvestorPath;
+  const liNet = candidate.linkedinNetwork;
+  const targetLeader = (liNet?.targetLeader || `${candidate.name} founders`).split("(")[0].trim();
+
+  if (!isLinkedin && coPath?.coInvestorName) {
+    const sharedText =
+      coPath.sharedPortfolioSample?.length > 0
+        ? ` across ${coPath.sharedPortfolioSample.slice(0, 2).join(" & ")}`
+        : "";
+    return `Hi ${coPath.coInvestorName} team, since we overlap on Cala${sharedText}, we're reviewing ${candidate.name} (${candidate.sector}, ${candidate.hqCity}) after their ${roundAmt} ${candidate.stage} round (${candidate.suitabilityScore}/100 fit). Could you introduce us to ${targetLeader}?`;
+  }
+
+  const bridgeFull = liNet?.bridgePerson || coPath?.coInvestorName || "a mutual syndicate partner";
+  const bridgeFirst = bridgeFull.split("(")[0].trim();
+  return `Hi ${bridgeFirst}, hope you're well. Seeing strong Cala signals on ${candidate.name} (${candidate.sector}, ${candidate.hqCity}) against ${fundLabel}'s active mandate (${candidate.suitabilityScore}/100 thesis fit after ${roundAmt} ${candidate.stage}). Would love a double-opt-in intro to ${targetLeader}.`;
 }
 
 async function copyWarmIntroNote() {
@@ -2288,13 +2373,15 @@ async function copyWarmIntroNote() {
   }
   if (btn) {
     btn.classList.add("is-copied");
-    btn.textContent = "Copied intro note";
+    btn.textContent = "Copied Intro Note";
     window.clearTimeout(btn._copyTimer);
     btn._copyTimer = window.setTimeout(() => {
+      if (!btn.isConnected) return;
       btn.classList.remove("is-copied");
-      btn.textContent = "Copy intro note";
+      btn.textContent = "Copy Warm Intro Note";
     }, 1800);
   }
+  showUiToast(`Copied warm intro note for ${candidate.name}`);
 }
 
 function switchDrawerTab(tabName) {
@@ -2318,115 +2405,52 @@ function switchDrawerTab(tabName) {
 }
 
 function renderDrawerBriefPane(brief, candidate) {
-  const heroEl = document.getElementById("drawerHeroKpis");
-  if (heroEl) {
-    const score = candidate.suitabilityScore ?? 0;
-    const band = scoreBand(score);
-    const shortBridge = (
-      candidate.linkedinNetwork?.bridgePerson ||
-      candidate.coInvestorPath?.coInvestorName ||
-      "Direct syndicate"
-    )
-      .split("(")[0]
-      .trim();
-    const roundsArr = brief?.rounds || candidate.roundHistory || [];
-    const latestDate = roundsArr[roundsArr.length - 1]?.date || "";
-    heroEl.innerHTML = `
-      <div class="hk-card">
-        <span class="hk-kicker">Thesis Fit</span>
-        <b class="hk-val num-tabular" style="color:${band.col}">${score}/100</b>
-        <span class="hk-lab">${escapeHtml(band.lab)}</span>
-      </div>
-      <div class="hk-card">
-        <span class="hk-kicker">Latest Round</span>
-        <b class="hk-val num-tabular">${formatEur(candidate.lastRoundAmountEurM)}</b>
-        <span class="hk-lab">${escapeHtml(candidate.stage)}${latestDate ? ` · ${escapeHtml(latestDate.slice(0, 7))}` : ""}</span>
-      </div>
-      <div class="hk-card">
-        <span class="hk-kicker">Warm Route</span>
-        <b class="hk-val hk-val-text">${escapeHtml(shortBridge)}</b>
-        <span class="hk-lab">${escapeHtml(candidate.linkedinNetwork ? "2nd-degree intro" : "Co-investor path")}</span>
-      </div>
-    `;
-  }
-
   document.getElementById("drawerQuickVerdict").textContent =
     candidate.oneLiner || candidate.description || "";
 
   const calaProfile = getStartupCalaFieldProfile(candidate);
+  const isLinkedin = state.networkSource !== "cala";
 
   const pillsEl = document.getElementById("drawerQuickPills");
   if (pillsEl) {
-    const roundsArr = brief?.rounds || candidate.roundHistory || [];
-    const latestLead = roundsArr[roundsArr.length - 1]?.leadInvestorName || candidate.coInvestorPath?.coInvestorName;
-    const whyNowPill = candidate.whyNowTrigger || brief?.whyNowTrigger || null;
-    const basePills = [
-      `${candidate.hqCity}, ${candidate.country}`,
-      whyNowPill || `${candidate.employeeCount} people`,
-      !calaProfile?.slush2026?.attending && latestLead ? `Lead: ${latestLead}` : null
-    ].filter(Boolean);
-    const slushPill = calaProfile?.slush2026?.attending
-      ? `<span class="meta-pill slush-attendee-chip">Attending Slush 2026</span>`
-      : "";
-    pillsEl.innerHTML =
-      basePills.slice(0, 3).map((p) => `<span class="meta-pill">${escapeHtml(p)}</span>`).join("") + slushPill;
+    if (calaProfile?.slush2026?.attending) {
+      pillsEl.innerHTML = `<span class="meta-pill slush-attendee-chip">Slush 2026</span>`;
+    } else {
+      pillsEl.innerHTML = `<span class="meta-pill">${escapeHtml(candidate.hqCity || candidate.country || "")}</span>`;
+    }
   }
 
-  const introBox = document.getElementById("drawerIntroPreviewBox");
-  if (introBox) {
-    introBox.innerHTML = `
-      <div class="warm-intro-label">Warm intro draft</div>
-      <p class="warm-intro-text">${escapeHtml(buildWarmIntroDraftText(candidate))}</p>
-    `;
-  }
+  const roundsList = brief?.rounds || candidate.roundHistory || [];
+  const latestRound = roundsList[roundsList.length - 1] || null;
+  const topRank =
+    (latestRound?.sources || [])[0]?.sourceRank ||
+    (brief?.arbitrageSignals || candidate.arbitrageSignals || [])[0]?.sourceRank ||
+    "PRIMARY";
 
   const confEl = document.getElementById("drawerConfidenceLabel");
   if (confEl) {
-    const roundsCount = (candidate.roundHistory || []).length;
-    confEl.textContent = roundsCount > 0 ? `${roundsCount} verified round${roundsCount === 1 ? "" : "s"}` : "Verified";
-  }
-
-  const reasons = candidate.reasons || [];
-  const risks = brief?.risks || [
-    candidate.competitorConflict
-      ? `Adjacent to portfolio company ${candidate.competitorConflict}; requires conflict clearance.`
-      : "No direct portfolio conflict detected in current portfolio.",
-    candidate.raisingSoon
-      ? "Inside active 12-to-24 month post-round fundraising window."
-      : "Out-of-cycle outreach; confirm runway and next milestone timing."
-  ];
-  const roundsList = brief?.rounds || candidate.roundHistory || [];
-  const missingList = brief?.notFoundInCala || [];
-
-  const layer2Badge = document.getElementById("drawerLayer2Badge");
-  if (layer2Badge) {
-    layer2Badge.textContent = roundsList.length
-      ? `${roundsList.length} round${roundsList.length === 1 ? "" : "s"} · Lead`
-      : "Round & Lead";
+    confEl.textContent = `${topRank} VERIFIED`;
   }
 
   const breakdownEl = document.getElementById("drawerScoreBreakdown");
   if (breakdownEl) {
+    const shortLabels = {
+      "Sector fit": "Sector",
+      "Stage timing": "Stage",
+      "Co-investor overlap": "Syndicate",
+      "Geography match": "Geo",
+      "Round size fit": "Size"
+    };
     const factors = getScoreBreakdownRows(candidate);
     breakdownEl.innerHTML = factors
-      .map((f) => {
-        const pct = Math.min(100, Math.round((Number(f.points) / f.maxPoints) * 100));
-        return `
-          <div class="sb-row" tabindex="0" title="${escapeHtml(f.detail || "Verified fit factor")}">
-            <div class="sb-top">
-              <span class="sb-label">${escapeHtml(f.label)}</span>
-              <span class="sb-pts num-tabular">${f.points} / ${f.maxPoints}</span>
-            </div>
-            <div class="sb-bar-track">
-              <div class="sb-bar-fill" style="width: ${pct}%"></div>
-            </div>
-            <div class="sb-hover-detail">
-              <span class="sb-pct num-tabular">${pct}% match</span>
-              <span>${escapeHtml(f.detail || "")}</span>
-            </div>
-          </div>
-        `;
-      })
+      .map(
+        (f) => `
+          <span class="cf-chip" title="${escapeHtml(f.detail || f.label)}">
+            <span>${escapeHtml(shortLabels[f.label] || f.label)}</span>
+            <b class="num-tabular">${f.points}/${f.maxPoints}</b>
+          </span>
+        `
+      )
       .join("");
   }
 
@@ -2435,20 +2459,13 @@ function renderDrawerBriefPane(brief, candidate) {
     whyList.innerHTML = (candidate.reasons || [])
       .slice(0, 2)
       .map((r) => {
-        const sources = r.sources || [];
-        const cites = sources
-          .map(
-            (src, idx) =>
-              `<a href="${escapeHtml(src.url)}" target="_blank" rel="noopener noreferrer" class="citation-link" title="${escapeHtml(src.title)}">[${escapeHtml(src.publisher || `Source ${idx + 1}`)}]</a>`
-          )
-          .join(" ");
-        const metaText = sources
-          .map((src) => `${src.publisher || src.title || "Source"} (${src.date || "Recent"})`)
-          .join(" · ");
+        const firstSrc = (r.sources || [])[0];
+        const cite = firstSrc
+          ? ` <a href="${escapeHtml(firstSrc.url)}" target="_blank" rel="noopener noreferrer" class="citation-link" title="${escapeHtml(firstSrc.title)}">[${escapeHtml(firstSrc.publisher || "Source")}]</a>`
+          : "";
         return `
-          <li class="evidence-item" tabindex="0">
-            <span>${escapeHtml(r.text)} ${cites}</span>
-            ${metaText ? `<span class="cite-hover-meta">${escapeHtml(metaText)}</span>` : ""}
+          <li class="evidence-item">
+            <span>${escapeHtml(r.text)}${cite}</span>
           </li>
         `;
       })
@@ -2459,38 +2476,23 @@ function renderDrawerBriefPane(brief, candidate) {
   if (risksList) {
     const risksArr = brief?.risks || [
       candidate.competitorConflict
-        ? `Adjacent to portfolio company ${candidate.competitorConflict}; requires conflict clearance.`
-        : "No direct portfolio conflict detected.",
-      candidate.raisingSoon
-        ? "Inside active 12-to-24 month post-round fundraising window."
-        : "Out-of-cycle outreach; confirm milestone timing prior to next round."
+        ? `Watchout: Adjacent to ${candidate.competitorConflict}; requires conflict check.`
+        : "Watchout: No direct portfolio conflict detected."
     ];
-    risksList.innerHTML = risksArr
-      .slice(0, 1)
-      .map((rk) => `<li>${escapeHtml(rk)}</li>`)
-      .join("");
+    const cleanRisk = String(risksArr[0] || "").replace(/^Watchout:\s*/i, "");
+    risksList.innerHTML = `<li><strong>Watchout:</strong> ${escapeHtml(cleanRisk)}</li>`;
   }
 
   const tsLeadEl = document.getElementById("drawerTimeSeriesAndLeadership");
   if (tsLeadEl) {
-    const rounds = brief?.rounds || candidate.roundHistory || [];
-    const latestRound = rounds[rounds.length - 1] || null;
-    const topRank =
-      (latestRound?.sources || [])[0]?.sourceRank ||
-      (brief?.arbitrageSignals || candidate.arbitrageSignals || [])[0]?.sourceRank ||
-      "PRIMARY";
+    const rankSlug = String(topRank || "primary").toLowerCase();
     const roundSummary = latestRound
-      ? `${latestRound.type || candidate.stage || "Round"} · ${formatEur(latestRound.amountEurM)} (${String(latestRound.date || "").slice(0, 7) || "Recent"}) · ${topRank}`
+      ? `${latestRound.type || candidate.stage || "Round"} · ${formatEur(latestRound.amountEurM)} (${String(latestRound.date || "").slice(0, 7) || "Recent"})`
       : `${candidate.stage || "Private"} · Undisclosed`;
-    const coInvestors = (latestRound?.investorNames || []).filter(
-      (n) => n && n !== latestRound?.leadInvestorName
-    );
-    const feederSuffix = candidate.coInvestorPath?.isUpstreamFeeder ? " · Upstream feeder" : "";
-    const leadText = latestRound?.leadInvestorName
-      ? `${latestRound.leadInvestorName} (Lead${coInvestors.length ? `, ${coInvestors.slice(0, 2).join(", ")}` : ""})${feederSuffix}`
-      : candidate.coInvestorPath?.coInvestorName
-        ? `${candidate.coInvestorPath.coInvestorName} (${candidate.coInvestorPath?.isUpstreamFeeder ? "Upstream feeder" : "Co-investor"})`
-        : "Undisclosed";
+    const whyNowSummary =
+      candidate.whyNowTrigger ||
+      brief?.whyNowTrigger ||
+      (candidate.raisingSoon ? "Active 12-24m fundraising window" : "Tracked baseline entity");
 
     const obsList = calaProfile?.numericalObservations || brief?.employeeCountSeries || candidate.employeeCountSeries || [];
     const startHc = brief?.headcountAtLastRound ?? candidate.headcountAtLastRound ?? obsList[0]?.value ?? candidate.employeeCount;
@@ -2508,31 +2510,132 @@ function renderDrawerBriefPane(brief, candidate) {
     const rolesList = calaProfile?.leadershipRelationships || [];
     const alumni = brief?.alumniSpinout || candidate.alumniSpinout || rolesList.find((r) => r.priorCompany);
     const primaryLeader = alumni || rolesList[0];
-    const leadershipText = alumni
-      ? `${alumni.name || alumni.person} (ex-${alumni.priorCompany}, since ${String(alumni.validSince || candidate.foundedYear || "").slice(0, 4)})`
+    const leaderPart = alumni
+      ? `${alumni.name || alumni.person} (ex-${alumni.priorCompany})`
       : primaryLeader
-        ? `${primaryLeader.person} (${formatLeadershipTitle(primaryLeader.relation)}, since ${String(primaryLeader.validSince || candidate.foundedYear || "").slice(0, 4)})`
-        : `${candidate.employeeCount || "--"} employees`;
+        ? primaryLeader.person
+        : `${currentHc || "--"} team`;
+    const feederPart = candidate.coInvestorPath?.isUpstreamFeeder
+      ? ` · Feeder: ${candidate.coInvestorPath.coInvestorName}`
+      : latestRound?.leadInvestorName
+        ? ` · ${latestRound.leadInvestorName}`
+        : "";
 
     tsLeadEl.innerHTML = `
       <div class="cala-ts-list">
         <div class="cala-ts-row">
-          <span>Latest Round</span>
-          <strong class="cala-ts-val num-tabular">${escapeHtml(roundSummary)}</strong>
+          <span>Cala Round &amp; Filing</span>
+          <strong class="cala-ts-val num-tabular">
+            ${escapeHtml(roundSummary)}
+            <span class="cala-rank-pill rank-${escapeHtml(rankSlug)}">${escapeHtml(topRank)}</span>
+          </strong>
         </div>
         <div class="cala-ts-row">
-          <span>Lead &amp; Syndicate</span>
-          <strong class="cala-ts-val">${escapeHtml(leadText)}</strong>
+          <span>Why Now Signal</span>
+          <strong class="cala-ts-val">${escapeHtml(whyNowSummary)}</strong>
         </div>
         <div class="cala-ts-row">
-          <span>Team Velocity</span>
+          <span>Headcount Velocity</span>
           <strong class="cala-ts-val num-tabular">${escapeHtml(velocitySummary)}</strong>
         </div>
         <div class="cala-ts-row">
-          <span>Founder Lineage</span>
-          <strong class="cala-ts-val">${escapeHtml(leadershipText)}</strong>
+          <span>Founder &amp; Feeder</span>
+          <strong class="cala-ts-val">${escapeHtml(`${leaderPart}${feederPart}`)}</strong>
         </div>
       </div>
+    `;
+  }
+
+  // Step 3: Connected Network Path, Peers & Tailored Outreach
+  const coPath = candidate.coInvestorPath;
+  const liNet = candidate.linkedinNetwork;
+  const targetFundLabel = getSelectedBenchmarkLabel();
+  const activeBridgeName = isLinkedin
+    ? (liNet?.bridgePerson || coPath?.coInvestorName || "Direct connector").split("(")[0].trim()
+    : coPath?.coInvestorName || "Cala syndicate lead";
+  const bridgeMeta = isLinkedin
+    ? "LinkedIn 2nd°"
+    : coPath?.isUpstreamFeeder
+      ? `Upstream feeder (${coPath.feederDealsCount || 1}x)`
+      : `${coPath?.sharedCount || 1} shared Cala deals`;
+  const targetFounderName = (liNet?.targetLeader || `${candidate.name} team`).split("(")[0].trim();
+
+  const layer2Badge = document.getElementById("drawerLayer2Badge");
+  if (layer2Badge) {
+    layer2Badge.textContent = isLinkedin
+      ? "LinkedIn warm bridge"
+      : coPath?.isUpstreamFeeder
+        ? "Cala upstream feeder"
+        : "Cala co-investor route";
+  }
+
+  const inlineChain = document.getElementById("drawerInlineWarmChain");
+  if (inlineChain) {
+    inlineChain.innerHTML = `
+      <span class="iwc-node">${escapeHtml(targetFundLabel)}</span>
+      <span class="iwc-arrow" aria-hidden="true">&rarr;</span>
+      <span class="iwc-node is-bridge">
+        <strong>${escapeHtml(activeBridgeName)}</strong>
+        <small>${escapeHtml(bridgeMeta)}</small>
+      </span>
+      <span class="iwc-arrow" aria-hidden="true">&rarr;</span>
+      <span class="iwc-node is-target">
+        <strong>${escapeHtml(targetFounderName)}</strong>
+        <small>${escapeHtml(candidate.name)}</small>
+      </span>
+    `;
+  }
+
+  const peers = candidate.peerStartups || [];
+  const layer3Badge = document.getElementById("drawerLayer3Badge");
+  if (layer3Badge) {
+    layer3Badge.textContent = peers.length ? `${peers.length} connected peers · click to inspect` : "Cluster peers";
+  }
+
+  const peersRowEl = document.getElementById("drawerInlinePeersRow");
+  if (peersRowEl) {
+    peersRowEl.innerHTML = peers.length
+      ? peers
+          .slice(0, 2)
+          .map((p) => {
+            const stripped = String(p.bridgeLabel || "")
+              .replace(/^(Shared investor|Founder alumni|Alumni link):\s*/i, "");
+            const shortTag = stripped.length > 22 ? `${stripped.slice(0, 20)}..` : stripped;
+            return `
+          <button type="button" class="peer-chip-btn" data-inline-peer-id="${escapeHtml(p.id)}" title="Open ${escapeHtml(p.name)}">
+            <span>${escapeHtml(p.name)}</span>
+            <span class="peer-chip-tag">${escapeHtml(shortTag)}</span>
+            <span aria-hidden="true">&rarr;</span>
+          </button>
+        `;
+          })
+          .join("")
+      : `<span class="note">No cluster peers indexed in this slice.</span>`;
+  }
+
+  const bridgeProofEl = document.getElementById("drawerInlineBridgeProof");
+  if (bridgeProofEl) {
+    const proofText = isLinkedin
+      ? liNet?.summary || coPath?.summary || "Mutual founder and operator bridge."
+      : coPath?.summary || liNet?.summary || "Verified Cala co-investor overlap.";
+    bridgeProofEl.textContent = proofText;
+  }
+
+  const introBox = document.getElementById("drawerIntroPreviewBox");
+  if (introBox) {
+    introBox.innerHTML = `
+      <div class="inline-intro-action-row">
+        <span class="warm-intro-label" style="margin:0">Warm intro draft (${escapeHtml(isLinkedin ? "LinkedIn Bridge" : "Cala Syndicate")})</span>
+        <button
+          type="button"
+          class="btn sm primary modal-intro-btn"
+          id="copyWarmIntroBtn"
+          title="Copy warm intro note (C)"
+        >
+          Copy Warm Intro Note
+        </button>
+      </div>
+      <p class="warm-intro-text">${escapeHtml(buildWarmIntroDraftText(candidate))}</p>
     `;
   }
 }
@@ -2553,8 +2656,11 @@ function renderDrawerNetworkInspectorSummary(candidate, nodeObj, isLinkedin) {
       <div class="node-insp-main">
         <span class="node-insp-kicker">Active Warm Route · ${escapeHtml(isLinkedin ? "LinkedIn First" : "Cala Graph")}</span>
         <span class="node-insp-desc">
-          Primary bridge via <strong>${escapeHtml(primaryBridge)}</strong>. Click any node in the graph above to inspect verified relationship evidence.
+          Primary bridge via <strong>${escapeHtml(primaryBridge)}</strong>. Click any node above to inspect evidence or copy outreach.
         </span>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button type="button" class="btn sm primary" data-copy-intro-inline="1">Copy Warm Intro</button>
       </div>
     `;
     return;
@@ -2563,7 +2669,7 @@ function renderDrawerNetworkInspectorSummary(candidate, nodeObj, isLinkedin) {
   const { id, type, label } = nodeObj;
   let kicker = "Verified Entity";
   let desc = `${label} is linked inside the Cala relationship graph for ${candidate.name}.`;
-  let peerActionHtml = "";
+  let peerActionHtml = `<button type="button" class="btn sm" data-copy-intro-inline="1">Copy Warm Intro</button>`;
 
   if (type === "target_fund") {
     const deals = state.analysis?.thesis?.dealsAnalyzedCount || 0;
@@ -2596,7 +2702,9 @@ function renderDrawerNetworkInspectorSummary(candidate, nodeObj, isLinkedin) {
       <span class="node-insp-kicker">${escapeHtml(kicker)}</span>
       <span class="node-insp-desc">${escapeHtml(desc)}</span>
     </div>
-    ${peerActionHtml}
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${peerActionHtml}
+    </div>
   `;
 
   insp.querySelector("[data-inspect-graph-peer]")?.addEventListener("click", () => {
@@ -3955,8 +4063,24 @@ function bindEvents() {
     }
   });
 
-  document.getElementById("copyWarmIntroBtn")?.addEventListener("click", () => {
-    copyWarmIntroNote();
+  document.getElementById("inspectorDrawer")?.addEventListener("click", (e) => {
+    if (e.target.closest("#copyWarmIntroBtn") || e.target.closest("[data-copy-intro-inline]")) {
+      copyWarmIntroNote();
+    }
+  });
+
+  document.getElementById("openGraphMapInlineBtn")?.addEventListener("click", () => {
+    switchDrawerTab("network");
+  });
+
+  document.getElementById("graphBackToBriefBtn")?.addEventListener("click", () => {
+    switchDrawerTab("brief");
+  });
+
+  document.getElementById("drawerInlinePeersRow")?.addEventListener("click", (e) => {
+    const peerBtn = e.target.closest("[data-inline-peer-id]");
+    if (!peerBtn) return;
+    openStartupInspector(peerBtn.dataset.inlinePeerId, { tab: "brief" });
   });
 
   document.getElementById("drawerCloseBtn")?.addEventListener("click", closeStartupInspector);
@@ -3990,8 +4114,10 @@ function bindEvents() {
     btn.addEventListener("click", () => {
       state.networkSource = btn.dataset.netSource;
       syncNetworkSourceButtons();
+      savePrefsToStorage();
       const candidate = state.allKnownItems.get(state.activeStartupId);
       if (state.activeBrief && candidate) {
+        renderDrawerBriefPane(state.activeBrief, candidate);
         renderDrawerNetworkPane(state.activeBrief, candidate);
       }
       renderStartupGrid(state.DisplayedShortlist);
