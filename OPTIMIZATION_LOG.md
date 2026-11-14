@@ -126,3 +126,13 @@
   - Color palette: bright green/lime UI (`#16a34a`, `#22c55e`, `#a3e635`) -> obsidian black (`#09090b`) & graphite gray (`#111114` / `#17171b`), crisp silver CTAs (`#ededf0`), and subtle steel blue (`#729cd4`) focal accents; zero green hex/rgba values anywhere in `public/`
 - **Tests:** PASS (`11/11` sandboxed unit tests, `81.7ms`), `node --check` pass, hygiene & green-token scan `0` hits, Browser Checks verified Obsidian Grid (`final_step_1042.png`) & Obsidian Modal (`final_step_1050.png`, `scrollTop === 0`, Light/Dark toggle intact, `0` console/network errors, `8/8` Cala preserved)
 - **Decision:** KEEP
+
+### [2026-11-14 12:20] — Exp 11: Remove All Expandable Tabs/Panels and Render Curated Flat Executive Sections
+- **Hypothesis:** Eliminating every `<details>` accordion, `.exposure-depth-bar` mode switcher, and CSS `+` badge indicator while rendering only essential, high-signal startup details inside clean flat 2-column sections makes key facts immediately readable without clicking to unfold panels.
+- **Files touched:** `public/index.html`, `public/styles.css`, `public/app.js`
+- **Before -> After:**
+  - Expandable `<details>` panels across app: `8` static + `7` dynamic templates -> `0` (`document.querySelectorAll('details').length === 0`)
+  - Reading-depth toolbar (`.exposure-depth-bar`) & `+` CSS pseudo-elements: removed (`0` matches in `public/`)
+  - Modal Brief (`#drawerPaneBrief`) & Network (`#drawerPaneNetwork`): curated 2-column `.modal-exec-grid` + `.modal-essentials-grid` showing top 2 reasons (`Why to call`), 5-factor bars, `Backing & Leadership` (Latest Round, Lead & Syndicate, Leadership), and 1 watchout + warm intro preview directly
+- **Tests:** PASS (`11/11` sandboxed unit tests, `72.3ms`), `node --check` pass, zero `<details>` / `+` CSS / hygiene checks pass; Browser verified at `1440x900` and `390x844` (`0` console/HTTP errors, `8/8` Cala preserved, centered obsidian modal verified in `final_step_1064.png`)
+- **Decision:** KEEP

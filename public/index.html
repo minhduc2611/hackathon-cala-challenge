@@ -650,14 +650,14 @@
 
       <div class="startup-grid" id="startupGrid" role="list"></div>
 
-      <!-- MERGERO-STYLE "ALSO SCREENED, AND DELIBERATELY EXCLUDED" (COLLAPSIBLE) -->
-      <details class="card also also-collapsible" id="alsoScreenedCard">
-        <summary class="also-summary">
-          <span>Also screened &amp; excluded (existing portfolio &amp; direct conflicts)</span>
+      <!-- MERGERO-STYLE "ALSO SCREENED, AND DELIBERATELY EXCLUDED" -->
+      <section class="card also" id="alsoScreenedCard">
+        <div class="also-header-row">
+          <h4>Also screened &amp; excluded (existing portfolio &amp; direct conflicts)</h4>
           <span class="gradual-hint" id="alsoScreenedCountBadge">4 excluded</span>
-        </summary>
+        </div>
         <div id="alsoScreenedList" class="also-body"></div>
-      </details>
+      </section>
     </section>
 
     <!-- VIEW 2: FULL-SCREEN 3-COLUMN DEEP DIVE -->
@@ -716,15 +716,13 @@
             <div id="geoDistributionBars" style="margin-top: 10px"></div>
           </div>
 
-          <details class="gradual-block" id="thesisFunnelDetails" style="margin-top: 18px">
-            <summary class="gradual-summary">
-              <span>Point-in-time screening funnel</span>
+          <div class="dist-section" id="thesisFunnelDetails" style="margin-top: 18px">
+            <div class="also-header-row" style="margin-bottom: 10px">
+              <h4 style="margin: 0">Point-in-time screening funnel</h4>
               <span class="gradual-hint">4 stages</span>
-            </summary>
-            <div class="gradual-content" style="padding-top: 10px">
-              <div id="scaleFunnelRows"></div>
             </div>
-          </details>
+            <div id="scaleFunnelRows"></div>
+          </div>
         </div>
 
         <div>
@@ -741,17 +739,13 @@
             <div id="backtestHitsList" style="margin-top: 12px"></div>
           </div>
 
-          <details class="gradual-block" id="thesisInsightsDetails" style="margin-top: 16px">
-            <summary class="gradual-summary">
-              <span>Stated vs. revealed thesis &amp; verification notes</span>
+          <div class="why-scale" id="thesisInsightsDetails" style="margin-top: 16px">
+            <div class="also-header-row" style="margin-bottom: 8px">
+              <h4 style="margin: 0">Stated vs. revealed thesis &amp; verification notes</h4>
               <span class="gradual-hint">3 notes</span>
-            </summary>
-            <div class="gradual-content" style="padding-top: 12px">
-              <div class="why-scale" style="padding: 0; border: 0; background: transparent">
-                <ul id="thesisInsightsList"></ul>
-              </div>
             </div>
-          </details>
+            <ul id="thesisInsightsList"></ul>
+          </div>
         </div>
       </div>
     </section>
@@ -858,19 +852,13 @@
 
     <div class="drawer-body">
       <div id="drawerPaneBrief" class="drawer-pane">
-        <div class="exposure-depth-bar" role="toolbar" aria-label="Reading depth">
-          <span class="depth-label">View</span>
-          <div class="depth-pills">
-            <button type="button" class="depth-pill is-active" data-depth="quick">Summary</button>
-            <button type="button" class="depth-pill" data-depth="evidence">+ Evidence</button>
-            <button type="button" class="depth-pill" data-depth="memo">All Details</button>
-          </div>
-        </div>
-
+        <!-- STAGE 1: 3 HERO METRICS -->
         <div class="hero-kpi-strip" id="drawerHeroKpis"></div>
 
+        <!-- LIVE CALA ON-DEMAND PANEL -->
         <div id="drawerLiveCalaBanner" class="live-cala-intel-card" hidden></div>
 
+        <!-- STAGE 2: 2-COLUMN EXECUTIVE OVERVIEW + SCORE BREAKDOWN -->
         <div class="modal-exec-grid">
           <section class="exposure-stage-Quick">
             <div class="verdict-card">
@@ -878,9 +866,13 @@
               <p class="quick-verdict" id="drawerQuickVerdict"></p>
             </div>
             <div class="quick-pills-row" id="drawerQuickPills"></div>
+            <div class="drawer-inline-reasons">
+              <h4 class="sub-label">Why to call</h4>
+              <ul class="evidence-list" id="drawerWhyFitList"></ul>
+            </div>
           </section>
 
-          <section class="drawer-section">
+          <section class="drawer-section" style="margin-bottom: 0">
             <div class="drawer-section-head">
               <h3 class="drawer-section-title">Match Breakdown</h3>
               <span class="Verified-badge" id="drawerConfidenceLabel">Verified</span>
@@ -889,79 +881,25 @@
           </section>
         </div>
 
-        <details class="gradual-block" id="gradualLayer1">
-          <summary class="gradual-summary">
-            <span>Why it fits &amp; watchouts</span>
-            <span class="gradual-hint" id="gradualBadge1">Facts &amp; risks</span>
-          </summary>
-          <div class="gradual-content">
-            <h4 class="sub-label">Supporting facts</h4>
-            <ul class="evidence-list" id="drawerWhyFitList"></ul>
-            <h4 class="sub-label">Key watchouts</h4>
+        <!-- STAGE 3: FLAT ESSENTIAL DETAILS (NO EXPANDABLE PANELS) -->
+        <div class="modal-essentials-grid">
+          <section class="drawer-section" style="margin-bottom: 0">
+            <div class="drawer-section-head">
+              <h3 class="drawer-section-title">Backing &amp; Leadership</h3>
+              <span class="gradual-hint" id="drawerLayer2Badge">Round &amp; Lead</span>
+            </div>
+            <div id="drawerTimeSeriesAndLeadership"></div>
+          </section>
+
+          <section class="drawer-section" style="margin-bottom: 0">
+            <div class="drawer-section-head">
+              <h3 class="drawer-section-title">Key Watchout &amp; Intro Note</h3>
+              <span class="gradual-hint" id="drawerLayer3Badge">Diligence</span>
+            </div>
             <ul class="risk-list" id="drawerRisksList"></ul>
-          </div>
-        </details>
-
-        <details class="gradual-block" id="gradualLayer2">
-          <summary class="gradual-summary">
-            <span>Funding, founders &amp; team</span>
-            <span class="gradual-hint" id="gradualBadge2">Rounds &amp; team</span>
-          </summary>
-          <div class="gradual-content">
-            <h4 class="sub-label">Funding rounds</h4>
-            <div class="table-wrap">
-              <table class="data-table">
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Stage</th>
-                    <th>Amount</th>
-                    <th>Lead &amp; Investors</th>
-                  </tr>
-                </thead>
-                <tbody id="drawerRoundsTableBody"></tbody>
-              </table>
-            </div>
-            <div class="cala-subgrid" id="drawerTimeSeriesAndLeadership"></div>
-            <h4 class="sub-label">Similar portfolio companies</h4>
-            <div id="drawerAnaloguesList"></div>
-          </div>
-        </details>
-
-        <details class="gradual-block" id="gradualLayer3">
-          <summary class="gradual-summary">
-            <span>Warm intro, questions &amp; live check</span>
-            <span class="gradual-hint" id="gradualBadge3">Actions &amp; audit</span>
-          </summary>
-          <div class="gradual-content">
-            <h4 class="sub-label">Warm intro note</h4>
-            <div class="warm-intro-preview" id="drawerIntroPreviewBox"></div>
-            <h4 class="sub-label">Questions for the first call</h4>
-            <ol class="evidence-list" id="drawerQuestionsList"></ol>
-            <h4 class="sub-label">What to confirm</h4>
-            <ul class="evidence-list" id="drawerMissingDataList"></ul>
-
-            <div class="export-bar">
-              <button type="button" class="btn sm" id="exportMarkdownBtn">Export Brief (.md)</button>
-              <button type="button" class="btn sm" id="exportCsvBtn">Export Shortlist (.csv)</button>
-            </div>
-
-            <div class="live-cala-box">
-              <div>
-                <strong style="font-size: 13.5px">Live verification</strong>
-                <span class="note" id="liveCalaBudgetNote" style="display: block">8/8 live checks remaining</span>
-              </div>
-              <div style="display: flex; align-items: center; gap: 10px">
-                <label class="toggle-check">
-                  <input type="checkbox" id="liveCalaSearchCheck" />
-                  <span>Include web news</span>
-                </label>
-                <button type="button" class="btn sm" id="verifyLiveCalaBtn">Verify latest facts</button>
-              </div>
-            </div>
-            <div id="liveCalaOutput" hidden></div>
-          </div>
-        </details>
+            <div class="warm-intro-preview" id="drawerIntroPreviewBox" style="margin-top: 10px"></div>
+          </section>
+        </div>
       </div>
 
       <div id="drawerPaneNetwork" class="drawer-pane" hidden>
@@ -989,25 +927,23 @@
           <div id="drawerNetworkNodeInspector" class="network-node-inspector" aria-live="polite"></div>
         </div>
 
-        <details class="gradual-block" id="networkBridgesDetails">
-          <summary class="gradual-summary">
-            <span>3rd-party connectors &amp; mutual bridges</span>
-            <span class="gradual-hint" id="networkBridgesBadge">2 bridges</span>
-          </summary>
-          <div class="gradual-content" style="padding-top: 12px">
+        <div class="modal-essentials-grid" style="margin-top: 14px">
+          <section class="drawer-section" style="margin-bottom: 0" id="networkBridgesDetails">
+            <div class="drawer-section-head">
+              <h3 class="drawer-section-title">Mutual Connectors</h3>
+              <span class="gradual-hint" id="networkBridgesBadge">2 bridges</span>
+            </div>
             <div class="bridge-cards-list" id="linkedinBridgesList"></div>
-          </div>
-        </details>
+          </section>
 
-        <details class="gradual-block" id="networkPeersDetails">
-          <summary class="gradual-summary">
-            <span>Connected cluster startups (click to inspect)</span>
-            <span class="gradual-hint" id="networkPeersBadge">Peers</span>
-          </summary>
-          <div class="gradual-content" style="padding-top: 12px">
+          <section class="drawer-section" style="margin-bottom: 0" id="networkPeersDetails">
+            <div class="drawer-section-head">
+              <h3 class="drawer-section-title">Connected Startups</h3>
+              <span class="gradual-hint" id="networkPeersBadge">Peers</span>
+            </div>
             <div class="peer-startups-grid" id="peerStartupsList"></div>
-          </div>
-        </details>
+          </section>
+        </div>
       </div>
     </div>
 

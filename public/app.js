@@ -1147,23 +1147,20 @@ function renderCallListCompareMatrix() {
             </div>
           </div>
 
-          <details class="compare-factors-details">
-            <summary>5-factor score breakdown</summary>
-            <div class="compare-factor-list" style="margin-top: 8px">
-              ${breakdown
-                .map((f) => {
-                  const pct = Math.min(100, Math.round((Number(f.points) / f.maxPoints) * 100));
-                  return `
-                    <div class="compare-factor-row">
-                      <span>${escapeHtml(f.label)}</span>
-                      <b class="num-tabular">${f.points}/${f.maxPoints}</b>
-                      <div class="compare-factor-track"><i style="width:${pct}%"></i></div>
-                    </div>
-                  `;
-                })
-                .join("")}
-            </div>
-          </details>
+          <div class="compare-factor-list" style="margin-top: 8px">
+            ${breakdown
+              .map((f) => {
+                const pct = Math.min(100, Math.round((Number(f.points) / f.maxPoints) * 100));
+                return `
+                  <div class="compare-factor-row">
+                    <span>${escapeHtml(f.label)}</span>
+                    <b class="num-tabular">${f.points}/${f.maxPoints}</b>
+                    <div class="compare-factor-track"><i style="width:${pct}%"></i></div>
+                  </div>
+                `;
+              })
+              .join("")}
+          </div>
 
           <div class="compare-col-bridge">
             <strong>Bridge:</strong> ${escapeHtml(bridgeLabel)}
@@ -1904,9 +1901,9 @@ function renderTalkScreen() {
         <h3><span class="n">1</span>Why now &amp; Cala score</h3>
         <p class="why-text">${escapeHtml(candidate.oneLiner || candidate.description)}</p>
 
-        <details class="more">
-          <summary>5-factor Cala score breakdown</summary>
-          <div style="margin-top: 10px; display: grid; gap: 8px">
+        <div class="talk-subblock">
+          <h4 class="sub-label">Match breakdown</h4>
+          <div style="margin-top: 8px; display: grid; gap: 8px">
             ${breakdown
               .map(
                 (f) => `
@@ -1921,12 +1918,13 @@ function renderTalkScreen() {
               )
               .join("")}
           </div>
-        </details>
+        </div>
 
-        <details class="more" style="margin-top: 10px">
-          <summary>Verified Cala citations (${(candidate.reasons || []).length})</summary>
-          <ul class="facts" style="margin-top: 10px">
+        <div class="talk-subblock">
+          <h4 class="sub-label">Why this fits (${Math.min(2, (candidate.reasons || []).length)})</h4>
+          <ul class="facts" style="margin-top: 8px">
             ${(candidate.reasons || [])
+              .slice(0, 2)
               .map(
                 (r) => `
               <li>
@@ -1934,7 +1932,7 @@ function renderTalkScreen() {
                 ${(r.sources || [])
                   .map(
                     (src, idx) =>
-                      `${renderCalaRankPill(src)} <a href="${escapeHtml(src.url)}" target="_blank" rel="noopener">[${idx + 1} &#8599;]</a>`
+                      `<a href="${escapeHtml(src.url)}" target="_blank" rel="noopener">[${escapeHtml(src.publisher || `Source ${idx + 1}`)}]</a>`
                   )
                   .join(" ")}
               </li>
@@ -1942,7 +1940,7 @@ function renderTalkScreen() {
               )
               .join("")}
           </ul>
-        </details>
+        </div>
       </div>
 
       <div class="card panel">
@@ -1951,9 +1949,9 @@ function renderTalkScreen() {
           ${netData ? buildNetworkGraphSvg(netData, candidate.id) : ""}
         </div>
 
-        <details class="more">
-          <summary>Connected cluster peers (${Math.min(4, peers.length)})</summary>
-          <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px">
+        <div class="talk-subblock">
+          <h4 class="sub-label">Connected cluster peers (${Math.min(4, peers.length)})</h4>
+          <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px">
             ${peers
               .slice(0, 4)
               .map(
@@ -1965,14 +1963,14 @@ function renderTalkScreen() {
               )
               .join("")}
           </div>
-        </details>
+        </div>
       </div>
 
       <div class="card panel">
         <h3><span class="n">3</span>Syndicate &amp; partner memo</h3>
-        <details class="more" open>
-          <summary>Verified funding rounds (${rounds.length})</summary>
-          <div style="margin-top: 10px">
+        <div class="talk-subblock" style="margin-top: 4px; padding-top: 0; border-top: 0">
+          <h4 class="sub-label">Funding rounds (${rounds.length})</h4>
+          <div style="margin-top: 8px">
             ${
               rounds.length
                 ? rounds
@@ -1992,7 +1990,7 @@ function renderTalkScreen() {
                 : `<p class="note">No public rounds indexed.</p>`
             }
           </div>
-        </details>
+        </div>
 
         <div class="badges" style="margin-top: 12px">
           <span class="badge b-green">Grounded in Cala</span>
@@ -2110,29 +2108,6 @@ async function stepStartupInList(direction) {
 
 function applyExposureDepth(depth) {
   state.exposureDepth = depth;
-  const drawerEl = document.getElementById("inspectorDrawer");
-  if (drawerEl) drawerEl.setAttribute("data-depth-mode", depth);
-  document.querySelectorAll(".depth-pill").forEach((pill) => {
-    pill.classList.toggle("is-active", pill.dataset.depth === depth);
-  });
-
-  const layer1 = document.getElementById("gradualLayer1");
-  const layer2 = document.getElementById("gradualLayer2");
-  const layer3 = document.getElementById("gradualLayer3");
-
-  if (depth === "quick") {
-    if (layer1) layer1.open = false;
-    if (layer2) layer2.open = false;
-    if (layer3) layer3.open = false;
-  } else if (depth === "evidence") {
-    if (layer1) layer1.open = true;
-    if (layer2) layer2.open = true;
-    if (layer3) layer3.open = false;
-  } else if (depth === "memo") {
-    if (layer1) layer1.open = true;
-    if (layer2) layer2.open = true;
-    if (layer3) layer3.open = true;
-  }
 }
 
 async function openStartupInspector(companyId, options = {}) {
@@ -2368,12 +2343,12 @@ function renderDrawerBriefPane(brief, candidate) {
   const roundsList = brief?.rounds || candidate.roundHistory || [];
   const missingList = brief?.notFoundInCala || [];
 
-  const b1 = document.getElementById("gradualBadge1");
-  if (b1) b1.textContent = `${reasons.length} facts · ${risks.length} risks`;
-  const b2 = document.getElementById("gradualBadge2");
-  if (b2) b2.textContent = `${roundsList.length} round${roundsList.length === 1 ? "" : "s"} · team`;
-  const b3 = document.getElementById("gradualBadge3");
-  if (b3) b3.textContent = missingList.length ? `${missingList.length} notes · export` : "Intro & audit";
+  const layer2Badge = document.getElementById("drawerLayer2Badge");
+  if (layer2Badge) {
+    layer2Badge.textContent = roundsList.length
+      ? `${roundsList.length} round${roundsList.length === 1 ? "" : "s"} · Lead`
+      : "Round & Lead";
+  }
 
   const breakdownEl = document.getElementById("drawerScoreBreakdown");
   if (breakdownEl) {
@@ -2403,6 +2378,7 @@ function renderDrawerBriefPane(brief, candidate) {
   const whyList = document.getElementById("drawerWhyFitList");
   if (whyList) {
     whyList.innerHTML = (candidate.reasons || [])
+      .slice(0, 2)
       .map((r) => {
         const sources = r.sources || [];
         const cites = sources
@@ -2434,124 +2410,48 @@ function renderDrawerBriefPane(brief, candidate) {
         ? "Inside active 12-to-24 month post-round fundraising window."
         : "Out-of-cycle outreach; confirm milestone timing prior to next round."
     ];
-    risksList.innerHTML = risksArr.map((rk) => `<li>${escapeHtml(rk)}</li>`).join("");
-  }
-
-  const roundsBody = document.getElementById("drawerRoundsTableBody");
-  if (roundsBody) {
-    const rounds = brief?.rounds || candidate.roundHistory || [];
-    roundsBody.innerHTML = rounds
-      .map((r) => {
-        const investors = [
-          r.leadInvestorName ? `${r.leadInvestorName} (Lead)` : null,
-          ...(r.investorNames || []).filter((n) => n !== r.leadInvestorName)
-        ]
-          .filter(Boolean)
-          .join(", ");
-        return `
-        <tr>
-          <td class="num-tabular">${escapeHtml((r.date || "").slice(0, 7))}</td>
-          <td><strong>${escapeHtml(r.type)}</strong></td>
-          <td class="num-tabular">${formatEur(r.amountEurM)}</td>
-          <td>${escapeHtml(investors || "Undisclosed")}</td>
-        </tr>
-      `;
-      })
+    risksList.innerHTML = risksArr
+      .slice(0, 1)
+      .map((rk) => `<li>${escapeHtml(rk)}</li>`)
       .join("");
   }
 
   const tsLeadEl = document.getElementById("drawerTimeSeriesAndLeadership");
-  if (tsLeadEl && calaProfile) {
-    const obsList = calaProfile.numericalObservations || [];
-    const firstObs = obsList[0];
-    const lastObs = obsList[obsList.length - 1];
-    const teamDelta =
-      firstObs && lastObs && obsList.length > 1
-        ? `${firstObs.value} -> ${lastObs.value} people (${firstObs.date} to ${lastObs.date})`
-        : lastObs
-          ? `${lastObs.value} people (${lastObs.date})`
-          : `${candidate.employeeCount} people`;
+  if (tsLeadEl) {
+    const rounds = brief?.rounds || candidate.roundHistory || [];
+    const latestRound = rounds[rounds.length - 1] || null;
+    const roundSummary = latestRound
+      ? `${latestRound.type || candidate.stage || "Round"} · ${formatEur(latestRound.amountEurM)} (${String(latestRound.date || "").slice(0, 7) || "Recent"})`
+      : `${candidate.stage || "Private"} · Undisclosed`;
+    const coInvestors = (latestRound?.investorNames || []).filter(
+      (n) => n && n !== latestRound?.leadInvestorName
+    );
+    const leadText = latestRound?.leadInvestorName
+      ? `${latestRound.leadInvestorName} (Lead)${coInvestors.length ? `, ${coInvestors.slice(0, 2).join(", ")}` : ""}`
+      : candidate.coInvestorPath?.coInvestorName
+        ? `${candidate.coInvestorPath.coInvestorName} (Co-investor)`
+        : "Undisclosed";
+    const leaders = (calaProfile?.leadershipRelationships || []).slice(0, 3);
+    const leadershipText = leaders.length
+      ? leaders.map((l) => `${l.person} (${formatLeadershipTitle(l.relation)})`).join(", ")
+      : `${candidate.employeeCount || "--"} employees`;
 
     tsLeadEl.innerHTML = `
-      <div class="cala-mini-card">
-        <div class="cala-mini-head">
-          <span class="cala-mini-title">Team growth</span>
-          <span class="badge b-green">${escapeHtml(String(candidate.employeeCount))} active</span>
+      <div class="cala-ts-list">
+        <div class="cala-ts-row">
+          <span>Latest Round</span>
+          <strong class="cala-ts-val num-tabular">${escapeHtml(roundSummary)}</strong>
         </div>
-        <div class="cala-ts-list">
-          <div class="cala-ts-row">
-            <span>Headcount trajectory</span>
-            <strong class="cala-ts-val num-tabular">${escapeHtml(teamDelta)}</strong>
-          </div>
-          <div class="cala-ts-row">
-            <span>Company size bracket</span>
-            <span class="note">${escapeHtml(calaProfile.employeeCountRangeLabel || `${candidate.employeeCount} employees`)}</span>
-          </div>
+        <div class="cala-ts-row">
+          <span>Lead &amp; Syndicate</span>
+          <strong class="cala-ts-val">${escapeHtml(leadText)}</strong>
         </div>
-      </div>
-
-      <div class="cala-mini-card">
-        <div class="cala-mini-head">
-          <span class="cala-mini-title">Founders &amp; leadership</span>
-          <span class="note">${escapeHtml(calaProfile.ownershipStatus || "Private")}</span>
-        </div>
-        <div class="cala-ts-list">
-          ${calaProfile.leadershipRelationships
-            .map(
-              (rel) => `
-            <div class="cala-ts-row">
-              <span><strong>${escapeHtml(rel.person)}</strong> · ${escapeHtml(formatLeadershipTitle(rel.relation))}</span>
-              <span class="note num-tabular">since ${escapeHtml(rel.validSince)}</span>
-            </div>
-          `
-            )
-            .join("")}
+        <div class="cala-ts-row">
+          <span>Leadership</span>
+          <strong class="cala-ts-val">${escapeHtml(leadershipText)}</strong>
         </div>
       </div>
     `;
-  }
-
-  const analoguesEl = document.getElementById("drawerAnaloguesList");
-  if (analoguesEl) {
-    const analogues = candidate.similarPortfolio || [];
-    analoguesEl.innerHTML = analogues.length
-      ? analogues
-          .map(
-            (a) => `
-          <div class="bridge-card" style="margin-bottom: 8px">
-            <div>
-              <strong>${escapeHtml(a.name)}</strong>
-              <span class="note" style="display:block">${escapeHtml(a.sector)} · ${escapeHtml(a.country)}</span>
-            </div>
-            <span class="badge b-sky">Portfolio analogue</span>
-          </div>
-        `
-          )
-          .join("")
-      : `<p class="note">No direct portfolio analogue in the same sector.</p>`;
-  }
-
-  const missingEl = document.getElementById("drawerMissingDataList");
-  if (missingEl) {
-    missingEl.innerHTML = (brief?.notFoundInCala || [])
-      .map((m) => {
-        const cleanStatus = String(m.status || "").replace(/Not found in Cala/gi, "Ask on call");
-        return `
-        <li>
-          <strong>${escapeHtml(m.field)}:</strong> ${escapeHtml(cleanStatus)}${m.reason ? ` (${escapeHtml(m.reason)})` : ""}
-        </li>
-      `;
-      })
-      .join("");
-  }
-
-  const questionsEl = document.getElementById("drawerQuestionsList");
-  if (questionsEl) {
-    const qs = brief?.diligenceQuestions || [
-      `Validate ${candidate.name}'s net revenue retention and gross margin progression ahead of ${candidate.likelyNextStage || "Series A"}.`,
-      `Reference-check founder execution through ${candidate.linkedinNetwork?.bridgePerson || candidate.coInvestorPath?.coInvestorName || "syndicate co-investors"}.`
-    ];
-    questionsEl.innerHTML = qs.map((q) => `<li>${escapeHtml(q)}</li>`).join("");
   }
 }
 
@@ -2649,11 +2549,6 @@ function renderDrawerNetworkPane(brief, candidate) {
       </div>
     `;
   }
-
-  const bridgesDetails = document.getElementById("networkBridgesDetails");
-  if (bridgesDetails) bridgesDetails.open = false;
-  const peersDetails = document.getElementById("networkPeersDetails");
-  if (peersDetails) peersDetails.open = false;
 
   renderDrawerNetworkInspectorSummary(candidate, null, isLinkedin);
 
@@ -3244,29 +3139,27 @@ function buildLiveCalaIntelHtml(res, options = {}) {
         : ""
     }
 
-    <details class="gradual-block" style="margin-bottom: 8px" ${isEventEntity ? "open" : ""}>
-      <summary class="gradual-summary">
-        <span>${isEventEntity ? "Slush 2026 participating startups" : "Verified deals, rounds &amp; sources"}</span>
-        <span class="gradual-hint">${relRows.length} items</span>
-      </summary>
-      <div class="gradual-content">
+    <div class="cala-subgrid">
+      <div class="cala-mini-card">
+        <div class="cala-mini-head">
+          <span class="cala-mini-title">${isEventEntity ? "Slush 2026 participating startups" : "Verified deals &amp; sources"}</span>
+          <span class="gradual-hint">${relRows.length} items</span>
+        </div>
         <div class="cala-rel-list">
           ${relRows.length ? relRows.join("") : `<p class="note" style="margin:10px 0 0">No deals or links listed for this view.</p>`}
         </div>
       </div>
-    </details>
 
-    <details class="gradual-block">
-      <summary class="gradual-summary">
-        <span>Team, leadership &amp; related entities</span>
-        <span class="gradual-hint">${candRows.length} items</span>
-      </summary>
-      <div class="gradual-content">
+      <div class="cala-mini-card">
+        <div class="cala-mini-head">
+          <span class="cala-mini-title">Leadership &amp; team</span>
+          <span class="gradual-hint">${candRows.length} items</span>
+        </div>
         <div class="cala-rel-list">
           ${candRows.length ? candRows.join("") : `<p class="note" style="margin:10px 0 0">No additional team details listed.</p>`}
         </div>
       </div>
-    </details>
+    </div>
   `;
 }
 
