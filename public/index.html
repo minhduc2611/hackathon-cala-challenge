@@ -413,6 +413,13 @@
           <button type="submit" class="floating-search-btn" id="aiSearchSubmitBtn">
             Search
           </button>
+          <div
+            id="searchSuggestPopup"
+            class="search-suggest-popup"
+            role="listbox"
+            aria-label="Search suggestions"
+            hidden
+          ></div>
         </form>
 
         <!-- QUIET TYPED PROMPT ROW + COLLAPSIBLE FILTERS TOGGLE -->
@@ -522,9 +529,16 @@
 
       <!-- 6-7 STARTUPS A LINE GRID -->
       <div class="grid-toolbar">
-        <h3 class="grid-count-title num-tabular"><span id="gridCountBadge">20</span> startups ranked</h3>
+        <div class="grid-toolbar-left">
+          <h3 class="grid-count-title num-tabular"><span id="gridCountBadge">20</span> startups ranked</h3>
+          <button type="button" class="call-list-pill" id="filterCallListBtn" aria-pressed="false">
+            <span aria-hidden="true">&#9733;</span>
+            <span>Call List</span>
+            <b class="num-tabular" id="callListCountBadge">0</b>
+          </button>
+        </div>
         <div class="grid-toolbar-right">
-          <span class="note" id="gridRoleHint">Tap any card for Cala score breakdown &amp; warm intro graph</span>
+          <span class="note" id="gridRoleHint">Hover any card to focus; tap to open details</span>
           <button type="button" class="inline-action-link" data-go="thesis">
             Thesis &amp; backtest &rarr;
           </button>
@@ -534,11 +548,8 @@
       <div class="startup-grid" id="startupGrid" role="list"></div>
 
       <!-- MERGERO-STYLE "ALSO SCREENED, AND DELIBERATELY EXCLUDED" -->
-      <div class="card also" id="alsoScreenedCard" tabindex="0">
-        <h4>
-          <span>Also screened, and deliberately excluded (existing portfolio &amp; direct conflicts)</span>
-          <span class="hover-cue-pill">Hover to reveal</span>
-        </h4>
+      <div class="card also" id="alsoScreenedCard">
+        <h4>Also screened, and deliberately excluded (existing portfolio &amp; direct conflicts)</h4>
         <div id="alsoScreenedList"></div>
       </div>
     </section>
@@ -633,6 +644,22 @@
         </div>
 
         <div class="drawer-header-right">
+          <button
+            type="button"
+            class="btn sm modal-star-btn"
+            id="drawerSaveCallBtn"
+            title="Toggle in Call List (S)"
+          >
+            &#9734; Call List
+          </button>
+          <button
+            type="button"
+            class="btn sm modal-intro-btn"
+            id="copyWarmIntroBtn"
+            title="Copy warm intro note (C)"
+          >
+            Copy intro note
+          </button>
           <div class="drawer-score-box" id="drawerScoreArc">
             <span class="drawer-score-num num-tabular" id="drawerScoreNumber">89</span>
             <span class="drawer-score-max">/100</span>
@@ -641,7 +668,7 @@
             <button type="button" class="stepper-btn" id="drawerPrevBtn" title="Previous startup">&larr;</button>
             <button type="button" class="stepper-btn" id="drawerNextBtn" title="Next startup">&rarr;</button>
           </div>
-          <button type="button" class="drawer-close-btn" id="drawerCloseBtn" aria-label="Close drawer">
+          <button type="button" class="drawer-close-btn" id="drawerCloseBtn" aria-label="Close modal">
             &times;
           </button>
         </div>
@@ -690,18 +717,21 @@
           </div>
         </div>
 
-        <section class="exposure-stage-Quick">
-          <p class="quick-verdict" id="drawerQuickVerdict"></p>
-          <div class="quick-pills-row" id="drawerQuickPills"></div>
-        </section>
+        <div class="modal-exec-grid">
+          <section class="exposure-stage-Quick">
+            <p class="quick-verdict" id="drawerQuickVerdict"></p>
+            <div class="quick-pills-row" id="drawerQuickPills"></div>
+            <div class="warm-intro-preview" id="drawerIntroPreviewBox"></div>
+          </section>
 
-        <section class="drawer-section">
-          <div class="drawer-section-head">
-            <h3 class="drawer-section-title">Why this score (Cala 5-factor breakdown)</h3>
-            <span class="Verified-badge" id="drawerConfidenceLabel">Verified</span>
-          </div>
-          <div class="score-breakdown-list" id="drawerScoreBreakdown"></div>
-        </section>
+          <section class="drawer-section">
+            <div class="drawer-section-head">
+              <h3 class="drawer-section-title">Why this score (Cala 5-factor breakdown)</h3>
+              <span class="Verified-badge" id="drawerConfidenceLabel">Verified</span>
+            </div>
+            <div class="score-breakdown-list" id="drawerScoreBreakdown"></div>
+          </section>
+        </div>
 
         <details class="gradual-block" id="gradualLayer1" open>
           <summary class="gradual-summary">
@@ -814,6 +844,21 @@
         </section>
       </div>
     </div>
+
+    <footer class="modal-footer-bar">
+      <div class="modal-shortcut-hints">
+        <span><kbd>&larr;</kbd><kbd>&rarr;</kbd> Prev / Next</span>
+        <span><kbd>1</kbd> Score &amp; Brief</span>
+        <span><kbd>2</kbd> Network</span>
+        <span><kbd>S</kbd> Call List</span>
+        <span><kbd>C</kbd> Copy Intro</span>
+        <span><kbd>Esc</kbd> Close</span>
+      </div>
+      <div class="modal-footer-actions">
+        <button type="button" class="btn sm" id="modalQuickExportMdBtn">Export Memo (.md)</button>
+        <button type="button" class="btn sm" id="modalQuickExportCsvBtn">Export CSV</button>
+      </div>
+    </footer>
   </aside>
 
   <script type="module" src="/app.js"></script>

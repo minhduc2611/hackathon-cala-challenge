@@ -28,7 +28,9 @@ const state = {
   briefCache: new Map(),
   drawerTab: "brief",
   exposureDepth: "evidence",
-  peerHistory: []
+  peerHistory: [],
+  savedCallListIds: [],
+  onlyCallList: false
 };
 
 const TARGET_STAGE_LABELS = {
@@ -49,7 +51,8 @@ function savePrefsToStorage() {
         selectedCompanyIds: state.selectedCompanyIds,
         targetStage: state.targetStage,
         scoringMode: state.scoringMode,
-        networkSource: state.networkSource
+        networkSource: state.networkSource,
+        savedCallListIds: state.savedCallListIds
       })
     );
   } catch {
@@ -60,7 +63,7 @@ function savePrefsToStorage() {
 function loadPrefsFromStorage() {
   try {
     const raw = localStorage.getItem(PREFS_STORAGE_KEY);
-    if (!raw) return;
+    if (!raw) return false;
     const saved = JSON.parse(raw);
     if (saved.role === "analyst" || saved.role === "investor") state.role = saved.role;
     if (saved.inputMode === "fund" || saved.inputMode === "companies") state.inputMode = saved.inputMode;
@@ -77,9 +80,14 @@ function loadPrefsFromStorage() {
     if (saved.networkSource === "linkedin" || saved.networkSource === "cala") {
       state.networkSource = saved.networkSource;
     }
+    if (Array.isArray(saved.savedCallListIds)) {
+      state.savedCallListIds = saved.savedCallListIds.filter((id) => typeof id === "string");
+      return true;
+    }
   } catch {
     // Ignore malformed saved state
   }
+  return false;
 }
 
 const WORKSPACE_VIEWS = ["search", "talk", "thesis"];
@@ -187,7 +195,7 @@ function scoreRingHtml(score) {
   return `<div class="ring">${buildIncompleteCircleScoreSvg(score, 92, "Fit score")}</div>`;
 }
 
-function buildStartupLogoSvg(name, sector, size = 46) {
+function buildStartupLogoSvg(name, sector, size = 64) {
   const initials = getInitials(name);
   const theme = SECTOR_THEMES[sector] || {
     bg: "#111a2e",
@@ -198,22 +206,39 @@ function buildStartupLogoSvg(name, sector, size = 46) {
 
   let motif = "";
   if (theme.shape === "orbit") {
-    motif = `<circle cx="24" cy="24" r="18" fill="none" stroke="${theme.border}" stroke-width="1" stroke-dasharray="3 2" />`;
+    motif = `
+      <circle cx="24" cy="24" r="19" fill="none" stroke="${theme.border}" stroke-width="1" stroke-dasharray="3 2.5" />
+      <circle cx="24" cy="24" r="13.5" fill="none" stroke="${theme.fg}" stroke-opacity="0.26" stroke-width="0.9" />
+      <circle cx="38" cy="11" r="2.2" fill="${theme.fg}" fill-opacity="0.7" />
+    `;
   } else if (theme.shape === "grid") {
-    motif = `<path d="M10 10 H38 V38 H10 Z" fill="none" stroke="${theme.border}" stroke-width="1" />`;
+    motif = `
+      <path d="M8 14 H40 M8 34 H40 M14 8 V40 M34 8 V40" fill="none" stroke="${theme.fg}" stroke-opacity="0.16" stroke-width="0.9" />
+      <rect x="10" y="10" width="28" height="28" rx="6" fill="none" stroke="${theme.border}" stroke-width="1.1" />
+    `;
   } else if (theme.shape === "prism") {
-    motif = `<polygon points="24,6 42,38 6,38" fill="none" stroke="${theme.border}" stroke-width="1" />`;
+    motif = `
+      <polygon points="24,5 43,38 5,38" fill="none" stroke="${theme.border}" stroke-width="1.1" />
+      <polygon points="24,11 37,35 11,35" fill="none" stroke="${theme.fg}" stroke-opacity="0.28" stroke-width="0.9" />
+    `;
   } else if (theme.shape === "bars") {
-    motif = `<line x1="8" y1="38" x2="40" y2="38" stroke="${theme.border}" stroke-width="1.5" />`;
+    motif = `
+      <path d="M11 39 V29 M19 39 V21 M27 39 V25 M35 39 V15" stroke="${theme.fg}" stroke-opacity="0.26" stroke-width="2" stroke-linecap="round" />
+      <line x1="8" y1="39" x2="40" y2="39" stroke="${theme.border}" stroke-width="1.4" />
+    `;
   } else {
-    motif = `<circle cx="24" cy="24" r="16" fill="none" stroke="${theme.border}" stroke-width="1" />`;
+    motif = `
+      <circle cx="24" cy="24" r="17.5" fill="none" stroke="${theme.border}" stroke-width="1.1" />
+      <path d="M24 8 V40 M8 24 H40" stroke="${theme.fg}" stroke-opacity="0.18" stroke-width="0.9" />
+    `;
   }
 
   return `
-    <svg width="${size}" height="${size}" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${escapeHtml(name)} monogram">
-      <rect x="0.5" y="0.5" width="47" height="47" rx="11" fill="${theme.bg}" stroke="${theme.border}" />
+    <svg width="${size}" height="${size}" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${escapeHtml(name)} emblem">
+      <rect x="0.5" y="0.5" width="47" height="47" rx="12" fill="${theme.bg}" stroke="${theme.border}" />
+      <circle cx="15" cy="14" r="16" fill="${theme.fg}" fill-opacity="0.09" />
       ${motif}
-      <text x="24" y="29" text-anchor="middle" fill="${theme.fg}" font-family="'Plus Jakarta Sans', sans-serif" font-weight="800" font-size="14.5" letter-spacing="0.03em">${escapeHtml(initials)}</text>
+      <text x="24" y="30" text-anchor="middle" fill="${theme.fg}" font-family="'Plus Jakarta Sans', sans-serif" font-weight="800" font-size="16" letter-spacing="0.02em">${escapeHtml(initials)}</text>
     </svg>
   `;
 }
@@ -226,21 +251,21 @@ function buildTileTopVisualHtml(item, score) {
     shape: "orbit"
   };
   const b = scoreBand(score);
-  const logoSvg = buildStartupLogoSvg(item.name, item.sector, 46);
-  const gaugeSvg = buildIncompleteCircleScoreSvg(score, 54, b.shortLab);
+  const logoSvg = buildStartupLogoSvg(item.name, item.sector, 64);
+  const gaugeSvg = buildIncompleteCircleScoreSvg(score, 56, b.shortLab);
 
-  let patternSvg = `<circle cx="140" cy="18" r="34" stroke="${theme.fg}" stroke-width="1" /><circle cx="140" cy="18" r="52" stroke="${theme.fg}" stroke-width="0.75" stroke-dasharray="4 3" />`;
+  let patternSvg = `<circle cx="144" cy="18" r="36" stroke="${theme.fg}" stroke-width="1" /><circle cx="144" cy="18" r="56" stroke="${theme.fg}" stroke-width="0.75" stroke-dasharray="4 3" />`;
   if (theme.shape === "grid") {
-    patternSvg = `<path d="M90 8 H168 M90 26 H168 M90 44 H168 M112 2 V68 M136 2 V68 M160 2 V68" stroke="${theme.fg}" stroke-width="0.85" />`;
+    patternSvg = `<path d="M90 8 H172 M90 28 H172 M90 48 H172 M112 2 V76 M138 2 V76 M164 2 V76" stroke="${theme.fg}" stroke-width="0.85" />`;
   } else if (theme.shape === "prism") {
-    patternSvg = `<polygon points="132,6 168,66 96,66" stroke="${theme.fg}" stroke-width="1" /><polygon points="132,20 156,60 108,60" stroke="${theme.fg}" stroke-width="0.75" />`;
+    patternSvg = `<polygon points="134,6 172,72 96,72" stroke="${theme.fg}" stroke-width="1" /><polygon points="134,20 158,64 110,64" stroke="${theme.fg}" stroke-width="0.75" />`;
   } else if (theme.shape === "bars") {
-    patternSvg = `<path d="M96 58 V38 M112 58 V28 M128 58 V18 M144 58 V34 M160 58 V22" stroke="${theme.fg}" stroke-width="2" stroke-linecap="round" />`;
+    patternSvg = `<path d="M96 64 V40 M112 64 V30 M128 64 V18 M144 64 V34 M160 64 V22" stroke="${theme.fg}" stroke-width="2" stroke-linecap="round" />`;
   }
 
   return `
     <div class="tile-top-stage" style="--stage-tint: ${theme.fg}; --stage-bg: ${theme.bg}">
-      <svg class="tile-top-backdrop" viewBox="0 0 180 76" fill="none" preserveAspectRatio="none" aria-hidden="true">
+      <svg class="tile-top-backdrop" viewBox="0 0 180 86" fill="none" preserveAspectRatio="none" aria-hidden="true">
         ${patternSvg}
       </svg>
       <div class="tile-top-row">
@@ -441,8 +466,8 @@ function syncInlineCalibrationStrip() {
   const gridHint = document.getElementById("gridRoleHint");
   if (gridHint) {
     gridHint.textContent = isInvestor
-      ? "Hover a card for intro signal & network jump; tap for full score"
-      : "Hover a card for Cala round signal; tap for audit & network graph";
+      ? "Hover to preview actions; click any startup to open centered brief"
+      : "Hover to preview actions; click any startup for Cala round audit";
   }
 
   const statFund = document.getElementById("statFundName");
@@ -612,32 +637,80 @@ function syncScoringModeButtons() {
   renderWeightPreview();
 }
 
+function syncCallListUI() {
+  const count = state.savedCallListIds.length;
+  const badge = document.getElementById("callListCountBadge");
+  if (badge) badge.textContent = String(count);
+
+  const filterBtn = document.getElementById("filterCallListBtn");
+  if (filterBtn) {
+    filterBtn.classList.toggle("is-active", Boolean(state.onlyCallList));
+    filterBtn.setAttribute("aria-pressed", state.onlyCallList ? "true" : "false");
+  }
+
+  const drawerStarBtn = document.getElementById("drawerSaveCallBtn");
+  if (drawerStarBtn && state.activeStartupId) {
+    const isSaved = state.savedCallListIds.includes(state.activeStartupId);
+    drawerStarBtn.classList.toggle("is-saved", isSaved);
+    drawerStarBtn.innerHTML = isSaved ? "&#9733; In Call List" : "&#9734; Call List";
+  }
+}
+
+function toggleCallListStartup(companyId) {
+  if (!companyId) return;
+  const exists = state.savedCallListIds.includes(companyId);
+  if (exists) {
+    state.savedCallListIds = state.savedCallListIds.filter((id) => id !== companyId);
+  } else {
+    state.savedCallListIds = [companyId, ...state.savedCallListIds];
+  }
+  savePrefsToStorage();
+  syncCallListUI();
+  renderStartupGrid(state.DisplayedShortlist);
+}
+
 function renderStartupGrid(shortlist) {
   const grid = document.getElementById("startupGrid");
   const countBadge = document.getElementById("gridCountBadge");
   if (!grid) return;
 
+  const visibleList = state.onlyCallList
+    ? shortlist.filter((item) => state.savedCallListIds.includes(item.id))
+    : shortlist;
+
+  syncCallListUI();
+
   if (countBadge) {
-    countBadge.textContent = String(shortlist.length);
+    countBadge.textContent = String(visibleList.length);
   }
 
-  if (!shortlist.length) {
+  if (!visibleList.length) {
+    const msg = state.onlyCallList
+      ? "No startups saved in your Call List yet. Star any startup to track it here."
+      : "No startups match the active filter combination.";
     grid.innerHTML = `
       <div class="card" style="grid-column: 1 / -1; padding: 28px; text-align: center">
-        <p style="margin: 0 0 12px; color: var(--muted)">No startups match the active filter combination.</p>
-        <button type="button" class="btn sm" id="emptyResetBtn">Reset filters</button>
+        <p style="margin: 0 0 12px; color: var(--muted)">${escapeHtml(msg)}</p>
+        <button type="button" class="btn sm" id="emptyResetBtn">${state.onlyCallList ? "Show all ranked startups" : "Reset filters"}</button>
       </div>
     `;
-    document.getElementById("emptyResetBtn")?.addEventListener("click", resetSearchAndFilters);
+    document.getElementById("emptyResetBtn")?.addEventListener("click", () => {
+      if (state.onlyCallList) {
+        state.onlyCallList = false;
+        syncCallListUI();
+        renderStartupGrid(state.DisplayedShortlist);
+      } else {
+        resetSearchAndFilters();
+      }
+    });
     return;
   }
 
-  grid.innerHTML = shortlist
+  grid.innerHTML = visibleList
     .map((item) => {
       const score = item.suitabilityScore ?? item.score ?? 0;
-      const logoSvg = buildStartupLogoSvg(item.name, item.sector, 36);
       const isSelected = state.activeStartupId === item.id;
-      const b = scoreBand(score);
+      const isSaved = state.savedCallListIds.includes(item.id);
 
       const bridgePerson = item.linkedinNetwork?.bridgePerson?.split("(")[0]?.trim();
       const coInvestor = item.coInvestorPath?.coInvestorName;
@@ -681,14 +754,26 @@ function renderStartupGrid(shortlist) {
 
           <div class="tile-body">
             <h3 class="tile-name">${escapeHtml(item.name)}</h3>
-            <div class="tile-hover-reveal">
-              <div class="tile-meta">${escapeHtml(item.sector)} · ${escapeHtml(item.country)}</div>
-              <div class="tile-foot">
+            <div class="tile-meta-row">
+              <span class="tile-meta">${escapeHtml(item.sector)} · ${escapeHtml(item.country)}</span>
+              <button
+                type="button"
+                class="tile-star-btn ${isSaved ? "is-saved" : ""}"
+                data-star-id="${escapeHtml(item.id)}"
+                aria-pressed="${isSaved ? "true" : "false"}"
+                aria-label="${isSaved ? "Remove from Call List" : "Add to Call List"}"
+                title="${isSaved ? "In Call List" : "Save to Call List"}"
+              >
+                &#9733;
+              </button>
+            </div>
+            <div class="tile-foot-slot">
+              <div class="tile-rest-line">
                 <span class="tile-signal ${signalClass}">${escapeHtml(primarySignal)}</span>
-                <div class="tile-hover-actions">
-                  <button type="button" class="tile-net-jump" data-open-tab="network">Network &rarr;</button>
-                  <span class="tile-inspect-cue">Brief &rarr;</span>
-                </div>
+              </div>
+              <div class="tile-hover-bar">
+                <button type="button" class="tile-net-jump" data-open-tab="network">Network &rarr;</button>
+                <span class="tile-inspect-cue">Brief &rarr;</span>
               </div>
             </div>
           </div>
@@ -766,7 +851,93 @@ function updateSearchInputChrome() {
   }
 }
 
+function hideSearchSuggestions() {
+  const popup = document.getElementById("searchSuggestPopup");
+  if (popup) popup.hidden = true;
+}
+
+function renderSearchSuggestions(rawQuery) {
+  const popup = document.getElementById("searchSuggestPopup");
+  if (!popup) return;
+  const q = String(rawQuery || "").trim().toLowerCase();
+  if (!q) {
+    popup.hidden = true;
+    popup.innerHTML = "";
+    return;
+  }
+
+  const companyMatches = [];
+  const seenIds = new Set();
+  const pool = [...state.DisplayedShortlist, ...(state.bootstrap?.companies || [])];
+  for (const c of pool) {
+    if (!c || seenIds.has(c.id)) continue;
+    const hay = `${c.name} ${c.sector || ""} ${c.country || ""} ${c.hqCity || ""}`.toLowerCase();
+    if (hay.includes(q)) {
+      seenIds.add(c.id);
+      companyMatches.push(c);
+    }
+    if (companyMatches.length >= 3) break;
+  }
+
+  const filterMatches = [];
+  for (const f of state.bootstrap?.funds || []) {
+    if (f.name.toLowerCase().includes(q)) {
+      filterMatches.push({ kind: "Fund", query: f.name, meta: `${f.hqCity}, ${f.country}` });
+    }
+    if (filterMatches.length >= 2) break;
+  }
+
+  const suggestions = [
+    ...companyMatches.map((c) => ({
+      type: "startup",
+      id: c.id,
+      kind: "Startup",
+      title: c.name,
+      meta: `${c.sector} · ${c.country}${typeof c.suitabilityScore === "number" ? ` · ${c.suitabilityScore}` : ""}`
+    })),
+    ...filterMatches.map((m) => ({
+      type: "query",
+      query: m.query,
+      kind: m.kind,
+      title: m.query,
+      meta: m.meta
+    }))
+  ].slice(0, 5);
+
+  if (!suggestions.length) {
+    popup.hidden = true;
+    popup.innerHTML = "";
+    return;
+  }
+
+  popup.hidden = false;
+  popup.innerHTML = suggestions
+    .map((s) =>
+      s.type === "startup"
+        ? `
+      <button type="button" class="suggest-item" role="option" data-suggest-startup="${escapeHtml(s.id)}">
+        <span class="suggest-item-main">
+          <span class="suggest-kind-tag">${escapeHtml(s.kind)}</span>
+          <span class="suggest-item-title">${escapeHtml(s.title)}</span>
+        </span>
+        <span class="suggest-item-meta">${escapeHtml(s.meta)}</span>
+      </button>
+    `
+        : `
+      <button type="button" class="suggest-item" role="option" data-suggest-query="${escapeHtml(s.query)}">
+        <span class="suggest-item-main">
+          <span class="suggest-kind-tag is-filter">${escapeHtml(s.kind)}</span>
+          <span class="suggest-item-title">${escapeHtml(s.title)}</span>
+        </span>
+        <span class="suggest-item-meta">${escapeHtml(s.meta)}</span>
+      </button>
+    `
+    )
+    .join("");
+}
+
 async function executeSearchRefinement(customQuery) {
+  hideSearchSuggestions();
   const inputEl = document.getElementById("aiSearchInput");
   const queryText = typeof customQuery === "string" ? customQuery : inputEl?.value || "";
   if (inputEl && typeof customQuery === "string") {
@@ -1240,7 +1411,7 @@ async function openStartupInspector(companyId, options = {}) {
     document.getElementById("drawerStartupLogo").innerHTML = buildStartupLogoSvg(
       candidate.name,
       candidate.sector,
-      48
+      64
     );
     document.getElementById("drawerStartupRank").textContent =
       rankIdx >= 0 ? `Rank #${rankIdx + 1} of ${state.DisplayedShortlist.length}` : "Connected peer";
@@ -1251,11 +1422,18 @@ async function openStartupInspector(companyId, options = {}) {
     if (scoreArcEl) {
       scoreArcEl.innerHTML = buildIncompleteCircleScoreSvg(
         candidate.suitabilityScore ?? 0,
-        62,
+        64,
         "/100",
         "drawerScoreNumber"
       );
     }
+  }
+
+  syncCallListUI();
+  const introBtn = document.getElementById("copyWarmIntroBtn");
+  if (introBtn) {
+    introBtn.classList.remove("is-copied");
+    introBtn.textContent = "Copy intro note";
   }
 
   switchDrawerTab(options.tab === "network" ? "network" : "brief");
@@ -1283,6 +1461,41 @@ function closeStartupInspector() {
   if (drawer) drawer.hidden = true;
   if (backdrop) backdrop.hidden = true;
   document.body.classList.remove("has-drawer-open");
+}
+
+function buildWarmIntroDraftText(candidate) {
+  if (!candidate) return "";
+  const fundLabel = getSelectedBenchmarkLabel();
+  const bridgeFull = candidate.linkedinNetwork?.bridgePerson || candidate.coInvestorPath?.coInvestorName || "a mutual syndicate partner";
+  const bridgeFirst = bridgeFull.split("(")[0].trim();
+  const targetLeader = candidate.linkedinNetwork?.targetLeader || `${candidate.name} team`;
+  const roundAmt = formatEur(candidate.lastRoundAmountEurM);
+  return `Hi ${bridgeFirst}, hope you're well. Reviewing ${candidate.name} (${candidate.sector}, ${candidate.hqCity}) against ${fundLabel}'s active ${candidate.likelyNextStage || "Series A"} mandate (${candidate.suitabilityScore}/100 Cala thesis fit after their ${candidate.stage} round of ${roundAmt}). Would love a warm double-opt-in intro to ${targetLeader} if helpful.`;
+}
+
+async function copyWarmIntroNote() {
+  const candidate =
+    state.allKnownItems.get(state.activeStartupId) ||
+    state.DisplayedShortlist.find((c) => c.id === state.activeStartupId);
+  if (!candidate) return;
+  const text = buildWarmIntroDraftText(candidate);
+  const btn = document.getElementById("copyWarmIntroBtn");
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    }
+  } catch {
+    // Non-fatal in headless or non-secure contexts
+  }
+  if (btn) {
+    btn.classList.add("is-copied");
+    btn.textContent = "Copied intro note ✓";
+    window.clearTimeout(btn._copyTimer);
+    btn._copyTimer = window.setTimeout(() => {
+      btn.classList.remove("is-copied");
+      btn.textContent = "Copy intro note";
+    }, 1800);
+  }
 }
 
 function switchDrawerTab(tabName) {
@@ -1322,6 +1535,14 @@ function renderDrawerBriefPane(brief, candidate) {
     pillsEl.innerHTML = pills
       .map((p) => `<span class="meta-pill">${escapeHtml(p)}</span>`)
       .join("");
+  }
+
+  const introBox = document.getElementById("drawerIntroPreviewBox");
+  if (introBox) {
+    introBox.innerHTML = `
+      <div class="warm-intro-label">Warm intro draft</div>
+      <p class="warm-intro-text">${escapeHtml(buildWarmIntroDraftText(candidate))}</p>
+    `;
   }
 
   const confEl = document.getElementById("drawerConfidenceLabel");
@@ -2102,9 +2323,43 @@ function bindEvents() {
   });
 
   const aiSearchInput = document.getElementById("aiSearchInput");
-  aiSearchInput?.addEventListener("focus", updateSearchInputChrome);
-  aiSearchInput?.addEventListener("blur", updateSearchInputChrome);
-  aiSearchInput?.addEventListener("input", updateSearchInputChrome);
+  const suggestPopup = document.getElementById("searchSuggestPopup");
+  aiSearchInput?.addEventListener("focus", () => {
+    updateSearchInputChrome();
+    if (aiSearchInput.value.trim()) {
+      renderSearchSuggestions(aiSearchInput.value);
+    }
+  });
+  aiSearchInput?.addEventListener("blur", () => {
+    updateSearchInputChrome();
+    window.setTimeout(hideSearchSuggestions, 160);
+  });
+  aiSearchInput?.addEventListener("input", () => {
+    updateSearchInputChrome();
+    renderSearchSuggestions(aiSearchInput.value);
+  });
+
+  suggestPopup?.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+  });
+  suggestPopup?.addEventListener("click", (e) => {
+    const startBtn = e.target.closest("[data-suggest-startup]");
+    if (startBtn) {
+      hideSearchSuggestions();
+      state.peerHistory = [];
+      openStartupInspector(startBtn.dataset.suggestStartup, { keepHistory: true, tab: "brief" });
+      return;
+    }
+    const queryBtn = e.target.closest("[data-suggest-query]");
+    if (queryBtn) {
+      executeSearchRefinement(queryBtn.dataset.suggestQuery);
+    }
+  });
+
+  document.getElementById("filterCallListBtn")?.addEventListener("click", () => {
+    state.onlyCallList = !state.onlyCallList;
+    renderStartupGrid(state.DisplayedShortlist);
+  });
 
   document.getElementById("aiSearchForm")?.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -2147,6 +2402,12 @@ function bindEvents() {
 
   const startupGridEl = document.getElementById("startupGrid");
   startupGridEl?.addEventListener("click", (e) => {
+    const starBtn = e.target.closest("[data-star-id]");
+    if (starBtn) {
+      e.stopPropagation();
+      toggleCallListStartup(starBtn.dataset.starId);
+      return;
+    }
     const netBtn = e.target.closest("[data-open-tab='network']");
     const tile = e.target.closest("[data-startup-id]");
     if (!tile) return;
@@ -2165,6 +2426,16 @@ function bindEvents() {
     e.preventDefault();
     state.peerHistory = [];
     openStartupInspector(tile.dataset.startupId, { keepHistory: true, tab: "brief" });
+  });
+
+  document.getElementById("drawerSaveCallBtn")?.addEventListener("click", () => {
+    if (state.activeStartupId) {
+      toggleCallListStartup(state.activeStartupId);
+    }
+  });
+
+  document.getElementById("copyWarmIntroBtn")?.addEventListener("click", () => {
+    copyWarmIntroNote();
   });
 
   document.getElementById("drawerCloseBtn")?.addEventListener("click", closeStartupInspector);
@@ -2220,21 +2491,33 @@ function bindEvents() {
     }
   });
 
-  document.getElementById("exportMarkdownBtn")?.addEventListener("click", () => {
+  function exportCurrentMemoMarkdown() {
     const md = state.activeBrief?.memoMarkdown || state.activeBrief?.markdownMemo;
     if (!md) return;
     const candidate = state.allKnownItems.get(state.activeStartupId);
     const slug = (candidate?.name || "startup").toLowerCase().replace(/[^a-z0-9]+/g, "-");
     downloadFile(`${slug}-investment-memo.md`, md, "text/markdown;charset=utf-8");
-  });
+  }
 
-  document.getElementById("exportCsvBtn")?.addEventListener("click", () => {
-    const rows = state.DisplayedShortlist.map(
+  function exportCurrentShortlistCsv() {
+    const sourceList = state.onlyCallList
+      ? state.DisplayedShortlist.filter((s) => state.savedCallListIds.includes(s.id))
+      : state.DisplayedShortlist;
+    const rows = sourceList.map(
       (s) => `"${s.name}","${s.sector}","${s.country}","${s.stage}",${s.suitabilityScore}`
     );
     const csv = ["Name,Sector,Country,Stage,Score", ...rows].join("\n");
-    downloadFile("revealed-thesis-shortlist.csv", csv, "text/csv;charset=utf-8");
-  });
+    downloadFile(
+      state.onlyCallList ? "revealed-thesis-call-list.csv" : "revealed-thesis-shortlist.csv",
+      csv,
+      "text/csv;charset=utf-8"
+    );
+  }
+
+  document.getElementById("exportMarkdownBtn")?.addEventListener("click", exportCurrentMemoMarkdown);
+  document.getElementById("modalQuickExportMdBtn")?.addEventListener("click", exportCurrentMemoMarkdown);
+  document.getElementById("exportCsvBtn")?.addEventListener("click", exportCurrentShortlistCsv);
+  document.getElementById("modalQuickExportCsvBtn")?.addEventListener("click", exportCurrentShortlistCsv);
 
   document.getElementById("verifyLiveCalaBtn")?.addEventListener("click", triggerLiveCalaVerification);
 
@@ -2247,6 +2530,7 @@ function bindEvents() {
     if (e.key === "Escape") {
       if (drawerOpen) closeStartupInspector();
       if (popOpen) closeOptionsPopover();
+      hideSearchSuggestions();
       return;
     }
 
@@ -2263,6 +2547,16 @@ function bindEvents() {
       } else if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
         e.preventDefault();
         stepStartupInList(-1);
+      } else if (e.key === "1") {
+        switchDrawerTab("brief");
+      } else if (e.key === "2") {
+        switchDrawerTab("network");
+      } else if (e.key === "s" || e.key === "S") {
+        e.preventDefault();
+        if (state.activeStartupId) toggleCallListStartup(state.activeStartupId);
+      } else if (e.key === "c" || e.key === "C") {
+        e.preventDefault();
+        copyWarmIntroNote();
       }
     }
   });
@@ -2281,7 +2575,7 @@ function syncNetworkSourceButtons() {
 }
 
 async function init() {
-  loadPrefsFromStorage();
+  const hasSavedCallList = loadPrefsFromStorage();
   bindEvents();
 
   const bootstrap = await fetchJson("/api/bootstrap");
@@ -2329,6 +2623,10 @@ async function init() {
   updateSearchInputChrome();
 
   await runAnalysis();
+  if (!hasSavedCallList && !state.savedCallListIds.length && state.DisplayedShortlist.length >= 2) {
+    state.savedCallListIds = state.DisplayedShortlist.slice(0, 2).map((item) => item.id);
+    renderStartupGrid(state.DisplayedShortlist);
+  }
   if (state.targetStage !== "all") {
     await executeSearchRefinement("");
   }

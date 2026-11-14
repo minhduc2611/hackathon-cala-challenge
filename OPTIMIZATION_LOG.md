@@ -67,3 +67,14 @@
   - Secondary details at rest (desktop hover devices): always exposed -> cleanly revealed on `:hover` / `:focus-within` across tiles, `#alsoScreenedCard`, Step 1 `.stat` / `.flow-step`, Step 3 `.fund-pick-card`, `.sb-row`, and `.evidence-item`
 - **Tests:** PASS (`12/12`, `111.7ms`), hygiene check `0` violations, Browser Check (`final_step_773.png`) verified at `1440x900` (`0` console/network errors, `8/8` Cala credits preserved)
 - **Decision:** KEEP
+
+### [2026-11-14 09:38] — Exp 5: Constant-Height Scale Hover, 64px Top Emblems, Centered Modal Inspector & Deal-Flow Features
+- **Hypothesis:** Replacing vertical height expansion on hover with CSS `scale(1.04)` + fixed-height footer cross-fade, enlarging startup emblems to `64x64px`, centering `#inspectorDrawer` (`min(980px, 94vw)`) with a 2-col `.modal-exec-grid`, and adding Call List triage, search autocomplete, warm intro draft copy, and modal hotkeys delivers a zero-jitter, fast VC workflow.
+- **Files touched:** `public/index.html`, `public/styles.css`, `public/app.js`
+- **Before -> After:**
+  - Hover vertical expansion (`tile.offsetHeight` diff): vertical grow -> `0px` (`235px` rest & hover, `scale(1.04)` focus lift)
+  - Top logo size (grid & modal): `46x46px` / `48x48px` -> `64x64px` layered sector SVGs
+  - Inspector window alignment: right-edge drawer -> centered `980x792px` modal (`top: 54px`, `bottom: 54px` at `1440x900`)
+  - Workflow accelerators added: `★ Call List` star bookmarking & filter (`localStorage`), `#searchSuggestPopup` autocomplete, `#copyWarmIntroBtn` warm intro generator, and modal hotkeys (`<-/->`, `1`, `2`, `S`, `C`, `Esc`)
+- **Tests:** PASS (`12/12`, `117.5ms`), hygiene check `0` violations, Browser Checks verified (`1440x900` `final_step_842.png` & `390x844` mobile zero overflow, `0` console/network errors, `8/8` Cala credits preserved)
+- **Decision:** KEEP
