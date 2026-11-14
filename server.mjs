@@ -320,6 +320,7 @@ export function createAppServer(options = {}) {
         const analysis = getCachedAnalysis(body);
         const refined = refineShortlist(analysis.thesis, analysis.allRanked, {
           region: body.region,
+          stageFilter: body.stageFilter,
           excludeSector: body.excludeSector,
           raisingSoonOnly: body.raisingSoonOnly,
           untappedOnly: body.untappedOnly,

@@ -171,4 +171,16 @@ test('refineShortlist classifies company, investor, and industry AI searches wit
   assert.equal(industryRes.searchIntent, 'industry');
   assert.ok(Array.isArray(industryRes.aiTrace) && industryRes.aiTrace.length >= 2);
   assert.ok(industryRes.shortlist.length >= 1);
+
+  const cityRes = refineShortlist(analysis.thesis, analysis.allRanked, {
+    queryText: 'Helsinki'
+  });
+  assert.ok(cityRes.shortlist.length >= 1);
+  assert.ok(cityRes.shortlist.every((item) => item.hqCity === 'Helsinki' || item.description.includes('Helsinki')));
+
+  const seedStageRes = refineShortlist(analysis.thesis, analysis.allRanked, {
+    stageFilter: 'pre_seed_seed'
+  });
+  assert.ok(seedStageRes.shortlist.length >= 1);
+  assert.ok(seedStageRes.shortlist.every((item) => /seed/i.test(item.stage)));
 });

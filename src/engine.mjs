@@ -946,32 +946,72 @@ export function buildStartupBrief(startupId, fundId = null) {
   };
 }
 
+function matchesStageGroup(stageValue, stageFilter) {
+  if (!stageFilter || stageFilter === 'all') return true;
+  const s = String(stageValue || '').toLowerCase();
+  if (stageFilter === 'pre_seed_seed') {
+    return s.includes('pre-seed') || s.includes('seed');
+  }
+  if (stageFilter === 'seed_series_a') {
+    return s.includes('seed') || s.includes('series a');
+  }
+  if (stageFilter === 'series_a_plus') {
+    return s.includes('series a') || s.includes('series b') || s.includes('growth');
+  }
+  return s.includes(stageFilter.toLowerCase());
+}
+
 export function refineShortlist(thesis, allRanked, refinement = {}) {
   const rawQuery = String(refinement.queryText || '').trim();
   const query = rawQuery.toLowerCase();
   let regionFilter = refinement.region || 'all';
+  let stageFilter = refinement.stageFilter || 'all';
   let excludeSector = refinement.excludeSector || 'none';
   let raisingSoonOnly = Boolean(refinement.raisingSoonOnly);
   let untappedOnly = Boolean(refinement.untappedOnly);
   let sectorFilter = null;
   let investorFilter = null;
   let companyMatchName = null;
+  let freeTextQuery = null;
   let searchIntent = 'general';
   let explanation = null;
   const aiTrace = [];
 
   if (query) {
-    if (query.includes('nordic')) regionFilter = 'Nordics';
-    else if (query.includes('dach') || query.includes('german')) regionFilter = 'DACH';
-    else if (query.includes('uk') || query.includes('london') || query.includes('britain')) regionFilter = 'UK';
+    let matchedStructured = false;
+    if (query.includes('nordic')) {
+      regionFilter = 'Nordics';
+      matchedStructured = true;
+    } else if (query.includes('dach') || query.includes('german')) {
+      regionFilter = 'DACH';
+      matchedStructured = true;
+    } else if (query.includes('uk') || query.includes('london') || query.includes('britain')) {
+      regionFilter = 'UK';
+      matchedStructured = true;
+    }
 
-    if (query.includes('exclude fintech') || query.includes('no fintech')) excludeSector = 'Fintech';
-    else if (query.includes('exclude health') || query.includes('no health')) excludeSector = 'HealthTech';
-    else if (query.includes('exclude climate') || query.includes('no climate')) excludeSector = 'Climate Tech';
-    else if (query.includes('exclude saas') || query.includes('no saas')) excludeSector = 'B2B SaaS';
+    if (query.includes('exclude fintech') || query.includes('no fintech')) {
+      excludeSector = 'Fintech';
+      matchedStructured = true;
+    } else if (query.includes('exclude health') || query.includes('no health')) {
+      excludeSector = 'HealthTech';
+      matchedStructured = true;
+    } else if (query.includes('exclude climate') || query.includes('no climate')) {
+      excludeSector = 'Climate Tech';
+      matchedStructured = true;
+    } else if (query.includes('exclude saas') || query.includes('no saas')) {
+      excludeSector = 'B2B SaaS';
+      matchedStructured = true;
+    }
 
-    if (query.includes('raising')) raisingSoonOnly = true;
-    if (query.includes('untapped') || query.includes('angel')) untappedOnly = true;
+    if (query.includes('raising')) {
+      raisingSoonOnly = true;
+      matchedStructured = true;
+    }
+    if (query.includes('untapped') || query.includes('angel')) {
+      untappedOnly = true;
+      matchedStructured = true;
+    }
 
     const whyMatch = query.match(/why not\s+([a-z0-9\s.-]+)/i);
     if (whyMatch) {
@@ -1053,7 +1093,10 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
         }
       }
 
-      if (!aiTrace.length) {
+      if (!matchedStructured && !investorFilter && !sectorFilter && !companyMatchName) {
+        freeTextQuery = query;
+        aiTrace.push(`Intent: Keyword match across Cala profiles ("${rawQuery}")`);
+      } else if (!aiTrace.length) {
         aiTrace.push(`Intent: Thesis filter across ${thesis.fundName} candidate pool`);
       }
       aiTrace.push(`Ranked by Suitability Score using verified Cala citations`);
@@ -1062,6 +1105,7 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
 
   const filtered = allRanked.filter((item) => {
     if (regionFilter !== 'all' && item.region !== regionFilter) return false;
+    if (!matchesStageGroup(item.stage, stageFilter)) return false;
     if (excludeSector !== 'none' && item.sector === excludeSector) return false;
     if (raisingSoonOnly && !item.raisingSoon) return false;
     if (untappedOnly && !item.untappedSignal) return false;
@@ -1081,6 +1125,22 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
         item.subSectors.some((s) => query.includes(s.toLowerCase())) ||
         item.description.toLowerCase().includes(sectorFilter.toLowerCase().split(' ')[0]);
       if (!textMatch) return false;
+    } else if (freeTextQuery) {
+      const haystack = [
+        item.name,
+        item.hqCity,
+        item.country,
+        item.sector,
+        item.stage,
+        item.oneLiner,
+        item.description,
+        ...(item.subSectors || []),
+        ...(item.roundHistory || []).flatMap((r) => r.investorNames || [])
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      if (!haystack.includes(freeTextQuery)) return false;
     }
     return true;
   });
@@ -1094,7 +1154,7 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
   }
 
   if (!explanation && query) {
-    explanation = `AI Search (${searchIntent}) matched ${filtered.length} startups from ${thesis.fundName} evaluated pool.`;
+    explanation = `Matched ${filtered.length} startups from ${thesis.fundName} pool using verified Cala records.`;
   }
 
   return {
@@ -1102,6 +1162,7 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
     aiTrace,
     appliedFilters: {
       region: regionFilter,
+      stageFilter,
       excludeSector,
       raisingSoonOnly,
       untappedOnly,
