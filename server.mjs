@@ -15,6 +15,7 @@ import {
   runFullAnalysis,
   searchEntities
 } from './src/engine.mjs';
+import { buildEntityMap, buildEntityMapFromCala, searchLocalEntities } from './src/entityMap.mjs';
 
 loadEnvFile();
 
@@ -555,7 +556,7 @@ async function discoverStartupsFromCala(calaClient, { queryText = '', mode = 'ec
 
     const entitySearchPromise =
       searchTerm.length >= 2 && !isGenericEventWord
-        ? calaClient.calaEntitySearch(searchTerm, 15, ['Company', 'Organization', 'Person'])
+        ? calaClient.calaEntitySearch(searchTerm, 12, ['Company', 'Organization', 'Person'])
         : Promise.resolve(null);
     const ksSearchPromise =
       cleanQ.length >= 3 && !isGenericEventWord && typeof calaClient.calaKnowledgeSearch === 'function'
@@ -607,9 +608,9 @@ async function discoverStartupsFromCala(calaClient, { queryText = '', mode = 'ec
       }
 
       // Deep hydrate combined top 8 unique Company/Organization IDs across directHits + knowledgeAnswer.entities
-      const topCompanyOrgIds = companyOrgHits.slice(0, 8).map((e) => e.id);
+      const topCompanyOrgIds = companyOrgHits.slice(0, 6).map((e) => e.id);
       const deep = await deepHydrateCalaEntities(calaClient, topCompanyOrgIds, {
-        maxEntities: 8,
+        maxEntities: 6,
         allowOrganizations: true,
         allowUnfundedLive: true,
         resolveEntityContext: (entityData) => ({
@@ -895,7 +896,70 @@ export function createAppServer(options = {}) {
 
       if (req.method === 'GET' && pathname === '/api/search') {
         const q = reqUrl.searchParams.get('q') || '';
-        sendJson(res, 200, searchEntities(q));
+        const wantLive = reqUrl.searchParams.get('live') === '1';
+        const entities = searchLocalEntities(q, 8);
+        const live = { requested: wantLive, available: Boolean(calaClient.getBudgetStatus().configured), error: null, count: 0 };
+        if (wantLive && q.trim().length >= 2 && live.available) {
+          try {
+            const searchRes = await calaClient.calaEntitySearch(q.trim(), 12, ['Company', 'Organization', 'Person']);
+            const hits = (searchRes.data?.entities || []).filter((e) => e?.id && e?.name);
+            const known = new Set(entities.map((e) => e.name.toLowerCase()));
+            for (const hit of hits) {
+              if (known.has(hit.name.toLowerCase())) continue;
+              known.add(hit.name.toLowerCase());
+              const kind = hit.entity_type === 'Person' ? 'person' : hit.entity_type === 'Organization' ? 'investor' : 'company';
+              entities.push({
+                ref: `cala:${hit.id}`,
+                name: hit.name,
+                kind,
+                typeLabel: hit.entity_type || 'Entity',
+                subtitle: [hit.entity_type, String(hit.description || '').slice(0, 80)].filter(Boolean).join(' · '),
+                live: true
+              });
+              live.count += 1;
+            }
+            // Ingest companies and organizations so brief/analyze calls work on them immediately.
+            const ing = ingestLiveCalaEntities(
+              hits.filter((h) => !h.entity_type || h.entity_type === 'Company' || h.entity_type === 'Organization'),
+              { allowOrganizations: true, allowGeneralCompanies: true, allowUnfundedLive: true }
+            );
+            if (ing.ingestedCount > 0 || ing.enrichedCount > 0) analysisCache.clear();
+          } catch (err) {
+            live.error = err.message || 'Live Cala lookup failed.';
+          }
+        }
+        sendJson(res, 200, { ...searchEntities(q), entities, live });
+        return;
+      }
+
+      if (req.method === 'GET' && pathname === '/api/entity-map') {
+        const ref = String(reqUrl.searchParams.get('ref') || '').trim();
+        if (!ref) {
+          sendJson(res, 400, { error: 'Missing required query parameter: ref.' });
+          return;
+        }
+        if (ref.startsWith('cala:') && calaClient.getBudgetStatus().configured) {
+          try {
+            const { entityRes } = await retrieveEntityWithIntrospection(calaClient, ref.slice(5), 20);
+            const liveMap = buildEntityMapFromCala(entityRes.data);
+            if (liveMap) {
+              sendJson(res, 200, { ...liveMap, liveStatus: 'live' });
+              return;
+            }
+          } catch {
+            // Fall through to indexed data below.
+          }
+        }
+        const localMap = buildEntityMap(ref);
+        if (!localMap) {
+          sendJson(res, 404, {
+            error: ref.startsWith('cala:')
+              ? 'Live Cala lookup unavailable for this entity, and it is not in the indexed data.'
+              : 'Entity not found in the indexed data.'
+          });
+          return;
+        }
+        sendJson(res, 200, { ...localMap, liveStatus: 'indexed' });
         return;
       }
 

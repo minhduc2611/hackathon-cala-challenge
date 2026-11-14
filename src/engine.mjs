@@ -4042,7 +4042,7 @@ export function scoreAndRankCandidates(thesis, options = {}) {
     if (seenSet.has(company.name.toLowerCase())) continue;
 
     const explicitlyIncluded = includeCompanySet.has(company.name.toLowerCase());
-    if (entityScope !== 'all' && company.entityCategory === 'established_corp' && !explicitlyIncluded) continue;
+    if (entityScope !== 'all' && company.entityCategory === 'established_corp' && !explicitlyIncluded && !company.isLiveCalaDiscovered) continue;
 
     const visibleRounds = cutoffDate
       ? company.rounds.filter((r) => r.date < cutoffDate)
@@ -5978,7 +5978,7 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
   };
 
   let filtered = allRanked.filter((item) => {
-    if (effectiveEntityScope !== 'all' && item.entityCategory === 'established_corp' && !hasEstablishedCompanyMatch) return false;
+    if (effectiveEntityScope !== 'all' && item.entityCategory === 'established_corp' && !hasEstablishedCompanyMatch && !item.isLiveCalaDiscovered) return false;
     if (regionFilter !== 'all' && item.region !== regionFilter) return false;
     if (!matchesStageGroup(item.stage, stageFilter)) return false;
     if (excludeSector !== 'none' && item.sector === excludeSector) return false;
