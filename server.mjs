@@ -3,12 +3,15 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { COMPANIES, FUNDS, REFERENCE_DATE, SOURCES } from './src/data.mjs';
+import { createCalaClient, loadEnvFile } from './src/calaClient.mjs';
 import {
   buildStartupBrief,
   refineShortlist,
   runFullAnalysis,
   searchEntities
 } from './src/engine.mjs';
+
+loadEnvFile();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,6 +27,62 @@ const MIME_TYPES = {
 };
 
 const analysisCache = new Map();
+
+function pickBestCalaEntity(entities = [], preferredType = 'Organization') {
+  if (!entities.length) return null;
+  const exactType = entities.find((e) => e.entity_type === preferredType);
+  return exactType || entities[0];
+}
+
+function summarizeLiveCalaEntity(entityData) {
+  if (!entityData) return null;
+  const outgoing = entityData.relationships?.outgoing || {};
+  const incoming = entityData.relationships?.incoming || {};
+
+  const investedIn = (outgoing.INVESTED_IN || []).map((c) => ({
+    id: c.id,
+    name: c.name,
+    entityType: c.entity_type,
+    sources: (c.properties?.sources || []).slice(0, 2)
+  }));
+
+  const fundingRounds = (outgoing.PARTICIPATES_IN_FUNDING_ROUND || []).map((r) => ({
+    id: r.id,
+    roundType: r.name,
+    isLead: Boolean(r.properties?.is_lead),
+    eventDate: r.properties?.event_date || null,
+    sources: (r.properties?.sources || []).slice(0, 2)
+  }));
+
+  const raisedRounds = (incoming.PARTICIPATES_IN_FUNDING_ROUND || outgoing.HAS_FUNDING_ROUND || []).map((r) => ({
+    id: r.id,
+    roundType: r.name,
+    eventDate: r.properties?.event_date || null,
+    sources: (r.properties?.sources || []).slice(0, 2)
+  }));
+
+  const worksAt = (incoming.WORKS_AT || []).map((p) => ({
+    id: p.id,
+    name: p.name,
+    role: p.properties?.role || 'Team member'
+  }));
+
+  return {
+    id: entityData.id,
+    name: entityData.name,
+    entityType: entityData.entity_type,
+    description: entityData.description,
+    website: entityData.properties?.website?.value || null,
+    address: entityData.properties?.registered_address?.value || null,
+    investedInCount: investedIn.length,
+    investedIn: investedIn.slice(0, 12),
+    fundingRoundsCount: fundingRounds.length,
+    leadRoundsCount: fundingRounds.filter((r) => r.isLead).length,
+    fundingRounds: fundingRounds.slice(0, 12),
+    raisedRounds: raisedRounds.slice(0, 10),
+    worksAt: worksAt.slice(0, 6)
+  };
+}
 
 function getCachedAnalysis(payload) {
   const key = JSON.stringify({
@@ -116,7 +175,9 @@ async function serveStatic(res, reqPathname) {
   }
 }
 
-export function createAppServer() {
+export function createAppServer(options = {}) {
+  const calaClient = options.calaClient || createCalaClient({ maxLiveCalls: options.maxLiveCalls ?? 8 });
+
   return http.createServer(async (req, res) => {
     try {
       const reqUrl = new URL(req.url || '/', 'http://127.0.0.1');
@@ -148,8 +209,79 @@ export function createAppServer() {
             companiesIndexed: COMPANIES.length,
             roundsIndexed: COMPANIES.reduce((s, c) => s + c.rounds.length, 0),
             sourcesIndexed: Object.keys(SOURCES).length,
-            liveCalaConfigured: Boolean(process.env.CALA_API_KEY)
+            liveCalaConfigured: Boolean(process.env.CALA_API_KEY),
+            calaBudget: calaClient.getBudgetStatus()
           }
+        });
+        return;
+      }
+
+      if (req.method === 'GET' && pathname === '/api/cala-budget') {
+        sendJson(res, 200, calaClient.getBudgetStatus());
+        return;
+      }
+
+      if (req.method === 'POST' && pathname === '/api/cala-verify') {
+        const body = await readJsonBody(req);
+        const name = String(body.name || '').trim();
+        const type = body.type === 'company' ? 'company' : 'fund';
+        const includeKnowledgeSearch = Boolean(body.includeKnowledgeSearch);
+        if (!name) {
+          sendJson(res, 400, { error: 'Missing required field: name.' });
+          return;
+        }
+
+        const searchRes = await calaClient.calaEntitySearch(name, 5);
+        const candidates = searchRes.data?.entities || [];
+        const preferredType = type === 'fund' ? 'Organization' : 'Company';
+        const matched = pickBestCalaEntity(candidates, preferredType);
+
+        let introRes = null;
+        let entityRes = null;
+        let liveSummary = null;
+        let knowledgeRes = null;
+
+        if (matched) {
+          introRes = await calaClient.calaIntrospect(matched.id);
+          const outgoingMap = {};
+          for (const rel of introRes.data?.relationships?.outgoing || []) {
+            outgoingMap[rel] = { limit: 20, offset: 0 };
+          }
+          const incomingMap = {};
+          for (const rel of introRes.data?.relationships?.incoming || []) {
+            incomingMap[rel] = { limit: 20, offset: 0 };
+          }
+          entityRes = await calaClient.calaRetrieveEntity(matched.id, {
+            properties: introRes.data?.properties || ['name', 'description'],
+            relationships: { outgoing: outgoingMap, incoming: incomingMap }
+          });
+          liveSummary = summarizeLiveCalaEntity(entityRes.data);
+        }
+
+        if (includeKnowledgeSearch) {
+          const prompt =
+            type === 'fund'
+              ? `What companies and funding rounds has ${name} invested in recently?`
+              : `What is the complete funding history, round dates, amounts, and investors of ${name}?`;
+          knowledgeRes = await calaClient.calaKnowledgeSearch(prompt);
+        }
+
+        const anyLiveCall =
+          !searchRes.fromCache ||
+          (introRes && !introRes.fromCache) ||
+          (entityRes && !entityRes.fromCache) ||
+          (knowledgeRes && !knowledgeRes.fromCache);
+
+        sendJson(res, 200, {
+          queryName: name,
+          type,
+          fromCache: !anyLiveCall,
+          matchedEntity: matched,
+          candidateEntities: candidates,
+          introspection: introRes?.data || null,
+          liveSummary,
+          knowledgeAnswer: knowledgeRes?.data || null,
+          budget: calaClient.getBudgetStatus()
         });
         return;
       }
@@ -164,7 +296,10 @@ export function createAppServer() {
         const body = await readJsonBody(req);
         const result = getCachedAnalysis(body);
         const { allRanked, ...publicPayload } = result;
-        sendJson(res, 200, publicPayload);
+        sendJson(res, 200, {
+          ...publicPayload,
+          calaBudget: calaClient.getBudgetStatus()
+        });
         return;
       }
 

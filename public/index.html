@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Revealed Thesis Engine: Behaviour-First VC Deal Sourcing</title>
+  <title>Revealed Thesis Engine</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
@@ -15,247 +15,599 @@
 <body>
   <header class="masthead">
     <div class="masthead-inner">
-      <div class="brand-block">
+      <div class="brand-group">
         <a href="/" class="brand-wordmark">Revealed Thesis</a>
-        <span class="telemetry-line" id="telemetryLine">Loading Cala index...</span>
+        <p class="telemetry-summary" id="telemetryLine">Loading benchmark index...</p>
       </div>
-      <div class="view-switch" role="radiogroup" aria-label="Workspace view mode">
-        <label class="segment-option">
-          <input type="radio" name="personaView" value="analyst" checked />
-          <span>Analyst workbench</span>
-        </label>
-        <label class="segment-option">
-          <input type="radio" name="personaView" value="partner" />
-          <span>Partner rapid triage</span>
-        </label>
-      </div>
+
+      <nav class="primary-tabs" role="tablist" aria-label="Primary workspace navigation">
+        <button
+          type="button"
+          class="primary-tab is-active"
+          id="tab-config"
+          role="tab"
+          aria-selected="true"
+          aria-controls="panel-config"
+          data-tab="config"
+        >
+          Configuration
+        </button>
+        <button
+          type="button"
+          class="primary-tab"
+          id="tab-search"
+          role="tab"
+          aria-selected="false"
+          aria-controls="panel-search"
+          data-tab="search"
+        >
+          AI search &amp; research
+        </button>
+        <button
+          type="button"
+          class="primary-tab"
+          id="tab-thesis"
+          role="tab"
+          aria-selected="false"
+          aria-controls="panel-thesis"
+          data-tab="thesis"
+        >
+          Thesis &amp; backtest
+        </button>
+      </nav>
     </div>
   </header>
 
   <main class="workspace">
-    <!-- Immediate Command & Entity Bar -->
-    <section class="command-bar" aria-label="Fund and company selection">
-      <div class="command-top">
-        <div class="title-block">
-          <h1 id="workspaceHeading">Deal sourcing from actual investment behaviour</h1>
-          <p class="subtitle" id="workspaceSubtitle">
-            Select an indexed European fund or enter 3 to 5 admired companies. Every match and reason links directly to a verified Cala source.
+    <!-- TAB 1: CONFIGURATION WIZARD (OPEN BY DEFAULT) -->
+    <section
+      id="panel-config"
+      class="workspace-panel is-active"
+      role="tabpanel"
+      aria-labelledby="tab-config"
+    >
+      <div class="config-shell">
+        <div class="stepper-bar" role="navigation" aria-label="Configuration steps">
+          <button type="button" class="step-item is-active" data-step="1" id="stepperBtn1">
+            <span class="step-index">1</span>
+            <span class="step-label">Role</span>
+          </button>
+          <span class="step-connector" aria-hidden="true"></span>
+          <button type="button" class="step-item" data-step="2" id="stepperBtn2">
+            <span class="step-index">2</span>
+            <span class="step-label">Benchmark &amp; criteria</span>
+          </button>
+          <span class="step-connector" aria-hidden="true"></span>
+          <button type="button" class="step-item" data-step="3" id="stepperBtn3">
+            <span class="step-index">3</span>
+            <span class="step-label">Network &amp; launch</span>
+          </button>
+        </div>
+
+        <!-- Step 1: Role Selection -->
+        <div class="wizard-card" id="configStep1">
+          <h1>Who is using the thesis engine?</h1>
+          <p class="step-lead">
+            Select your workflow lens. Both modes share the same Cala funding facts and network graphs, tuned for either sourcing throughput or partner triage.
           </p>
-        </div>
-        <div class="mode-switch" role="radiogroup" aria-label="Input mode">
-          <label class="segment-option">
-            <input type="radio" name="inputMode" value="fund" checked />
-            <span>Analyse a fund</span>
-          </label>
-          <label class="segment-option">
-            <input type="radio" name="inputMode" value="companies" />
-            <span>3 to 5 admired companies</span>
-          </label>
-        </div>
-      </div>
 
-      <!-- Fund Input Controls -->
-      <div id="fundInputPanel" class="input-panel">
-        <div class="field-group">
-          <label for="fundSelect" class="field-label">Indexed European funds</label>
-          <select id="fundSelect" class="control-select"></select>
-        </div>
-        <div class="field-group search-group">
-          <label for="fundSearchInput" class="field-label">Search Cala fund entity (try "Ventures" for top 3 disambiguation)</label>
-          <div class="search-row">
-            <input
-              id="fundSearchInput"
-              type="search"
-              class="control-input"
-              placeholder="Type a fund name, city, or country..."
-              autocomplete="off"
-            />
+          <div class="role-grid" role="radiogroup" aria-label="Workflow role">
+            <label class="choice-card is-selected" data-role-card="analyst">
+              <input type="radio" name="configRole" value="analyst" checked />
+              <span class="choice-title">Investment analyst</span>
+              <span class="choice-desc">
+                Built for deep deal sourcing: sector and co-investor AI filtering, full Cala round verification tables, and exportable Markdown or CSV partner memos.
+              </span>
+            </label>
+
+            <label class="choice-card" data-role-card="investor">
+              <input type="radio" name="configRole" value="investor" />
+              <span class="choice-title">Investor or partner</span>
+              <span class="choice-desc">
+                Built for rapid triage: high-conviction suitability ranking, stated-versus-revealed thesis drift checks, and warm 2nd-degree intro pathways.
+              </span>
+            </label>
           </div>
-          <div id="disambiguationBox" class="disambiguation-box" hidden></div>
-        </div>
-        <div class="field-group optional-group">
-          <label for="seenCsvInput" class="field-label">Exclude already seen startups (optional comma or line list)</label>
-          <input
-            id="seenCsvInput"
-            type="text"
-            class="control-input"
-            placeholder="e.g. VoltGrid, NordQuant Photonics"
-          />
-        </div>
-        <div class="action-cell">
-          <button id="runAnalysisBtn" type="button" class="primary-btn">Run thesis scan</button>
-        </div>
-      </div>
 
-      <!-- 3 to 5 Admired Companies Controls -->
-      <div id="companiesInputPanel" class="input-panel companies-panel" hidden>
-        <div class="companies-picker-header">
-          <span class="field-label">Select 3 to 5 admired companies or past partner deals (<span id="selectedCompanyCount">0</span> selected)</span>
-          <button id="runProxyBtn" type="button" class="primary-btn">Build proxy thesis</button>
+          <div class="wizard-footer">
+            <span class="wizard-hint" id="roleStepHint">
+              Default priority for Analyst: Balanced suitability score with expandable evidence tables.
+            </span>
+            <button type="button" class="btn-primary" id="step1NextBtn">Continue to benchmark</button>
+          </div>
         </div>
-        <div id="companyChecklist" class="company-checklist" role="group" aria-label="Admired companies"></div>
-      </div>
 
-      <div id="weakProfileNotice" class="inline-alert" hidden>
-        <span id="weakProfileText"></span>
-        <button id="switchToProxyBtn" type="button" class="link-action">Switch to 3 to 5 admired companies</button>
-      </div>
-      <div id="errorBanner" class="inline-alert error-alert" hidden></div>
-    </section>
+        <!-- Step 2: Benchmark Setup -->
+        <div class="wizard-card" id="configStep2" hidden>
+          <h2>Benchmark fund and scoring priority</h2>
+          <p class="step-lead">
+            Choose an indexed fund to infer its revealed investment thesis from historical lead deals, or pick 3 to 5 admired companies.
+          </p>
 
-    <!-- Revealed Thesis & Backtest Sheet -->
-    <section class="thesis-section" aria-label="Revealed thesis profile">
-      <div class="section-header">
-        <h2 id="thesisTitle">Revealed thesis profile</h2>
-        <div class="tab-switch" role="tablist" aria-label="Thesis inspection tabs">
-          <button type="button" role="tab" class="tab-item is-active" data-thesis-tab="revealed" aria-selected="true">
-            Revealed behaviour
-          </button>
-          <button type="button" role="tab" class="tab-item" data-thesis-tab="stated" aria-selected="false">
-            Stated vs. revealed
-          </button>
-          <button type="button" role="tab" class="tab-item" data-thesis-tab="backtest" aria-selected="false">
-            Point-in-time backtest
-          </button>
-        </div>
-      </div>
-
-      <!-- Tab 1: Revealed Behaviour -->
-      <div id="tabRevealed" class="thesis-panel">
-        <div class="summary-strip" id="thesisMetricsStrip"></div>
-        <div class="drift-banner" id="driftBanner"></div>
-        <div class="distributions-grid">
-          <div class="dist-col" id="stageDistCol"></div>
-          <div class="dist-col" id="sectorDistCol"></div>
-          <div class="dist-col" id="geoAndCoInvestorCol"></div>
-        </div>
-      </div>
-
-      <!-- Tab 2: Stated vs Revealed -->
-      <div id="tabStated" class="thesis-panel" hidden>
-        <div class="stated-grid">
-          <div class="stated-col">
-            <h3>Public stated thesis (website text)</h3>
-            <p id="statedThesisCopy" class="body-prose"></p>
-            <div class="override-box">
-              <label for="statedOverrideInput" class="field-label">Paste custom fund website thesis to compare</label>
-              <textarea
-                id="statedOverrideInput"
-                rows="3"
-                class="control-textarea"
-                placeholder="Paste a fund thesis paragraph here to test stated vs. actual deal behaviour..."
-              ></textarea>
-              <button id="compareStatedBtn" type="button" class="secondary-action">Compare against Cala deals</button>
+          <div class="field-group">
+            <span class="field-label">Benchmark input method</span>
+            <div class="segment-group" role="radiogroup" aria-label="Benchmark method">
+              <label class="segment-choice">
+                <input type="radio" name="inputMode" value="fund" checked />
+                <span>Indexed venture fund</span>
+              </label>
+              <label class="segment-choice">
+                <input type="radio" name="inputMode" value="companies" />
+                <span>3 to 5 admired companies</span>
+              </label>
             </div>
           </div>
-          <div class="stated-col">
-            <h3>Observed gaps in Cala deal history</h3>
-            <ul id="statedDivergenceList" class="clean-list"></ul>
+
+          <div id="fundModePanel" class="mode-subpanel">
+            <div class="field-group">
+              <label for="fundSearchInput" class="field-label">Search indexed funds (top 3 matches shown)</label>
+              <div class="inline-input-row">
+                <input
+                  type="text"
+                  id="fundSearchInput"
+                  class="text-input"
+                  placeholder="Type fund name, e.g. Lifeline, Creandum, Northzone..."
+                  autocomplete="off"
+                />
+              </div>
+              <div id="fundDisambigResults" class="disambig-list" hidden></div>
+            </div>
+
+            <div class="field-group">
+              <span class="field-label">Indexed venture funds</span>
+              <div id="fundQuickPicks" class="quick-pick-grid"></div>
+            </div>
+
+            <div class="summary-callout" id="selectedFundSummary">
+              Select a fund above to load its revealed portfolio footprint.
+            </div>
+          </div>
+
+          <div id="companiesModePanel" class="mode-subpanel" hidden>
+            <div class="field-group">
+              <div class="field-header-row">
+                <label for="companyBenchmarkSearch" class="field-label">Select 3 to 5 companies defining your taste</label>
+                <span class="count-readout" id="companySelectCount">0 selected</span>
+              </div>
+              <input
+                type="text"
+                id="companyBenchmarkSearch"
+                class="text-input"
+                placeholder="Filter indexed companies..."
+                autocomplete="off"
+              />
+              <div id="companyChecklist" class="company-checklist"></div>
+            </div>
+          </div>
+
+          <div class="field-group">
+            <span class="field-label">Suitability scoring priority</span>
+            <div class="segment-group" role="radiogroup" aria-label="Scoring priority">
+              <label class="segment-choice">
+                <input type="radio" name="rankingMode" value="balanced" checked />
+                <span>Balanced fit</span>
+              </label>
+              <label class="segment-choice">
+                <input type="radio" name="rankingMode" value="untapped" />
+                <span>Untapped alpha</span>
+              </label>
+              <label class="segment-choice">
+                <input type="radio" name="rankingMode" value="warmest" />
+                <span>Warmest intro</span>
+              </label>
+            </div>
+          </div>
+
+          <details class="minimal-details">
+            <summary>Optional exclusions and stated thesis comparison</summary>
+            <div class="details-body">
+              <div class="field-group">
+                <label for="seenCompaniesInput" class="field-label">Already seen or passed companies (comma-separated)</label>
+                <input
+                  type="text"
+                  id="seenCompaniesInput"
+                  class="text-input"
+                  placeholder="e.g. Klarna, Lovable"
+                />
+              </div>
+              <div class="field-group">
+                <label for="statedThesisInput" class="field-label">Stated thesis text to compare against revealed behavior</label>
+                <textarea
+                  id="statedThesisInput"
+                  class="text-area"
+                  rows="2"
+                  placeholder="Optional custom thesis statement..."
+                ></textarea>
+              </div>
+            </div>
+          </details>
+
+          <div class="wizard-footer">
+            <button type="button" class="btn-secondary" id="step2BackBtn">Back</button>
+            <button type="button" class="btn-primary" id="step2NextBtn">Continue to network setup</button>
           </div>
         </div>
-      </div>
 
-      <!-- Tab 3: Point-in-Time Backtest -->
-      <div id="tabBacktest" class="thesis-panel" hidden>
-        <div id="backtestSummaryBox" class="backtest-summary"></div>
-        <div class="table-scroll">
-          <table class="data-table" id="backtestTable">
-            <thead>
-              <tr>
-                <th>Hidden deal (last 12 mos)</th>
-                <th>Actual round</th>
-                <th>Predicted rank</th>
-                <th>Fit score</th>
-                <th>Pre-cutoff co-investor signal</th>
-              </tr>
-            </thead>
-            <tbody id="backtestBody"></tbody>
-          </table>
+        <!-- Step 3: Network Priority & Launch -->
+        <div class="wizard-card" id="configStep3" hidden>
+          <h2>Relationship network order and launch</h2>
+          <p class="step-lead">
+            Choose which relationship layer appears first when you open a startup profile. You can toggle between both inside any company drawer.
+          </p>
+
+          <div class="role-grid" role="radiogroup" aria-label="Network priority">
+            <label class="choice-card is-selected" data-network-card="linkedin">
+              <input type="radio" name="networkPriority" value="linkedin" checked />
+              <span class="choice-title">LinkedIn and 3rd-party bridges first</span>
+              <span class="choice-desc">
+                Resolves 2nd-degree operator, founder, and angel connections first before falling back to Cala funding relationships.
+              </span>
+            </label>
+
+            <label class="choice-card" data-network-card="cala">
+              <input type="radio" name="networkPriority" value="cala" />
+              <span class="choice-title">Cala public funding graph first</span>
+              <span class="choice-desc">
+                Prioritizes verified Cala round participation and co-investor overlap first, keeping LinkedIn intro pathways one switch away.
+              </span>
+            </label>
+          </div>
+
+          <div class="review-box" id="configReviewSummary"></div>
+
+          <div class="wizard-footer">
+            <button type="button" class="btn-secondary" id="step3BackBtn">Back</button>
+            <button type="button" class="btn-primary" id="launchDashboardBtn">Launch AI search dashboard</button>
+          </div>
         </div>
       </div>
     </section>
 
-    <!-- Layer-2 Refinement & Ranking Controls -->
-    <section class="shortlist-section" aria-label="Ranked startup shortlist">
-      <div class="section-header">
-        <h2 id="shortlistHeading">Ranked startup shortlist</h2>
-        <span class="shortlist-meta" id="shortlistMeta"></span>
-      </div>
+    <!-- TAB 2: AI SEARCH & RESEARCH DASHBOARD -->
+    <section
+      id="panel-search"
+      class="workspace-panel"
+      role="tabpanel"
+      aria-labelledby="tab-search"
+      hidden
+    >
+      <section class="ai-search-stage" aria-label="AI thesis search">
+        <div class="search-stage-inner">
+          <h1 class="search-heading">AI deal research across companies, investors, and industries</h1>
+          <p class="search-subline" id="searchRoleContext">
+            Scored against Lifeline Ventures revealed behavior · Balanced fit · LinkedIn network first
+          </p>
 
-      <div id="refinementBar" class="refinement-bar">
-        <div class="refinement-controls">
-          <div class="field-inline">
-            <label for="rankingModeSelect" class="field-label">Scoring focus</label>
-            <select id="rankingModeSelect" class="control-select">
-              <option value="balanced">Balanced fit (30/25/20/15/10)</option>
-              <option value="untapped">Untapped discovery (no co-investor penalty)</option>
-              <option value="warmest">Warmest intro (35% co-investor weight)</option>
-            </select>
+          <form id="aiSearchForm" class="ai-search-form">
+            <label for="aiSearchInput" class="sr-only">Search companies, investors, industries, or ask why a company was excluded</label>
+            <input
+              type="text"
+              id="aiSearchInput"
+              class="ai-search-input"
+              placeholder="Search a company (VoltGrid), investor (Creandum), industry (Climate Tech), or ask Why not Oura?"
+              autocomplete="off"
+            />
+            <div class="ai-search-actions">
+              <button type="button" class="btn-secondary" id="aiSearchResetBtn" hidden>Reset</button>
+              <button type="submit" class="btn-primary" id="aiSearchSubmitBtn">Search</button>
+            </div>
+          </form>
+
+          <div class="examples-row" id="aiExamplesBar">
+            <span class="examples-label">Examples:</span>
+            <button type="button" class="example-btn" data-query="VoltGrid">Company: VoltGrid</button>
+            <button type="button" class="example-btn" data-query="Creandum">Investor: Creandum</button>
+            <button type="button" class="example-btn" data-query="Climate Tech">Industry: Climate Tech</button>
+            <button type="button" class="example-btn" data-query="Why not Oura?">Why not: Oura?</button>
           </div>
-          <div class="field-inline">
-            <label for="regionFilterSelect" class="field-label">Region</label>
-            <select id="regionFilterSelect" class="control-select">
-              <option value="all">All Europe</option>
-              <option value="Nordics">Nordics</option>
-              <option value="DACH">DACH</option>
-              <option value="UK">United Kingdom</option>
-              <option value="Western Europe">Western Europe</option>
-            </select>
+
+          <div class="filter-strip">
+            <div class="filter-control">
+              <label for="filterRegion" class="filter-label">Region</label>
+              <select id="filterRegion" class="select-input">
+                <option value="all">All regions</option>
+                <option value="Nordics">Nordics</option>
+                <option value="DACH">DACH</option>
+                <option value="UK">UK</option>
+                <option value="Western Europe">Western Europe</option>
+              </select>
+            </div>
+
+            <div class="filter-control">
+              <label for="filterExcludeSector" class="filter-label">Exclude sector</label>
+              <select id="filterExcludeSector" class="select-input">
+                <option value="none">None</option>
+                <option value="Fintech">Fintech</option>
+                <option value="HealthTech">HealthTech</option>
+                <option value="Climate Tech">Climate Tech</option>
+                <option value="B2B SaaS">B2B SaaS</option>
+                <option value="DeepTech">DeepTech</option>
+                <option value="AI &amp; ML">AI &amp; ML</option>
+              </select>
+            </div>
+
+            <label class="toggle-control">
+              <input type="checkbox" id="filterRaisingSoon" />
+              <span>Raising soon</span>
+            </label>
+
+            <label class="toggle-control">
+              <input type="checkbox" id="filterUntapped" />
+              <span>Untapped only</span>
+            </label>
+
+            <button type="button" class="link-btn" id="editSetupBtn">Edit configuration</button>
           </div>
-          <div class="field-inline">
-            <label for="excludeSectorSelect" class="field-label">Exclude sector</label>
-            <select id="excludeSectorSelect" class="control-select">
-              <option value="none">No exclusion</option>
-              <option value="Fintech">Exclude Fintech</option>
-              <option value="HealthTech">Exclude HealthTech</option>
-              <option value="Climate Tech">Exclude Climate Tech</option>
-              <option value="B2B SaaS">Exclude B2B SaaS</option>
-              <option value="DeepTech">Exclude DeepTech</option>
-              <option value="AI & ML">Exclude AI & ML</option>
-            </select>
+
+          <div class="ai-trace-panel" id="aiTraceBox">
+            <div class="ai-trace-header">
+              <span class="trace-intent" id="aiTraceIntent">Thesis ranking</span>
+              <p class="trace-explanation" id="aiExplanationText">
+                Ranked candidates scored out of 100 against revealed historical deal patterns.
+              </p>
+            </div>
+            <ul class="trace-steps" id="aiTraceSteps"></ul>
           </div>
-          <label class="checkbox-inline">
-            <input type="checkbox" id="raisingSoonCheckbox" />
-            <span>Likely raising soon (12 to 24 mos)</span>
-          </label>
+        </div>
+      </section>
+
+      <section class="startup-grid-section" aria-label="Matched startups grid">
+        <div class="grid-header-row" id="gridMetaRow">
+          <h2 class="grid-heading" id="gridCountHeading">Matched startups</h2>
+          <span class="grid-hint">Tap any startup card to inspect score breakdown, gradual evidence brief, and relationship network.</span>
         </div>
 
-        <form id="refineChatForm" class="refine-chat-form">
-          <input
-            id="refineQueryInput"
-            type="text"
-            class="control-input"
-            placeholder='Refine shortlist: "only Nordics", "exclude fintech", or "why not Oura?"'
-          />
-          <button type="submit" class="secondary-action">Apply</button>
-          <button type="button" id="resetFiltersBtn" class="quiet-action">Reset</button>
-        </form>
-        <div id="refineExplanation" class="refine-explanation" hidden></div>
-      </div>
+        <div id="startupGrid" class="startup-grid" role="list"></div>
 
-      <!-- Gradual Exposure Shortlist Container -->
-      <div id="shortlistContainer" class="shortlist-container"></div>
+        <div id="gridEmptyState" class="empty-grid-state" hidden>
+          <p>No startups matched the active AI query and structured filters.</p>
+          <button type="button" class="btn-secondary" id="emptyResetBtn">Clear search and show ranked deals</button>
+        </div>
+      </section>
+    </section>
+
+    <!-- TAB 3: REVEALED THESIS & BACKTEST -->
+    <section
+      id="panel-thesis"
+      class="workspace-panel"
+      role="tabpanel"
+      aria-labelledby="tab-thesis"
+      hidden
+    >
+      <div class="thesis-shell">
+        <div class="thesis-top-header">
+          <div>
+            <h1 id="thesisTitleHeading">Revealed thesis profile</h1>
+            <p class="thesis-subtitle" id="thesisHeaderSummary">
+              Derived from verified lead investments and institutional co-investor patterns.
+            </p>
+          </div>
+          <button type="button" class="btn-secondary" id="backToSearchBtn">Return to AI search grid</button>
+        </div>
+
+        <div class="metric-strip" id="thesisMetricsStrip"></div>
+
+        <div class="thesis-columns">
+          <article class="surface-card">
+            <h2>Portfolio behavior distributions</h2>
+            <p class="card-note">Actual capital deployment shares measured across lead and co-led rounds.</p>
+            <div id="thesisDistributions" class="distributions-stack"></div>
+          </article>
+
+          <article class="surface-card">
+            <h2>Stated versus revealed thesis audit</h2>
+            <p class="card-note">Direct comparison between published positioning and historical funding checks.</p>
+            <div id="statedVsRevealedPanel" class="stated-diff-block"></div>
+          </article>
+        </div>
+
+        <article class="surface-card backtest-card">
+          <h2>Point-in-time backtest validation</h2>
+          <p class="card-note" id="backtestSummaryNote">
+            Out-of-time evaluation holding back recent 12-month investments to test ranking precision without leakage.
+          </p>
+          <div id="backtestPanel"></div>
+        </article>
+
+        <article class="surface-card cala-console-card" id="calaLivePanel">
+          <div class="cala-console-header">
+            <div>
+              <h2>Live Cala knowledge graph verification</h2>
+              <p class="card-note">
+                Queries live Cala API entity relationships and caches responses locally to conserve paid credits.
+              </p>
+            </div>
+            <span class="budget-readout" id="calaBudgetReadout">Budget checking...</span>
+          </div>
+
+          <div class="cala-verify-controls">
+            <select id="calaVerifyType" class="select-input" aria-label="Cala entity type">
+              <option value="fund">Fund</option>
+              <option value="company">Company</option>
+            </select>
+            <input
+              type="text"
+              id="calaVerifyInput"
+              class="text-input"
+              placeholder="Entity name, e.g. Lifeline Ventures"
+            />
+            <button type="button" class="btn-primary" id="calaVerifyBtn">Verify live on Cala API</button>
+          </div>
+
+          <label class="toggle-control cala-deep-toggle">
+            <input type="checkbox" id="calaDeepSearchToggle" />
+            <span>Include deep Knowledge Search synthesis (uses extra live API call if uncached)</span>
+          </label>
+
+          <div id="calaLiveResult" class="cala-result-box">
+            Click Verify live on Cala API above to inspect live Organization or Company graph facts.
+          </div>
+        </article>
+      </div>
     </section>
   </main>
 
-  <!-- 10-Minute Full Brief Modal -->
-  <div id="briefModal" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="briefModalTitle">
-    <div class="modal-sheet">
-      <div class="modal-header">
-        <div>
-          <h2 id="briefModalTitle">Startup Brief</h2>
-          <p id="briefModalSub" class="brief-sub"></p>
+  <!-- TEMPORARY OVERLAP INSPECTOR DRAWER -->
+  <div id="inspectorDrawer" class="drawer-overlay" hidden>
+    <div class="drawer-backdrop" id="drawerBackdrop" aria-hidden="true"></div>
+    <aside
+      class="drawer-sheet"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="drawerTitle"
+    >
+      <header class="drawer-header">
+        <div class="drawer-identity">
+          <div class="drawer-logo-wrap" id="drawerLogo"></div>
+          <div class="drawer-title-group">
+            <h2 id="drawerTitle" class="drawer-title">Startup Name</h2>
+            <p id="drawerSubtitle" class="drawer-subtitle">Sector · City, Country</p>
+          </div>
         </div>
-        <div class="modal-actions">
-          <button id="exportMemoBtn" type="button" class="secondary-action">Export 1-page memo (.md)</button>
-          <button id="exportCsvBtn" type="button" class="secondary-action">Export CSV</button>
-          <button id="closeBriefBtn" type="button" class="quiet-action">Close</button>
+
+        <div class="drawer-header-right">
+          <div class="drawer-score-readout" id="drawerScoreBox">
+            <span class="drawer-score-val">--</span>
+            <span class="drawer-score-cap">/ 100</span>
+          </div>
+          <button type="button" class="drawer-close-btn" id="drawerCloseBtn" aria-label="Close inspector">
+            Close
+          </button>
+        </div>
+      </header>
+
+      <div class="drawer-tabs" role="tablist" aria-label="Startup inspection tabs">
+        <button
+          type="button"
+          class="drawer-tab is-active"
+          id="drawerTabScore"
+          role="tab"
+          aria-selected="true"
+          data-drawer-tab="score"
+        >
+          Score breakdown &amp; brief
+        </button>
+        <button
+          type="button"
+          class="drawer-tab"
+          id="drawerTabNetwork"
+          role="tab"
+          aria-selected="false"
+          data-drawer-tab="network"
+        >
+          Network &amp; relationships
+        </button>
+      </div>
+
+      <div class="drawer-body">
+        <!-- Drawer Tab A: Score Breakdown & Gradual Exposure Brief -->
+        <div id="drawerPaneScore" class="drawer-pane">
+          <!-- Stage 1: 5-second overview + Cala score breakdown -->
+          <section class="exposure-stage">
+            <div class="stage-heading-row">
+              <h3>5-second overview &amp; Cala score breakdown</h3>
+              <button type="button" class="link-btn" id="expandAllBriefBtn">Expand full brief</button>
+            </div>
+
+            <p id="drawerOneLiner" class="drawer-oneliner"></p>
+            <div id="drawerRoleTakeaway" class="role-callout"></div>
+
+            <div class="fact-row" id="drawerQuickFacts"></div>
+
+            <div class="score-breakdown-list" id="drawerScoreBreakdown"></div>
+
+            <div class="reasons-block">
+              <h4>Grounded scoring evidence</h4>
+              <ul class="sourced-reasons" id="drawerReasonsList"></ul>
+            </div>
+          </section>
+
+          <!-- Stage 2: 1-minute evidence (Gradual Exposure) -->
+          <details class="exposure-disclosure" id="stage2Disclosure">
+            <summary>1-minute evidence: similar portfolio deals and funding rounds</summary>
+            <div class="disclosure-content">
+              <div class="sub-block">
+                <h4>Comparable portfolio deals</h4>
+                <div id="drawerSimilarPortfolio" class="similar-list"></div>
+              </div>
+
+              <div class="sub-block">
+                <h4>Cala-indexed funding history</h4>
+                <div class="table-wrap" id="drawerRoundsTableWrap"></div>
+              </div>
+            </div>
+          </details>
+
+          <!-- Stage 3: 10-minute diligence brief & live Cala audit (Gradual Exposure) -->
+          <details class="exposure-disclosure" id="stage3Disclosure">
+            <summary>10-minute diligence brief: leadership coverage, data gaps, and export</summary>
+            <div class="disclosure-content">
+              <div class="sub-block">
+                <h4>People coverage</h4>
+                <div id="drawerPeopleList" class="people-list"></div>
+              </div>
+
+              <div class="sub-block">
+                <h4>Explicit coverage gaps (Not found in Cala)</h4>
+                <div id="drawerGapsList" class="gaps-list"></div>
+              </div>
+
+              <div class="sub-block drawer-actions-bar">
+                <button type="button" class="btn-secondary" id="drawerVerifyCalaBtn">
+                  Verify startup live on Cala API
+                </button>
+                <button type="button" class="btn-secondary" id="drawerExportMdBtn">
+                  Export memo (.md)
+                </button>
+                <button type="button" class="btn-secondary" id="drawerExportCsvBtn">
+                  Export summary (.csv)
+                </button>
+              </div>
+
+              <div id="drawerLiveCalaOutput" class="cala-result-box" hidden></div>
+            </div>
+          </details>
+        </div>
+
+        <!-- Drawer Tab B: Network & Relationships (LinkedIn first -> Cala toggleable) -->
+        <div id="drawerPaneNetwork" class="drawer-pane" hidden>
+          <div class="network-toolbar">
+            <div class="segment-group" role="radiogroup" aria-label="Network source selector">
+              <label class="segment-choice">
+                <input type="radio" name="drawerNetworkSource" value="linkedin" checked />
+                <span>LinkedIn &amp; 3rd-party paths</span>
+              </label>
+              <label class="segment-choice">
+                <input type="radio" name="drawerNetworkSource" value="cala" />
+                <span>Cala funding graph</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="network-summary-card" id="networkViewSummary"></div>
+
+          <div class="network-svg-card">
+            <div class="network-legend">
+              <span class="legend-item"><span class="legend-dot dot-fund"></span>Benchmark fund</span>
+              <span class="legend-item"><span class="legend-dot dot-bridge"></span>Bridge / Co-investor</span>
+              <span class="legend-item"><span class="legend-dot dot-target"></span>Selected startup</span>
+              <span class="legend-item"><span class="legend-dot dot-peer"></span>Peer startup</span>
+            </div>
+            <div id="networkSvgWrap" class="network-svg-wrap"></div>
+          </div>
+
+          <section class="peer-startups-section">
+            <h3>Connected startups via shared investors or founders</h3>
+            <p class="card-note">
+              Click any connected startup below to pivot the temporary inspector directly to its profile.
+            </p>
+            <div id="peerStartupsList" class="peer-list"></div>
+          </section>
         </div>
       </div>
-      <div id="briefModalBody" class="modal-body"></div>
-    </div>
+    </aside>
   </div>
 
-  <script type="module" src="/app.js"></script>
+  <script src="/app.js"></script>
 </body>
 </html>

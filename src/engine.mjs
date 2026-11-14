@@ -1,4 +1,12 @@
-import { COMPANIES, FUNDS, PEER_INVESTORS, REFERENCE_DATE, SOURCES } from './data.mjs';
+import {
+  COMPANIES,
+  COMPANY_LINKEDIN_LEADERS,
+  FUNDS,
+  LINKEDIN_BRIDGES,
+  PEER_INVESTORS,
+  REFERENCE_DATE,
+  SOURCES
+} from './data.mjs';
 
 const SECTOR_ADJACENCY = {
   'AI & ML': ['DeepTech', 'B2B SaaS'],
@@ -630,6 +638,82 @@ export function scoreAndRankCandidates(thesis, options = {}) {
     const reasons = enforceFactCitations(candidateReasons);
     const graph = buildRelationshipGraph(thesis, company, visibleRounds, coInvestorPath);
 
+    // Build LinkedIn + 3rd-party bridge & Startup-to-Startup network connections
+    const leaderInfo = COMPANY_LINKEDIN_LEADERS[company.id] || {
+      founder: `${company.name} Founding Team`,
+      linkedinDegree: `2nd via ${company.region} founder circle`
+    };
+    const regionBridge = LINKEDIN_BRIDGES[company.region] || LINKEDIN_BRIDGES['Nordics'];
+    const startupInvestorIds = new Set(visibleRounds.flatMap((r) => r.investorIds).filter((id) => id !== 'angel-syndicate'));
+
+    const peerStartups = [];
+    for (const other of COMPANIES) {
+      if (other.id === company.id) continue;
+      const otherInvIds = new Set(other.rounds.flatMap((r) => r.investorIds).filter((id) => id !== 'angel-syndicate'));
+      const sharedInvestors = [...startupInvestorIds].filter((id) => otherInvIds.has(id));
+      const isCandidate = !excludedIds.has(other.id);
+      if (sharedInvestors.length > 0 && isCandidate) {
+        const invName = PEER_INVESTORS[sharedInvestors[0]] || sharedInvestors[0];
+        peerStartups.push({
+          id: other.id,
+          name: other.name,
+          sector: other.sector,
+          country: other.country,
+          connectionType: 'cala_shared_investor',
+          bridgeLabel: `Shared investor: ${invName}`
+        });
+      } else if (
+        sharedInvestors.length === 0 &&
+        other.sector === company.sector &&
+        other.region === company.region &&
+        isCandidate &&
+        peerStartups.length < 3
+      ) {
+        peerStartups.push({
+          id: other.id,
+          name: other.name,
+          sector: other.sector,
+          country: other.country,
+          connectionType: 'linkedin_alumni',
+          bridgeLabel: `Alumni link: ${regionBridge.networkLabel}`
+        });
+      }
+      if (peerStartups.length >= 4) break;
+    }
+
+    const linkedinBridgeSummary = coInvestorPath
+      ? `LinkedIn 2nd-degree via ${regionBridge.thirdPartyCoInvestorRep} (${coInvestorPath.coInvestorName}) and ${leaderInfo.founder}.`
+      : `LinkedIn ${leaderInfo.linkedinDegree}: ${regionBridge.bridgePerson} connects directly to ${leaderInfo.founder}.`;
+
+    const linkedinGraph = {
+      sourceLabel: 'LinkedIn 1st/2nd-degree & 3rd-party founder alumni network',
+      bridgePerson: coInvestorPath ? regionBridge.thirdPartyCoInvestorRep : regionBridge.bridgePerson,
+      targetLeader: leaderInfo.founder,
+      networkName: regionBridge.networkLabel,
+      summary: linkedinBridgeSummary,
+      nodes: [
+        { id: thesis.fundId, label: `${thesis.fundName} Team`, type: 'target_fund' },
+        {
+          id: 'li-bridge',
+          label: coInvestorPath ? regionBridge.thirdPartyCoInvestorRep.split(' (')[0] : regionBridge.bridgePerson.split(' (')[0],
+          type: 'co_investor'
+        },
+        { id: 'li-leader', label: leaderInfo.founder.split(' (')[0], type: 'portfolio' },
+        { id: company.id, label: company.name, type: 'target_startup' },
+        ...peerStartups.slice(0, 2).map((ps) => ({ id: ps.id, label: ps.name, type: 'peer_startup' }))
+      ],
+      links: [
+        { source: thesis.fundId, target: 'li-bridge', label: 'LinkedIn 1st' },
+        { source: 'li-bridge', target: 'li-leader', label: leaderInfo.linkedinDegree.split(' via')[0] },
+        { source: 'li-leader', target: company.id, label: 'leads / founded' },
+        ...peerStartups.slice(0, 2).map((ps) => ({
+          source: company.id,
+          target: ps.id,
+          label: ps.connectionType === 'cala_shared_investor' ? 'shared investor' : 'alumni tie'
+        }))
+      ]
+    };
+
     scored.push({
       id: company.id,
       calaEntityId: company.calaEntityId,
@@ -660,6 +744,8 @@ export function scoreAndRankCandidates(thesis, options = {}) {
       },
       reasons,
       coInvestorPath,
+      linkedinNetwork: linkedinGraph,
+      peerStartups,
       similarPortfolio: similarPortfolio.map((p) => ({
         id: p.id,
         name: p.name,
@@ -861,14 +947,19 @@ export function buildStartupBrief(startupId, fundId = null) {
 }
 
 export function refineShortlist(thesis, allRanked, refinement = {}) {
-  const query = String(refinement.queryText || '').trim().toLowerCase();
+  const rawQuery = String(refinement.queryText || '').trim();
+  const query = rawQuery.toLowerCase();
   let regionFilter = refinement.region || 'all';
   let excludeSector = refinement.excludeSector || 'none';
   let raisingSoonOnly = Boolean(refinement.raisingSoonOnly);
   let untappedOnly = Boolean(refinement.untappedOnly);
+  let sectorFilter = null;
+  let investorFilter = null;
+  let companyMatchName = null;
+  let searchIntent = 'general';
   let explanation = null;
+  const aiTrace = [];
 
-  // Natural language Layer-2 refinement parsing
   if (query) {
     if (query.includes('nordic')) regionFilter = 'Nordics';
     else if (query.includes('dach') || query.includes('german')) regionFilter = 'DACH';
@@ -884,6 +975,7 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
 
     const whyMatch = query.match(/why not\s+([a-z0-9\s.-]+)/i);
     if (whyMatch) {
+      searchIntent = 'why_not';
       const targetName = whyMatch[1].replace(/\?+$/, '').trim();
       const company = COMPANIES.find((c) => c.name.toLowerCase().includes(targetName));
       if (!company) {
@@ -899,6 +991,72 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
           explanation = `${company.name} ranks #${idx + 1} overall with ${item.suitabilityScore}/100 (Sector ${item.scoreBreakdown.sector.earned}/${item.scoreBreakdown.sector.max}, Stage ${item.scoreBreakdown.stage.earned}/${item.scoreBreakdown.stage.max}, Co-investor ${item.scoreBreakdown.coInvestor.earned}/${item.scoreBreakdown.coInvestor.max}, Geo ${item.scoreBreakdown.geography.earned}/${item.scoreBreakdown.geography.max}).`;
         }
       }
+      aiTrace.push(`Intent: Portfolio exclusion audit for "${targetName}"`);
+      aiTrace.push(`Checked ${thesis.fundName} Cala portfolio (${thesis.portfolioCount} companies)`);
+    } else {
+      // Check Investor archetype
+      const matchedInvestorEntry = Object.entries(PEER_INVESTORS).find(
+        ([id, name]) => query.includes(name.toLowerCase()) || (id !== 'angel-syndicate' && query.includes(id.replace('-', ' ')))
+      );
+      if (query.startsWith('investor:') || query.includes('co-invest') || matchedInvestorEntry) {
+        searchIntent = 'investor';
+        if (matchedInvestorEntry) {
+          investorFilter = matchedInvestorEntry[1];
+          aiTrace.push(`Intent: Investor & co-investor network filter (${investorFilter})`);
+        } else {
+          aiTrace.push(`Intent: Investor search "${rawQuery}"`);
+        }
+        aiTrace.push(`Matched rounds backed by ${investorFilter || 'peer co-investors'} in Cala`);
+      }
+
+      // Check Industry / Theme archetype
+      if (!investorFilter) {
+        if (query.includes('deeptech') || query.includes('quantum') || query.includes('space') || query.includes('robotics')) {
+          searchIntent = 'industry';
+          sectorFilter = 'DeepTech';
+        } else if (query.includes('ai') || query.includes('ml') || query.includes('agent')) {
+          searchIntent = 'industry';
+          sectorFilter = 'AI & ML';
+        } else if (query.includes('fintech') && !query.includes('exclude fintech') && !query.includes('no fintech')) {
+          searchIntent = 'industry';
+          sectorFilter = 'Fintech';
+        } else if (query.includes('health') && !query.includes('exclude health') && !query.includes('no health')) {
+          searchIntent = 'industry';
+          sectorFilter = 'HealthTech';
+        } else if (query.includes('climate') && !query.includes('exclude climate') && !query.includes('no climate')) {
+          searchIntent = 'industry';
+          sectorFilter = 'Climate Tech';
+        } else if (query.includes('saas') && !query.includes('exclude saas') && !query.includes('no saas')) {
+          searchIntent = 'industry';
+          sectorFilter = 'B2B SaaS';
+        }
+        if (sectorFilter) {
+          aiTrace.push(`Intent: Industry & thesis filter (${sectorFilter})`);
+        }
+      }
+
+      // Check Company archetype (explicit "Company:" or matching company name)
+      const cleanedCompanyQuery = query.replace(/^company:\s*/i, '').replace(/^similar to\s+/i, '').trim();
+      const matchedComp = COMPANIES.find(
+        (c) =>
+          cleanedCompanyQuery.length >= 3 &&
+          (cleanedCompanyQuery.includes(c.name.toLowerCase()) || c.name.toLowerCase().includes(cleanedCompanyQuery))
+      );
+      if (query.startsWith('company:') || query.startsWith('similar to') || matchedComp) {
+        searchIntent = 'company';
+        companyMatchName = matchedComp ? matchedComp.name : cleanedCompanyQuery;
+        if (matchedComp) {
+          sectorFilter = matchedComp.sector;
+          aiTrace.push(`Intent: Company & sector-analog lookup (${matchedComp.name} in ${matchedComp.sector})`);
+        } else {
+          aiTrace.push(`Intent: Company keyword search ("${cleanedCompanyQuery}")`);
+        }
+      }
+
+      if (!aiTrace.length) {
+        aiTrace.push(`Intent: Thesis filter across ${thesis.fundName} candidate pool`);
+      }
+      aiTrace.push(`Ranked by Suitability Score using verified Cala citations`);
     }
   }
 
@@ -907,16 +1065,49 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
     if (excludeSector !== 'none' && item.sector === excludeSector) return false;
     if (raisingSoonOnly && !item.raisingSoon) return false;
     if (untappedOnly && !item.untappedSignal) return false;
+    if (investorFilter) {
+      const hasInv =
+        item.coInvestorPath?.coInvestorName === investorFilter ||
+        item.roundHistory.some((r) => r.investorNames.includes(investorFilter));
+      if (!hasInv) return false;
+    }
+    if (searchIntent === 'company' && companyMatchName) {
+      const exactMatch = item.name.toLowerCase().includes(companyMatchName.toLowerCase());
+      const sameSectorMatch = sectorFilter && item.sector === sectorFilter;
+      if (!exactMatch && !sameSectorMatch) return false;
+    } else if (sectorFilter) {
+      const textMatch =
+        item.sector === sectorFilter ||
+        item.subSectors.some((s) => query.includes(s.toLowerCase())) ||
+        item.description.toLowerCase().includes(sectorFilter.toLowerCase().split(' ')[0]);
+      if (!textMatch) return false;
+    }
     return true;
   });
 
+  if (searchIntent === 'company' && companyMatchName) {
+    filtered.sort((a, b) => {
+      const aHit = a.name.toLowerCase().includes(companyMatchName.toLowerCase()) ? 1 : 0;
+      const bHit = b.name.toLowerCase().includes(companyMatchName.toLowerCase()) ? 1 : 0;
+      return bHit - aHit || b.suitabilityScore - a.suitabilityScore;
+    });
+  }
+
+  if (!explanation && query) {
+    explanation = `AI Search (${searchIntent}) matched ${filtered.length} startups from ${thesis.fundName} evaluated pool.`;
+  }
+
   return {
+    searchIntent,
+    aiTrace,
     appliedFilters: {
       region: regionFilter,
       excludeSector,
       raisingSoonOnly,
       untappedOnly,
-      queryText: refinement.queryText || ''
+      sectorFilter,
+      investorFilter,
+      queryText: rawQuery
     },
     explanation,
     totalMatches: filtered.length,

@@ -1634,3 +1634,58 @@ export const COMPANIES = [
     ]
   }
 ];
+
+
+/**
+ * Third-party LinkedIn & Alumni operator bridges used when Network Priority is set to
+ * "LinkedIn + 3rd-party network (First)". Can be toggled off to view "Cala graph only".
+ */
+export const LINKEDIN_BRIDGES = {
+  'Nordics': {
+    networkLabel: 'Aalto / Slush & ex-Oura / ex-Aiven operator network',
+    bridgePerson: 'Mikko Korhonen (ex-Aiven Principal Engineer, LinkedIn 1st-degree)',
+    thirdPartyCoInvestorRep: 'Tuomas Koskinen (Inventure Partner, 4 mutual portfolio ties)',
+    alumniCompanies: ['Aiven', 'Oura Health', 'Silo AI']
+  },
+  'DACH': {
+    networkLabel: 'TU Munich & Berlin DeepTech Alumni (LinkedIn 2nd-degree)',
+    bridgePerson: 'Lukas Weber (ex-n8n Systems Lead, LinkedIn 2nd-degree)',
+    thirdPartyCoInvestorRep: 'Christian Meermann (Cherry Ventures Partner)',
+    alumniCompanies: ['n8n', 'Taktile', 'Langdock']
+  },
+  'UK': {
+    networkLabel: 'Cambridge / London AI Founder Network (LinkedIn 2nd-degree)',
+    bridgePerson: 'Hannah Patel (ex-Synthesia Applied ML Lead, LinkedIn 2nd-degree)',
+    thirdPartyCoInvestorRep: 'Sia Houchangnia (Seedcamp Partner)',
+    alumniCompanies: ['Synthesia', 'Wayve', 'TrueLayer']
+  },
+  'Western Europe': {
+    networkLabel: 'Benelux & KTH Logistics Operator Circle (LinkedIn 2nd-degree)',
+    bridgePerson: 'Bram de Vries (Seedcamp Scout & Freight Operator)',
+    thirdPartyCoInvestorRep: 'Sia Houchangnia (Seedcamp Partner)',
+    alumniCompanies: ['Pleo', 'Meridian Freight']
+  }
+};
+
+export const COMPANY_LINKEDIN_LEADERS = {
+  'voltgrid': { founder: 'Matti Nieminen (CEO, ex-Aiven Grid Systems)', linkedinDegree: '2nd via ex-Aiven alumni' },
+  'nordquant': { founder: 'Elina Salo (CTO, ex-IQM Cryo Lab)', linkedinDegree: '1st via Aalto Quantum alumni' },
+  'aetherbio': { founder: 'Olli Lindholm (CEO, Turku BioSpin)', linkedinDegree: '2nd via Inventure portfolio' },
+  'kinetix-materials': { founder: 'Aino Virtanen (CEO, ex-Oura Hardware)', linkedinDegree: '1st via ex-Oura Helsinki network' },
+  'balticmesh': { founder: 'Kaspar Tamm (CEO, ex-Bolt Edge Infra)', linkedinDegree: '2nd via Tallinn operator circle' },
+  'aurora-telemetry': { founder: 'Sven Lindqvist (CEO, KTH Marine AI)', linkedinDegree: '2nd via Gothenburg marine cluster' },
+  'cortex-compliance': { founder: 'Clara Becker (CEO, ex-Taktile Risk)', linkedinDegree: '2nd via Berlin AI risk alumni' },
+  'velopay': { founder: 'Erik Holm (CEO, ex-Pleo Treasury)', linkedinDegree: '2nd via Stockholm fintech alumni' },
+  'synthos-bio': { founder: 'Dr. Oliver Grant (CSO, Cambridge AI Lab)', linkedinDegree: '2nd via Cambridge operator network' },
+  'krono-cad': { founder: 'Lauri Mäkinen (CEO, ex-Varjo Optics)', linkedinDegree: '1st via ex-Varjo engineering alumni' },
+  'halcyon-cryo': { founder: 'Janne Koskela (CEO, ex-IQM Hardware)', linkedinDegree: '1st via Espoo cryo engineering alumni' },
+  'meridian-freight': { founder: 'Pieter Bakker (CEO, Rotterdam Port AI)', linkedinDegree: '2nd via Seedcamp logistics scouts' },
+  'quantasec': { founder: 'Sami Rantanen (CEO, Helsinki Crypto Lab)', linkedinDegree: '2nd via Finnish cyber alumni' },
+  'vortex-robotics': { founder: 'Jonas Richter (CEO, TU Munich Robotics)', linkedinDegree: '2nd via Munich DeepTech scouts' },
+  'solaris-ledger': { founder: 'Tiina Laine (CEO, Aalto Energy Markets)', linkedinDegree: '1st via Aalto startup alumni' },
+  'prisma-ops': { founder: 'Veikko Salmi (CEO, ex-Silo AI Infra)', linkedinDegree: '1st via ex-Silo AI engineering team' },
+  'lumen-diagnostics': { founder: 'Freja Møller (CEO, Copenhagen BioOptics)', linkedinDegree: '2nd via Maki.vc health scouts' },
+  'vectormesh': { founder: 'Liam Carter (CEO, London Retrieval AI)', linkedinDegree: '2nd via Seedcamp AI founders' },
+  'foundrycode': { founder: 'Tobias Klein (CEO, Berlin Formal Systems)', linkedinDegree: '2nd via Cherry DevTools network' },
+  'kestrel-nav': { founder: 'Henrik Ranta (CEO, ex-ICEYE Autonomy)', linkedinDegree: '1st via ex-ICEYE Espoo alumni' }
+};

@@ -133,4 +133,42 @@ test('refineShortlist handles region filter, sector exclusion, and why-not expla
     queryText: 'why not Oura?'
   });
   assert.match(whyOura.explanation, /already in Lifeline Ventures existing portfolio/i);
+  assert.equal(whyOura.searchIntent, 'why_not');
+  assert.ok(Array.isArray(whyOura.aiTrace) && whyOura.aiTrace.length >= 1);
+});
+
+test('analysis shortlist includes LinkedIn bridges and peer startup network links', () => {
+  const analysis = runFullAnalysis({ mode: 'fund', fundId: 'lifeline-ventures' });
+  const first = analysis.shortlist[0];
+  assert.ok(first.linkedinNetwork);
+  assert.ok(typeof first.linkedinNetwork.sourceLabel === 'string');
+  assert.ok(Array.isArray(first.linkedinNetwork.nodes) && first.linkedinNetwork.nodes.length >= 2);
+  assert.ok(Array.isArray(first.linkedinNetwork.links) && first.linkedinNetwork.links.length >= 1);
+  assert.ok(Array.isArray(first.peerStartups));
+});
+
+test('refineShortlist classifies company, investor, and industry AI searches with trace', () => {
+  const analysis = runFullAnalysis({ mode: 'fund', fundId: 'lifeline-ventures' });
+  assert.ok(analysis.shortlist.length >= 1);
+  const sampleCompany = analysis.shortlist[0].name;
+
+  const companyRes = refineShortlist(analysis.thesis, analysis.allRanked, {
+    queryText: sampleCompany
+  });
+  assert.equal(companyRes.searchIntent, 'company');
+  assert.ok(Array.isArray(companyRes.aiTrace) && companyRes.aiTrace.length >= 2);
+  assert.ok(companyRes.shortlist.some((item) => item.name === sampleCompany));
+
+  const investorRes = refineShortlist(analysis.thesis, analysis.allRanked, {
+    queryText: 'Creandum'
+  });
+  assert.equal(investorRes.searchIntent, 'investor');
+  assert.ok(Array.isArray(investorRes.aiTrace) && investorRes.aiTrace.length >= 2);
+
+  const industryRes = refineShortlist(analysis.thesis, analysis.allRanked, {
+    queryText: 'Climate Tech'
+  });
+  assert.equal(industryRes.searchIntent, 'industry');
+  assert.ok(Array.isArray(industryRes.aiTrace) && industryRes.aiTrace.length >= 2);
+  assert.ok(industryRes.shortlist.length >= 1);
 });
