@@ -4,12 +4,14 @@ import {
   buildStartupBrief,
   computeRevealedThesis,
   enforceFactCitations,
+  interpolateHeadcountAtDate,
   refineShortlist,
   runFullAnalysis,
   runPointInTimeBacktest,
   searchEntities,
   scoreAndRankCandidates
 } from '../src/engine.mjs';
+import { COMPANIES } from '../src/data.mjs';
 
 test('searchEntities returns top 3 disambiguation for ambiguous fund queries', () => {
   const res = searchEntities('Ventures');
@@ -183,4 +185,83 @@ test('refineShortlist classifies company, investor, and industry AI searches wit
   });
   assert.ok(seedStageRes.shortlist.length >= 1);
   assert.ok(seedStageRes.shortlist.every((item) => /seed/i.test(item.stage)));
+});
+
+test('timeTravelProfile reconstructs entry headcount & respects cutoffDate with zero leakage', () => {
+  const full = computeRevealedThesis({ mode: 'fund', fundId: 'lifeline-ventures' });
+  assert.ok(full.timeTravelProfile);
+  assert.ok(full.timeTravelProfile.medianEntryHeadcount > 0);
+  assert.match(full.timeTravelProfile.entryHeadcountBand, /employees at entry/);
+  assert.ok(full.timeTravelProfile.medianEntryAgeMonths > 0);
+  assert.ok(full.timeTravelProfile.filingVerifiedSharePct >= 50);
+  assert.ok(full.timeTravelProfile.dealSnapshots.length >= 5);
+
+  const reorbit = COMPANIES.find((c) => c.id === 'reorbit');
+  const preCutoff = interpolateHeadcountAtDate(reorbit, '2026-10-15', '2025-11-14');
+  assert.ok(preCutoff.observationDate < '2025-11-14');
+  assert.ok(preCutoff.headcount < reorbit.employeeCount);
+});
+
+test('upstreamFeeders detects Round N-1 feeders and annotates coInvestorPath', () => {
+  const lifeline = computeRevealedThesis({ mode: 'fund', fundId: 'lifeline-ventures' });
+  assert.ok(Array.isArray(lifeline.upstreamFeeders) && lifeline.upstreamFeeders.length >= 2);
+  const inventure = lifeline.upstreamFeeders.find((f) => f.id === 'inventure');
+  assert.ok(inventure);
+  assert.ok(inventure.fedDealsCount >= 2);
+  assert.equal(inventure.relationshipType, 'feeder_to_lead');
+
+  const ranked = scoreAndRankCandidates(lifeline, { limit: 30 });
+  const voltgrid = ranked.allRanked.find((c) => c.id === 'voltgrid');
+  assert.ok(voltgrid?.coInvestorPath?.isUpstreamFeeder);
+  assert.equal(voltgrid.coInvestorPath.pathwayType, 'feeder_to_lead');
+});
+
+test('agentic arbitrage signals, alumni spinouts, Companies House metrics, and buildStartupBrief series', () => {
+  const analysis = runFullAnalysis({ mode: 'fund', fundId: 'lifeline-ventures' });
+  assert.equal(analysis.agentPipeline.length, 4);
+  assert.equal(analysis.agentPipeline[0].agent, 'Time-Travel DNA Profiler');
+  assert.equal(analysis.agentPipeline[3].agent, 'Provenance Gate');
+
+  const kestrel = analysis.allRanked.find((c) => c.id === 'kestrel-nav');
+  assert.ok(kestrel);
+  assert.equal(kestrel.alumniSpinout?.priorCompany, 'ICEYE');
+  assert.ok(kestrel.headcountGrowthPct >= 50);
+  assert.ok(kestrel.whyNowTrigger.length > 5);
+  assert.ok(kestrel.arbitrageSignals.some((s) => s.type === 'filing_arbitrage'));
+
+  const brief = buildStartupBrief('vectormesh', 'lifeline-ventures');
+  assert.equal(brief.companiesHouseNumber, '15482910');
+  assert.ok(brief.financialMetrics.length >= 1);
+  assert.ok(brief.employeeCountSeries.length >= 3);
+  assert.ok(brief.arbitrageSignals.some((s) => s.type === 'companies_house_metric'));
+  assert.match(brief.memoMarkdown, /Time-Series & Filing Arbitrage Signals/);
+});
+
+test('refineShortlist handles agentic velocity, feeder, filing, alumni filters & 4-agent trace', () => {
+  const analysis = runFullAnalysis({ mode: 'fund', fundId: 'lifeline-ventures' });
+
+  const velocityRes = refineShortlist(analysis.thesis, analysis.allRanked, {
+    queryText: 'fast headcount growth'
+  });
+  assert.ok(velocityRes.shortlist.length >= 1);
+  assert.ok(velocityRes.shortlist.every((c) => c.headcountGrowthPct >= 30));
+  assert.equal(velocityRes.agentPipeline.length, 4);
+
+  const feederRes = refineShortlist(analysis.thesis, analysis.allRanked, {
+    queryText: 'feeder syndicate'
+  });
+  assert.ok(feederRes.shortlist.length >= 1);
+  assert.ok(feederRes.shortlist.every((c) => c.coInvestorPath?.isUpstreamFeeder));
+
+  const filingRes = refineShortlist(analysis.thesis, analysis.allRanked, {
+    queryText: 'filing signal'
+  });
+  assert.ok(filingRes.shortlist.length >= 1);
+  assert.ok(filingRes.shortlist.every((c) => c.arbitrageSignals.some((s) => s.sourceRank === 'FILING')));
+
+  const alumniRes = refineShortlist(analysis.thesis, analysis.allRanked, {
+    queryText: 'alumni founder'
+  });
+  assert.ok(alumniRes.shortlist.length >= 1);
+  assert.ok(alumniRes.shortlist.every((c) => Boolean(c.alumniSpinout)));
 });

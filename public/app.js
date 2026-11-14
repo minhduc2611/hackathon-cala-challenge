@@ -180,74 +180,101 @@ function getStartupCalaFieldProfile(candidate) {
     (["Finland", "Sweden", "Estonia", "Denmark", "Norway"].includes(candidate.country) && emp <= 80);
 
   const foundedYear = Number(candidate.foundedYear || 2023);
-  const obs = [];
-  if (foundedYear <= 2023) {
+  let obs = [];
+  if (Array.isArray(candidate.employeeCountSeries) && candidate.employeeCountSeries.length > 0) {
+    obs = candidate.employeeCountSeries.map((pt) => ({
+      metric: pt.metric || "employee_count",
+      value: pt.value,
+      date: pt.date,
+      precision: pt.datePrecision || "day",
+      sourceRank: pt.sourceRank || "PRIMARY",
+      sourceName: pt.sourceRank === "FILING" ? "Statutory Registry Filing" : `${candidate.name} / Cala`
+    }));
+  } else {
+    if (foundedYear <= 2023) {
+      obs.push({
+        metric: "employee_count",
+        value: Math.max(4, Math.round(emp * 0.55)),
+        date: "2024-12-31",
+        precision: "day",
+        sourceRank: "FILING",
+        sourceName: `${candidate.country === "Finland" ? "YTJ / PRH" : "National Registry"} Annual Filing`
+      });
+    }
+    if (foundedYear <= 2024) {
+      obs.push({
+        metric: "employee_count",
+        value: Math.max(6, Math.round(emp * 0.8)),
+        date: "2025-11-30",
+        precision: "day",
+        sourceRank: "FILING",
+        sourceName: "National Business Registry"
+      });
+    }
     obs.push({
       metric: "employee_count",
-      value: Math.max(4, Math.round(emp * 0.55)),
-      date: "2024-12-31",
+      value: emp,
+      date: "2026-10-15",
       precision: "day",
-      sourceRank: "FILING",
-      sourceName: `${candidate.country === "Finland" ? "YTJ / PRH" : "National Registry"} Annual Filing`
+      sourceRank: "PRIMARY",
+      sourceName: `${candidate.name} Company Careers / Cala`
     });
   }
-  if (foundedYear <= 2024) {
-    obs.push({
-      metric: "employee_count",
-      value: Math.max(6, Math.round(emp * 0.8)),
-      date: "2025-11-30",
-      precision: "day",
-      sourceRank: "FILING",
-      sourceName: "National Business Registry"
-    });
-  }
-  obs.push({
-    metric: "employee_count",
-    value: emp,
-    date: "2026-10-15",
-    precision: "day",
-    sourceRank: "PRIMARY",
-    sourceName: `${candidate.name} Company Careers / Cala`
-  });
 
   const leaderFull = (candidate.linkedinNetwork?.targetLeader || "Founder & CEO").trim();
   const leaderName = leaderFull.split("(")[0].trim() || `${candidate.name} Founder`;
   const bridgeName = (candidate.linkedinNetwork?.bridgePerson || "").split("(")[0].trim();
 
-  const leadershipRelationships = [
-    {
-      relation: "FOUNDED",
-      person: leaderName,
-      validSince: `${foundedYear}-01-01`,
-      precision: "year",
-      sourceRank: "FILING"
-    },
-    {
-      relation: "IS_CEO_OF",
-      person: leaderName,
-      validSince: `${foundedYear}-01-01`,
-      precision: "year",
-      sourceRank: "PRIMARY"
-    }
-  ];
+  let leadershipRelationships = [];
+  if (Array.isArray(candidate.peopleCoverage?.roles) && candidate.peopleCoverage.roles.length > 0) {
+    leadershipRelationships = candidate.peopleCoverage.roles.map((r) => ({
+      relation: r.relation || "FOUNDED",
+      person: r.name || leaderName,
+      role: r.role || "Founder",
+      validSince: r.validSince || r.startDate || `${foundedYear}-01-01`,
+      validUntil: r.validUntil || null,
+      priorCompany: r.priorCompany || null,
+      priorRole: r.priorRole || null,
+      priorValidUntil: r.priorValidUntil || null,
+      precision: "day",
+      sourceRank: r.sourceRank || "FILING"
+    }));
+  } else {
+    leadershipRelationships = [
+      {
+        relation: "FOUNDED",
+        person: leaderName,
+        validSince: `${foundedYear}-01-01`,
+        precision: "year",
+        sourceRank: "FILING"
+      },
+      {
+        relation: "IS_CEO_OF",
+        person: leaderName,
+        validSince: `${foundedYear}-01-01`,
+        precision: "year",
+        sourceRank: "PRIMARY"
+      }
+    ];
 
-  const latestRound = (candidate.roundHistory || [])[(candidate.roundHistory || []).length - 1];
-  if (latestRound?.leadInvestorName && latestRound.leadInvestorName !== "Not specified") {
-    leadershipRelationships.push({
-      relation: "IS_BOARD_MEMBER_OF",
-      person: `${latestRound.leadInvestorName} Partner Rep`,
-      validSince: latestRound.date || `${foundedYear}-06-01`,
-      precision: deriveCalaSourceProvenance({ date: latestRound.date }).datePrecision,
-      sourceRank: "FILING"
-    });
-  } else if (bridgeName) {
-    leadershipRelationships.push({
-      relation: "WORKS_AT",
-      person: bridgeName,
-      validSince: `${Math.min(2025, foundedYear + 1)}-03-01`,
-      precision: "month",
-      sourceRank: "PRIMARY"
-    });
+    const latestRound = (candidate.roundHistory || [])[(candidate.roundHistory || []).length - 1];
+    if (latestRound?.leadInvestorName && latestRound.leadInvestorName !== "Not specified") {
+      leadershipRelationships.push({
+        relation: "IS_BOARD_MEMBER_OF",
+        person: `${latestRound.leadInvestorName} Partner Rep`,
+        validSince: latestRound.date || `${foundedYear}-06-01`,
+        precision: deriveCalaSourceProvenance({ date: latestRound.date }).datePrecision,
+        sourceRank: "FILING"
+      });
+    } else if (bridgeName) {
+      leadershipRelationships.push({
+        relation: "WORKS_AT",
+        person: bridgeName,
+        validSince: `${Math.min(2025, foundedYear + 1)}-03-01`,
+        precision: "month",
+        sourceRank: "PRIMARY"
+      });
+    }
   }
 
   return {
@@ -1421,14 +1448,20 @@ function renderSearchSuggestions(rawQuery) {
 
   const aiPrompts = [
     { kind: "AI Prompt", query: "Slush 2026 DeepTech raising soon", meta: "Natural-language filter + Cala Event Graph" },
-    { kind: "AI Prompt", query: "Untapped AI startups under 25 employees", meta: "Angel-backed seed + headcount filter" },
-    { kind: "AI Prompt", query: "Warmest intro paths in Finland", meta: "Sort by LinkedIn 2nd-deg & syndicate bridges" },
+    { kind: "AI Prompt", query: "Fast headcount growth after Seed", meta: "+30% employee_count velocity post-round" },
+    { kind: "AI Prompt", query: "Upstream feeder syndicate deals", meta: "Round N-1 feeders ahead of follow-on" },
+    { kind: "AI Prompt", query: "Filing signal or alumni founder", meta: "PRH/Companies House filings + scaleup spinouts" },
     { kind: "Audit", query: "Why not Oura?", meta: "Portfolio exclusion & score check" }
   ].filter(
     (p) =>
       p.query.toLowerCase().includes(q) ||
       q.includes("slush") ||
       q.includes("why") ||
+      q.includes("fast") ||
+      q.includes("growth") ||
+      q.includes("feeder") ||
+      q.includes("filing") ||
+      q.includes("alumni") ||
       q.includes("warm") ||
       q.includes("under") ||
       q.includes("ai") ||
@@ -1501,6 +1534,10 @@ function parseNaturalLanguageSearchQuery(rawQuery) {
     raisingSoonOnly: /\b(raising|raising soon|window|next round|fundraising)\b/i.test(q),
     untappedOnly: /\b(untapped|hidden|uncontested|angel)\b/i.test(q),
     preferWarm: /\b(warm|warmest|linkedin|intro|bridge|2nd)\b/i.test(q),
+    highVelocityOnly: /\b(fast headcount|headcount growth|headcount velocity|high growth|team velocity|hiring velocity|growing fast)\b/i.test(q),
+    feederOnly: /\b(feeder|upstream|prior[- ]round)\b/i.test(q),
+    filingOnly: /\b(filing signal|filing arbitrage|companies house|share allotment|unannounced filing|facility)\b/i.test(q),
+    alumniOnly: /\b(alumni founder|spinout|operator lineage|ex-iceye|ex-aiven|ex-iqm|ex-oura|ex-silo)\b/i.test(q),
     maxEmployees: null,
     sector: null,
     stageFilter: null,
@@ -1550,6 +1587,10 @@ function parseNaturalLanguageSearchQuery(rawQuery) {
   if (res.slush2026Only) res.constraintTags.push("Event: Slush 2026 (ATTENDEE)");
   if (res.raisingSoonOnly) res.constraintTags.push("Window: Raising soon");
   if (res.untappedOnly) res.constraintTags.push("Signal: Untapped / Angel");
+  if (res.highVelocityOnly) res.constraintTags.push("Velocity: >= +30% hiring");
+  if (res.feederOnly) res.constraintTags.push("Syndicate: Upstream feeder");
+  if (res.filingOnly) res.constraintTags.push("Provenance: Registry filing");
+  if (res.alumniOnly) res.constraintTags.push("Lineage: Scaleup alumni");
   if (res.preferWarm) res.constraintTags.push("Sort: Warmest Intro");
   if (res.sector) res.constraintTags.push(`Sector: ${res.sector}`);
   if (res.country) res.constraintTags.push(`Location: ${res.country}`);
@@ -1557,7 +1598,7 @@ function parseNaturalLanguageSearchQuery(rawQuery) {
 
   const isMultiWordQuestion =
     !res.isWhyNot && (q.split(/\s+/).length >= 3 || /^(which|what|who|find|show|give|list|recommend)\b/i.test(q));
-  res.isNaturalLanguage = !res.isWhyNot && (res.constraintTags.length >= 2 || (res.slush2026Only && q.length > 0) || isMultiWordQuestion);
+  res.isNaturalLanguage = !res.isWhyNot && (res.constraintTags.length >= 1 || (res.slush2026Only && q.length > 0) || isMultiWordQuestion);
   return res;
 }
 
@@ -1570,12 +1611,12 @@ function buildAiCopilotSynthesis(queryText, parsed, items, backendRes) {
   }
   const top = items.slice(0, 3);
   const topLead = top[0];
-  const prof = getStartupCalaFieldProfile(topLead);
   const bridge =
     topLead.linkedinNetwork?.bridgePerson?.split("(")[0]?.trim() ||
     topLead.coInvestorPath?.coInvestorName ||
     "Cala syndicate";
-  return `Matched ${items.length} startup${items.length === 1 ? "" : "s"}. Top match: ${topLead.name} (${topLead.suitabilityScore}/100) in ${topLead.hqCity} (${topLead.stage}, ${formatEur(topLead.lastRoundAmountEurM)}, intro via ${bridge}).`;
+  const triggerNote = topLead.whyNowTrigger ? `, trigger: ${topLead.whyNowTrigger}` : "";
+  return `Matched ${items.length} startup${items.length === 1 ? "" : "s"}. Top match: ${topLead.name} (${topLead.suitabilityScore}/100) in ${topLead.hqCity} (${topLead.stage}, ${formatEur(topLead.lastRoundAmountEurM)}${triggerNote}, intro via ${bridge}).`;
 }
 
 async function executeSearchRefinement(customQuery) {
@@ -1625,7 +1666,11 @@ async function executeSearchRefinement(customQuery) {
       region,
       excludeSector: excludeSector || "none",
       raisingSoonOnly,
-      untappedOnly
+      untappedOnly,
+      highVelocityOnly: parsed.highVelocityOnly,
+      feederOnly: parsed.feederOnly,
+      filingOnly: parsed.filingOnly,
+      alumniOnly: parsed.alumniOnly
     })
   });
 
@@ -1675,7 +1720,7 @@ async function executeSearchRefinement(customQuery) {
     };
     if (intentBadge) {
       intentBadge.textContent = parsed.isNaturalLanguage
-        ? `AI Copilot · ${state.DisplayedShortlist.length} matches`
+        ? `4-Agent Copilot · ${state.DisplayedShortlist.length} matches`
         : intentNames[res.searchIntent] || res.intentLabel || "AI Search";
     }
     if (explanationEl) {
@@ -1684,6 +1729,7 @@ async function executeSearchRefinement(customQuery) {
         : res.explanation || `Showing ${state.DisplayedShortlist.length} Cala-verified startups matching active filters.`;
     }
     if (opsEl) {
+      const pipelineSteps = (res.agentPipeline || []).map((st) => `${st.step}. ${st.agent}`);
       const tags = [...parsed.constraintTags];
       if (!tags.length && Array.isArray(res.aiTrace) && res.aiTrace.length > 0) {
         tags.push(res.aiTrace[0]);
@@ -1701,8 +1747,8 @@ async function executeSearchRefinement(customQuery) {
       if (af.sectorFilter && !tags.some((t) => t.startsWith("Sector"))) {
         tags.push(`Sector: ${af.sectorFilter}`);
       }
-      opsEl.innerHTML = tags
-        .slice(0, 5)
+      opsEl.innerHTML = [...tags.slice(0, 3), ...pipelineSteps.slice(0, 4)]
+        .slice(0, 6)
         .map((op) => `<span class="trace-op-tag">${escapeHtml(String(op))}</span>`)
         .join("");
     }
@@ -1900,6 +1946,14 @@ function renderTalkScreen() {
       <div class="card panel">
         <h3><span class="n">1</span>Why now &amp; Cala score</h3>
         <p class="why-text">${escapeHtml(candidate.oneLiner || candidate.description)}</p>
+        ${
+          candidate.whyNowTrigger || candidate.headcountGrowthPct
+            ? `<div class="quick-pills-row" style="margin-top:8px">
+                ${candidate.whyNowTrigger ? `<span class="meta-pill">${escapeHtml(candidate.whyNowTrigger)}</span>` : ""}
+                ${candidate.headcountGrowthPct ? `<span class="meta-pill">${escapeHtml(`${candidate.headcountAtLastRound || "--"} -> ${candidate.employeeCount} people (+${candidate.headcountGrowthPct}%)`)}</span>` : ""}
+              </div>`
+            : ""
+        }
 
         <div class="talk-subblock">
           <h4 class="sub-label">Match breakdown</h4>
@@ -2305,16 +2359,17 @@ function renderDrawerBriefPane(brief, candidate) {
   if (pillsEl) {
     const roundsArr = brief?.rounds || candidate.roundHistory || [];
     const latestLead = roundsArr[roundsArr.length - 1]?.leadInvestorName || candidate.coInvestorPath?.coInvestorName;
+    const whyNowPill = candidate.whyNowTrigger || brief?.whyNowTrigger || null;
     const basePills = [
       `${candidate.hqCity}, ${candidate.country}`,
-      `${candidate.employeeCount} people`,
+      whyNowPill || `${candidate.employeeCount} people`,
       !calaProfile?.slush2026?.attending && latestLead ? `Lead: ${latestLead}` : null
     ].filter(Boolean);
     const slushPill = calaProfile?.slush2026?.attending
       ? `<span class="meta-pill slush-attendee-chip">Attending Slush 2026</span>`
       : "";
     pillsEl.innerHTML =
-      basePills.map((p) => `<span class="meta-pill">${escapeHtml(p)}</span>`).join("") + slushPill;
+      basePills.slice(0, 3).map((p) => `<span class="meta-pill">${escapeHtml(p)}</span>`).join("") + slushPill;
   }
 
   const introBox = document.getElementById("drawerIntroPreviewBox");
@@ -2420,21 +2475,44 @@ function renderDrawerBriefPane(brief, candidate) {
   if (tsLeadEl) {
     const rounds = brief?.rounds || candidate.roundHistory || [];
     const latestRound = rounds[rounds.length - 1] || null;
+    const topRank =
+      (latestRound?.sources || [])[0]?.sourceRank ||
+      (brief?.arbitrageSignals || candidate.arbitrageSignals || [])[0]?.sourceRank ||
+      "PRIMARY";
     const roundSummary = latestRound
-      ? `${latestRound.type || candidate.stage || "Round"} · ${formatEur(latestRound.amountEurM)} (${String(latestRound.date || "").slice(0, 7) || "Recent"})`
+      ? `${latestRound.type || candidate.stage || "Round"} · ${formatEur(latestRound.amountEurM)} (${String(latestRound.date || "").slice(0, 7) || "Recent"}) · ${topRank}`
       : `${candidate.stage || "Private"} · Undisclosed`;
     const coInvestors = (latestRound?.investorNames || []).filter(
       (n) => n && n !== latestRound?.leadInvestorName
     );
+    const feederSuffix = candidate.coInvestorPath?.isUpstreamFeeder ? " · Upstream feeder" : "";
     const leadText = latestRound?.leadInvestorName
-      ? `${latestRound.leadInvestorName} (Lead)${coInvestors.length ? `, ${coInvestors.slice(0, 2).join(", ")}` : ""}`
+      ? `${latestRound.leadInvestorName} (Lead${coInvestors.length ? `, ${coInvestors.slice(0, 2).join(", ")}` : ""})${feederSuffix}`
       : candidate.coInvestorPath?.coInvestorName
-        ? `${candidate.coInvestorPath.coInvestorName} (Co-investor)`
+        ? `${candidate.coInvestorPath.coInvestorName} (${candidate.coInvestorPath?.isUpstreamFeeder ? "Upstream feeder" : "Co-investor"})`
         : "Undisclosed";
-    const leaders = (calaProfile?.leadershipRelationships || []).slice(0, 3);
-    const leadershipText = leaders.length
-      ? leaders.map((l) => `${l.person} (${formatLeadershipTitle(l.relation)})`).join(", ")
-      : `${candidate.employeeCount || "--"} employees`;
+
+    const obsList = calaProfile?.numericalObservations || brief?.employeeCountSeries || candidate.employeeCountSeries || [];
+    const startHc = brief?.headcountAtLastRound ?? candidate.headcountAtLastRound ?? obsList[0]?.value ?? candidate.employeeCount;
+    const currentHc = candidate.employeeCount ?? obsList[obsList.length - 1]?.value ?? startHc;
+    const growthPct =
+      brief?.headcountGrowthPct ??
+      candidate.headcountGrowthPct ??
+      (startHc > 0 ? Math.max(0, Math.round(((currentHc - startHc) / startHc) * 100)) : 0);
+    const finMetrics = brief?.financialMetrics || candidate.financialMetrics || [];
+    const latestFin = finMetrics[finMetrics.length - 1];
+    const velocitySummary = latestFin
+      ? `${startHc} -> ${currentHc} (+${growthPct}%), EUR ${latestFin.cashEurM}M cash`
+      : `${startHc} -> ${currentHc} employees (+${growthPct}% since ${latestRound?.type || "round"})`;
+
+    const rolesList = calaProfile?.leadershipRelationships || [];
+    const alumni = brief?.alumniSpinout || candidate.alumniSpinout || rolesList.find((r) => r.priorCompany);
+    const primaryLeader = alumni || rolesList[0];
+    const leadershipText = alumni
+      ? `${alumni.name || alumni.person} (ex-${alumni.priorCompany}, since ${String(alumni.validSince || candidate.foundedYear || "").slice(0, 4)})`
+      : primaryLeader
+        ? `${primaryLeader.person} (${formatLeadershipTitle(primaryLeader.relation)}, since ${String(primaryLeader.validSince || candidate.foundedYear || "").slice(0, 4)})`
+        : `${candidate.employeeCount || "--"} employees`;
 
     tsLeadEl.innerHTML = `
       <div class="cala-ts-list">
@@ -2447,7 +2525,11 @@ function renderDrawerBriefPane(brief, candidate) {
           <strong class="cala-ts-val">${escapeHtml(leadText)}</strong>
         </div>
         <div class="cala-ts-row">
-          <span>Leadership</span>
+          <span>Team Velocity</span>
+          <strong class="cala-ts-val num-tabular">${escapeHtml(velocitySummary)}</strong>
+        </div>
+        <div class="cala-ts-row">
+          <span>Founder Lineage</span>
           <strong class="cala-ts-val">${escapeHtml(leadershipText)}</strong>
         </div>
       </div>
@@ -2800,15 +2882,17 @@ function renderThesisAndBacktest(result) {
   document.getElementById("thesisFundSubtitle").innerHTML = `Verified across <b>${thesis.dealsAnalyzedCount} Cala rounds</b> and ${thesis.portfolioCount} portfolio companies.`;
 
   const thesisHeroEl = document.getElementById("thesisHeroKpis");
+  const tt = thesis.timeTravelProfile || {};
+  const feeders = thesis.upstreamFeeders || [];
   if (thesisHeroEl) {
     const hits = backtest?.hitsInTop15 ?? 3;
     const totalDeals = backtest?.totalActualDeals ?? 3;
     const hitRate = totalDeals > 0 ? Math.round((hits / totalDeals) * 100) : 100;
     thesisHeroEl.innerHTML = `
       <div class="hk-card">
-        <span class="hk-kicker">Verified Cala Deals</span>
-        <b class="hk-val num-tabular">${thesis.dealsAnalyzedCount}</b>
-        <span class="hk-lab">${thesis.portfolioCount} portfolio cos · ${thesis.leadRatePct}% lead</span>
+        <span class="hk-kicker">Median Entry Team</span>
+        <b class="hk-val num-tabular">${tt.medianEntryHeadcount != null ? `${tt.medianEntryHeadcount} people` : `${thesis.dealsAnalyzedCount} deals`}</b>
+        <span class="hk-lab">~${Math.round(tt.medianEntryAgeMonths || 24)}m age · ${tt.filingVerifiedSharePct ?? 60}% filing verified</span>
       </div>
       <div class="hk-card">
         <span class="hk-kicker">Backtest Recovery</span>
@@ -2816,21 +2900,21 @@ function renderThesisAndBacktest(result) {
         <span class="hk-lab">${hits} of ${totalDeals} future deals in Top 15</span>
       </div>
       <div class="hk-card">
-        <span class="hk-kicker">Median Round Size</span>
+        <span class="hk-kicker">Upstream Feeders &amp; Size</span>
         <b class="hk-val num-tabular">${formatEur(thesis.medianRoundSizeEurM)}</b>
-        <span class="hk-lab">${thesis.followOnRatePct}% follow-on rate</span>
+        <span class="hk-lab">${feeders.length} feeder funds · ${thesis.leadRatePct}% lead</span>
       </div>
     `;
   }
 
   const confBadge = document.getElementById("thesisConfidenceBadge");
   if (confBadge) {
-    confBadge.textContent = `${thesis.dealsAnalyzedCount} rounds · Lead rate ${thesis.leadRatePct}%`;
+    confBadge.textContent = `${thesis.dealsAnalyzedCount} rounds · ${tt.filingVerifiedSharePct ?? 60}% FILING/PRIMARY`;
   }
 
   const driftBadge = document.getElementById("driftScoreBadge");
   if (driftBadge) {
-    driftBadge.textContent = `Median round ${formatEur(thesis.medianRoundSizeEurM)}`;
+    driftBadge.textContent = tt.entryHeadcountBand || `Median round ${formatEur(thesis.medianRoundSizeEurM)}`;
   }
 
   const weakWarn = document.getElementById("weakProfileWarning");
@@ -2873,6 +2957,9 @@ function renderThesisAndBacktest(result) {
   const insightsEl = document.getElementById("thesisInsightsList");
   if (insightsEl) {
     const diffLine = (thesis.statedVsRevealed || [])[0] || thesis.driftSummary || "";
+    const topFeederSummary = feeders.length
+      ? `Round N-1 feeders before follow-on entry: ${feeders.slice(0, 3).map((f) => `${f.name} (${f.fedDealsCount}x: ${f.companies.slice(0, 2).join(", ")})`).join("; ")}.`
+      : `Direct entry at Seed/Pre-Seed (${thesis.leadRatePct}% lead rate, ${thesis.followOnRatePct}% follow-on rate across ${thesis.dealsAnalyzedCount} rounds).`;
     insightsEl.innerHTML = `
       <li>
         <div class="ic">
@@ -2888,8 +2975,8 @@ function renderThesisAndBacktest(result) {
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m9 12 2 2 4-4"/></svg>
         </div>
         <div>
-          <b>Syndicate conviction &amp; lead behavior</b>
-          Lead rate ${thesis.leadRatePct}% and follow-on rate ${thesis.followOnRatePct}% across ${thesis.dealsAnalyzedCount} verified Cala rounds.
+          <b>Time-travel entry DNA</b>
+          Invests at a median of ${escapeHtml(String(tt.medianEntryHeadcount ?? "--"))} employees (${escapeHtml(tt.entryHeadcountBand || "early team")}), ~${escapeHtml(String(tt.medianEntryAgeMonths ?? "--"))} months after founding, with ${escapeHtml(String(tt.filingVerifiedSharePct ?? 0))}% FILING/PRIMARY provenance.
         </div>
       </li>
       <li>
@@ -2897,8 +2984,8 @@ function renderThesisAndBacktest(result) {
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
         </div>
         <div>
-          <b>Zero-hallucination evidence gate</b>
-          Every key claim is tied to a public filing or verified press source; private metrics are flagged for your first call.
+          <b>Upstream feeder syndicate &amp; 4-agent provenance gate</b>
+          ${escapeHtml(topFeederSummary)}
         </div>
       </li>
     `;

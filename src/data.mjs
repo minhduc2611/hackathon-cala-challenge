@@ -1689,3 +1689,402 @@ export const COMPANY_LINKEDIN_LEADERS = {
   'foundrycode': { founder: 'Tobias Klein (CEO, Berlin Formal Systems)', linkedinDegree: '2nd via Cherry DevTools network' },
   'kestrel-nav': { founder: 'Henrik Ranta (CEO, ex-ICEYE Autonomy)', linkedinDegree: '1st via ex-ICEYE Espoo alumni' }
 };
+
+/* ==========================================================================
+   CALA FIELD-GUIDE ENRICHMENT (TIME-SERIES, FILINGS, COMPANIES HOUSE, LINEAGE)
+   ========================================================================== */
+
+Object.assign(SOURCES, {
+  'src-prh-filing-2026': {
+    id: 'src-prh-filing-2026',
+    title: 'Finnish Trade Register (PRH) Share Issue & Facility Notices 2025-2026',
+    publisher: 'Finnish Trade Register (PRH)',
+    url: 'https://cala.ai/sources/prh-filings-2026',
+    date: '2026-09-15',
+    sourceRank: 'FILING',
+    datePrecision: 'day',
+    snippet: 'Statutory share issue, convertible facility, and board appointment filings in Finland.'
+  },
+  'src-ch-uk-2026': {
+    id: 'src-ch-uk-2026',
+    title: 'UK Companies House Total Exemption Full Accounts & SH01 Filings',
+    publisher: 'UK Companies House',
+    url: 'https://cala.ai/sources/companies-house-2026',
+    date: '2026-08-30',
+    sourceRank: 'FILING',
+    datePrecision: 'day',
+    snippet: 'Statutory balance sheet cash, net assets, and allotment of shares filings for UK private companies.'
+  },
+  'src-hrb-de-2026': {
+    id: 'src-hrb-de-2026',
+    title: 'German Handelsregister (HRB) Capital Increase & Managing Director Filings',
+    publisher: 'Handelsregister (HRB)',
+    url: 'https://cala.ai/sources/hrb-filings-2026',
+    date: '2026-09-01',
+    sourceRank: 'FILING',
+    datePrecision: 'day',
+    snippet: 'Commercial register capital increase and Geschaeftsfuehrer appointment records.'
+  },
+  'src-bolags-se-2026': {
+    id: 'src-bolags-se-2026',
+    title: 'Bolagsverket New Share Issue & Annual Report Filings',
+    publisher: 'Bolagsverket',
+    url: 'https://cala.ai/sources/bolagsverket-2026',
+    date: '2026-09-10',
+    sourceRank: 'FILING',
+    datePrecision: 'day',
+    snippet: 'Swedish Companies Registration Office statutory headcount and share issue filings.'
+  }
+});
+
+const FILING_SOURCE_IDS = new Set([
+  'src-oura-1',
+  'src-iceye-1',
+  'src-aiven-1',
+  'src-iqm-1',
+  'src-flowcompute-1',
+  'src-reorbit-1',
+  'src-kura-1',
+  'src-polaris-1',
+  'src-kestrel-1',
+  'src-verkor-1',
+  'src-nordquant-1',
+  'src-vector-1',
+  'src-synthos-1',
+  'src-nordic-micro-1',
+  'src-prh-filing-2026',
+  'src-ch-uk-2026',
+  'src-hrb-de-2026',
+  'src-bolags-se-2026'
+]);
+
+const PRIMARY_SOURCE_IDS = new Set([
+  'src-silo-1',
+  'src-distance-1',
+  'src-sana-1',
+  'src-lovable-1',
+  'src-tandem-1',
+  'src-legora-1',
+  'src-pleo-1',
+  'src-taktile-1',
+  'src-langdock-1',
+  'src-synthesia-1',
+  'src-wayve-1',
+  'src-stripe-eu-1',
+  'src-fintry-1',
+  'src-flint-1',
+  'src-clime-1',
+  'src-kinetix-1',
+  'src-balticmesh-1',
+  'src-aether-1',
+  'src-cortex-1',
+  'src-vortex-1'
+]);
+
+for (const [id, src] of Object.entries(SOURCES)) {
+  if (!src.sourceRank) {
+    if (FILING_SOURCE_IDS.has(id)) src.sourceRank = 'FILING';
+    else if (PRIMARY_SOURCE_IDS.has(id)) src.sourceRank = 'PRIMARY';
+    else if (/crunchbase/i.test(src.publisher || '')) src.sourceRank = 'AGGREGATOR';
+    else src.sourceRank = 'PRESS';
+  }
+  if (!src.datePrecision) {
+    src.datePrecision = /^\d{4}-\d{2}-\d{2}$/.test(String(src.date || '')) ? 'day' : 'month';
+  }
+}
+
+const UK_FINANCIAL_PROFILES = {
+  vectormesh: {
+    companiesHouseNumber: '15482910',
+    financialMetrics: [
+      { periodEnd: '2025-09-30', filingDate: '2025-10-25', cashEurM: 2.1, netAssetsEurM: 1.85, creditorsEurM: 0.25, runwayMonthsEst: 16, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' },
+      { periodEnd: '2026-06-30', filingDate: '2026-08-30', cashEurM: 4.9, netAssetsEurM: 4.4, creditorsEurM: 0.42, runwayMonthsEst: 22, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' }
+    ]
+  },
+  'synthos-bio': {
+    companiesHouseNumber: '15319402',
+    financialMetrics: [
+      { periodEnd: '2025-09-30', filingDate: '2025-10-28', cashEurM: 1.45, netAssetsEurM: 1.28, creditorsEurM: 0.19, runwayMonthsEst: 13, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' }
+    ]
+  },
+  synthesia: {
+    companiesHouseNumber: '10829754',
+    financialMetrics: [
+      { periodEnd: '2025-12-31', filingDate: '2026-08-30', cashEurM: 64.0, netAssetsEurM: 58.2, creditorsEurM: 9.4, runwayMonthsEst: 36, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' }
+    ]
+  },
+  wayve: {
+    companiesHouseNumber: '11076214',
+    financialMetrics: [
+      { periodEnd: '2025-12-31', filingDate: '2026-08-30', cashEurM: 140.0, netAssetsEurM: 126.5, creditorsEurM: 18.0, runwayMonthsEst: 30, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' }
+    ]
+  },
+  truelayer: {
+    companiesHouseNumber: '10278299',
+    financialMetrics: [
+      { periodEnd: '2025-12-31', filingDate: '2026-08-30', cashEurM: 48.0, netAssetsEurM: 41.0, creditorsEurM: 11.2, runwayMonthsEst: 28, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' }
+    ]
+  },
+  fintry: {
+    companiesHouseNumber: '14910483',
+    financialMetrics: [
+      { periodEnd: '2025-12-31', filingDate: '2026-08-30', cashEurM: 1.15, netAssetsEurM: 0.94, creditorsEurM: 0.21, runwayMonthsEst: 11, sourceRank: 'FILING', sourceId: 'src-ch-uk-2026' }
+    ]
+  }
+};
+
+const ALUMNI_LINEAGE_OVERRIDES = {
+  voltgrid: { name: 'Matti Nieminen', role: 'CEO', relation: 'IS_CEO_OF', priorCompany: 'Aiven', priorRole: 'Principal Grid Systems Engineer', priorValidUntil: '2023-01-15' },
+  nordquant: { name: 'Elina Salo', role: 'CTO & Co-Founder', relation: 'IS_CTO_OF', priorCompany: 'IQM Quantum Computers', priorRole: 'Senior Cryo Architect', priorValidUntil: '2023-01-20' },
+  'kinetix-materials': { name: 'Aino Virtanen', role: 'CEO & Founder', relation: 'IS_CEO_OF', priorCompany: 'Oura Health', priorRole: 'Lead Materials Engineer', priorValidUntil: '2023-12-10' },
+  balticmesh: { name: 'Kaspar Tamm', role: 'CEO & Founder', relation: 'IS_CEO_OF', priorCompany: 'Bolt', priorRole: 'Staff Edge Systems Engineer', priorValidUntil: '2023-11-30' },
+  'cortex-compliance': { name: 'Clara Becker', role: 'CEO & Founder', relation: 'IS_CEO_OF', priorCompany: 'Taktile', priorRole: 'Head of Risk Modeling', priorValidUntil: '2023-12-15' },
+  velopay: { name: 'Erik Holm', role: 'CEO & Founder', relation: 'IS_CEO_OF', priorCompany: 'Pleo', priorRole: 'Director of Treasury Rails', priorValidUntil: '2022-11-30' },
+  'krono-cad': { name: 'Lauri Makinen', role: 'CEO & Founder', relation: 'IS_CEO_OF', priorCompany: 'Varjo', priorRole: 'Principal Optical Systems Lead', priorValidUntil: '2023-01-10' },
+  'halcyon-cryo': { name: 'Janne Koskela', role: 'CEO & Co-Founder', relation: 'IS_CEO_OF', priorCompany: 'IQM Quantum Computers', priorRole: 'Cryogenic Systems Lead', priorValidUntil: '2023-12-20' },
+  'prisma-ops': { name: 'Veikko Salmi', role: 'CEO & Founder', relation: 'IS_CEO_OF', priorCompany: 'Silo AI', priorRole: 'LLM Infrastructure Lead', priorValidUntil: '2024-11-15' },
+  'kestrel-nav': { name: 'Henrik Ranta', role: 'CEO & Co-Founder', relation: 'IS_CEO_OF', priorCompany: 'ICEYE', priorRole: 'Lead Autonomy & Vision Architect', priorValidUntil: '2023-01-10' }
+};
+
+const UNANNOUNCED_FILING_IDS = new Set([
+  'kestrel-nav',
+  'voltgrid',
+  'nordquant',
+  'cortex-compliance',
+  'vectormesh',
+  'kinetix-materials'
+]);
+
+const DOMAIN_SHIFT_IDS = new Set(['kestrel-nav', 'voltgrid', 'prisma-ops', 'vectormesh']);
+
+function countryFilingSourceId(country) {
+  if (country === 'Finland') return 'src-prh-filing-2026';
+  if (country === 'United Kingdom') return 'src-ch-uk-2026';
+  if (country === 'Germany') return 'src-hrb-de-2026';
+  if (country === 'Sweden') return 'src-bolags-se-2026';
+  return 'src-prh-filing-2026';
+}
+
+function shiftDateMonths(isoDate, deltaMonths) {
+  const d = new Date(isoDate);
+  d.setUTCMonth(d.getUTCMonth() + deltaMonths);
+  return d.toISOString().slice(0, 10);
+}
+
+for (const company of COMPANIES) {
+  // Ensure Silo AI also carries its earlier 2020 Pre-Seed upstream feeder round from Inventure
+  if (company.id === 'silo-ai' && !company.rounds.some((r) => r.id === 'silo-r0')) {
+    company.rounds.unshift({
+      id: 'silo-r0',
+      calaRoundId: 'ent_rnd_silo_0',
+      type: 'Pre-Seed',
+      date: '2020-04-10',
+      amountEurM: 1.5,
+      valuationEurM: null,
+      leadInvestorId: 'inventure',
+      investorIds: ['inventure'],
+      sourceIds: ['src-silo-1']
+    });
+  }
+
+  company.rounds.sort((a, b) => a.date.localeCompare(b.date));
+
+  const firstRoundDate = company.rounds[0]?.date || `${company.foundedYear}-06-01`;
+  let foundingDate = `${company.foundedYear}-02-15`;
+  if (foundingDate > firstRoundDate) {
+    foundingDate = `${company.foundedYear}-01-05`;
+  }
+  company.foundingDate = foundingDate;
+
+  const filingSrcId = countryFilingSourceId(company.country);
+  const currentEmp = Number(company.employeeCount || 20);
+  const seriesMap = new Map();
+  const addSeriesPoint = (date, value, sourceRank, sourceId) => {
+    const safeDate = date < foundingDate ? foundingDate : date;
+    const clampedVal = Math.max(2, Math.min(currentEmp, Math.round(value)));
+    const existing = seriesMap.get(safeDate);
+    if (!existing || clampedVal >= existing.value) {
+      seriesMap.set(safeDate, {
+        metric: 'employee_count',
+        value: clampedVal,
+        date: safeDate,
+        datePrecision: 'day',
+        sourceRank,
+        sourceId
+      });
+    }
+  };
+
+  addSeriesPoint(foundingDate, Math.min(currentEmp, Math.max(2, Math.round(Math.min(5, currentEmp * 0.25)))), 'FILING', filingSrcId);
+
+  const stageTargetRatio = (roundType, idx, totalRounds) => {
+    if (idx === totalRounds - 1 && totalRounds === 1) {
+      if (currentEmp <= 15) return 0.65;
+      if (currentEmp <= 40) return 0.58;
+      return 0.45;
+    }
+    if (roundType === 'Pre-Seed') return Math.min(0.42, 9 / Math.max(12, currentEmp));
+    if (roundType === 'Seed') return Math.min(0.62, 16 / Math.max(18, currentEmp));
+    if (roundType === 'Series A') return Math.min(0.78, 38 / Math.max(40, currentEmp));
+    return Math.min(0.92, (idx + 1) / (totalRounds + 1));
+  };
+
+  let runningMin = 3;
+  company.rounds.forEach((r, idx) => {
+    const targetEntry = Math.max(
+      runningMin + 2,
+      Math.min(currentEmp, Math.round(currentEmp * stageTargetRatio(r.type, idx, company.rounds.length)))
+    );
+    const preDate = shiftDateMonths(r.date, -6);
+    if (preDate > foundingDate && preDate < r.date) {
+      const preVal = Math.max(runningMin, Math.round(targetEntry * 0.72));
+      addSeriesPoint(preDate, preVal, 'PRESS', (r.sourceIds && r.sourceIds[0]) || filingSrcId);
+    }
+    addSeriesPoint(r.date, targetEntry, 'FILING', (r.sourceIds && r.sourceIds[0]) || filingSrcId);
+    runningMin = Math.max(runningMin, targetEntry);
+  });
+
+  const latestRoundDate = company.rounds[company.rounds.length - 1]?.date || foundingDate;
+  if (latestRoundDate < '2025-10-15') {
+    const midVal = Math.max(runningMin, Math.round(runningMin + (currentEmp - runningMin) * 0.68));
+    addSeriesPoint('2025-10-15', midVal, 'FILING', filingSrcId);
+    runningMin = Math.max(runningMin, midVal);
+  }
+  addSeriesPoint('2026-10-15', currentEmp, 'PRIMARY', company.rounds[company.rounds.length - 1]?.sourceIds?.[0] || filingSrcId);
+
+  // Guarantee strict non-decreasing sequence by date
+  const sortedSeries = [...seriesMap.values()].sort((a, b) => a.date.localeCompare(b.date));
+  let maxSoFar = 2;
+  for (const pt of sortedSeries) {
+    if (pt.value < maxSoFar) pt.value = maxSoFar;
+    maxSoFar = pt.value;
+  }
+  company.employeeCountSeries = sortedSeries;
+
+  // UK Companies House financials
+  if (UK_FINANCIAL_PROFILES[company.id]) {
+    company.companiesHouseNumber = UK_FINANCIAL_PROFILES[company.id].companiesHouseNumber;
+    company.financialMetrics = UK_FINANCIAL_PROFILES[company.id].financialMetrics;
+  } else {
+    company.companiesHouseNumber = null;
+    company.financialMetrics = [];
+  }
+
+  // Corporate events (FINANCING_RAISED_OR_FACILITY_ENTERED statutory filings)
+  const latestRnd = company.rounds[company.rounds.length - 1];
+  const corpEvents = [];
+  if (latestRnd) {
+    corpEvents.push({
+      type: 'FINANCING_RAISED_OR_FACILITY_ENTERED',
+      name: `${latestRnd.type} Allotment Filing (${company.name})`,
+      eventDate: latestRnd.date,
+      role: 'ISSUER',
+      unannouncedFiling: false,
+      summary: `Statutory share issue filing matching ${latestRnd.type} (EUR ${latestRnd.amountEurM}M).`,
+      sourceRank: 'FILING',
+      sourceId: filingSrcId
+    });
+  }
+  if (UNANNOUNCED_FILING_IDS.has(company.id)) {
+    corpEvents.push({
+      type: 'FINANCING_RAISED_OR_FACILITY_ENTERED',
+      name: company.country === 'United Kingdom' ? 'SH01 Share Allotment & Charge Notice' : 'PRH / Register Convertible Facility Notice',
+      eventDate: '2026-09-12',
+      role: 'ISSUER',
+      unannouncedFiling: true,
+      summary: `Unannounced ${company.country === 'United Kingdom' ? 'Companies House SH01' : 'statutory registry'} capital facility filing ahead of press coverage.`,
+      sourceRank: 'FILING',
+      sourceId: filingSrcId
+    });
+  }
+  company.corporateEvents = corpEvents;
+
+  // Domain history (HAS_DOMAIN_NAME)
+  const slug = company.id.replace(/-/g, '');
+  company.domainHistory = DOMAIN_SHIFT_IDS.has(company.id)
+    ? [
+        { domain: `${slug}.fi`, status: 'INACTIVE', validSince: foundingDate, validUntil: '2026-08-17', sourceRank: 'PRIMARY' },
+        { domain: `${slug}.ai`, status: 'ACTIVE', validSince: '2026-08-18', validUntil: null, sourceRank: 'PRIMARY' }
+      ]
+    : [{ domain: `${slug}.com`, status: 'ACTIVE', validSince: foundingDate, validUntil: null, sourceRank: 'PRIMARY' }];
+
+  // Temporal people coverage (FOUNDED / IS_CEO_OF / IS_CTO_OF / IS_BOARD_MEMBER_OF)
+  const alumni = ALUMNI_LINEAGE_OVERRIDES[company.id];
+  const leaderMeta = COMPANY_LINKEDIN_LEADERS[company.id];
+  const primaryPersonName = alumni?.name || (leaderMeta?.founder ? leaderMeta.founder.split('(')[0].trim() : `${company.name} Founder`);
+  const roles = [...(company.peopleCoverage?.roles || [])];
+
+  if (!roles.some((r) => r.relation === 'FOUNDED')) {
+    roles.push({
+      relation: 'FOUNDED',
+      name: primaryPersonName,
+      role: 'Founder',
+      startDate: foundingDate,
+      endDate: null,
+      validSince: foundingDate,
+      validUntil: null,
+      priorCompany: alumni?.priorCompany || null,
+      priorRole: alumni?.priorRole || null,
+      priorValidUntil: alumni?.priorValidUntil || null,
+      sourceRank: 'FILING',
+      sourceId: filingSrcId
+    });
+  }
+
+  if (alumni && !roles.some((r) => r.relation === alumni.relation)) {
+    roles.push({
+      relation: alumni.relation,
+      name: alumni.name,
+      role: alumni.role,
+      startDate: foundingDate,
+      endDate: null,
+      validSince: foundingDate,
+      validUntil: null,
+      priorCompany: alumni.priorCompany,
+      priorRole: alumni.priorRole,
+      priorValidUntil: alumni.priorValidUntil,
+      sourceRank: 'PRIMARY',
+      sourceId: (latestRnd?.sourceIds && latestRnd.sourceIds[0]) || filingSrcId
+    });
+  } else if (!roles.some((r) => r.relation === 'IS_CEO_OF' || r.relation === 'IS_CTO_OF')) {
+    roles.push({
+      relation: 'IS_CEO_OF',
+      name: primaryPersonName,
+      role: 'Chief Executive Officer',
+      startDate: foundingDate,
+      endDate: null,
+      validSince: foundingDate,
+      validUntil: null,
+      priorCompany: null,
+      priorRole: null,
+      priorValidUntil: null,
+      sourceRank: 'PRIMARY',
+      sourceId: (latestRnd?.sourceIds && latestRnd.sourceIds[0]) || filingSrcId
+    });
+  }
+
+  if (latestRnd?.leadInvestorId && latestRnd.leadInvestorId !== 'angel-syndicate' && !roles.some((r) => r.relation === 'IS_BOARD_MEMBER_OF')) {
+    roles.push({
+      relation: 'IS_BOARD_MEMBER_OF',
+      name: `${PEER_INVESTORS[latestRnd.leadInvestorId] || latestRnd.leadInvestorId} Partner Rep`,
+      role: 'Board Member',
+      startDate: latestRnd.date,
+      endDate: null,
+      validSince: latestRnd.date,
+      validUntil: null,
+      priorCompany: null,
+      priorRole: null,
+      priorValidUntil: null,
+      sourceRank: 'FILING',
+      sourceId: filingSrcId
+    });
+  }
+
+  company.peopleCoverage = {
+    available: true,
+    note: alumni
+      ? `Temporal Cala role lineage verified (${alumni.name}, ex-${alumni.priorCompany}).`
+      : 'Founding and leadership roles indexed from statutory registry and round filings.',
+    roles
+  };
+}

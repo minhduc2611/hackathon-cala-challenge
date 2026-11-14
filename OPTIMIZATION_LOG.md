@@ -136,3 +136,13 @@
   - Modal Brief (`#drawerPaneBrief`) & Network (`#drawerPaneNetwork`): curated 2-column `.modal-exec-grid` + `.modal-essentials-grid` showing top 2 reasons (`Why to call`), 5-factor bars, `Backing & Leadership` (Latest Round, Lead & Syndicate, Leadership), and 1 watchout + warm intro preview directly
 - **Tests:** PASS (`11/11` sandboxed unit tests, `72.3ms`), `node --check` pass, zero `<details>` / `+` CSS / hygiene checks pass; Browser verified at `1440x900` and `390x844` (`0` console/HTTP errors, `8/8` Cala preserved, centered obsidian modal verified in `final_step_1064.png`)
 - **Decision:** KEEP
+
+### [2026-11-14 12:40] — Exp 12: Agentic Cala Data Upgrade (Time-Travel Entry DNA, Upstream Feeders, Arbitrage Triggers & 4-Agent Copilot)
+- **Hypothesis:** Exploiting 5 Level-3 Cala Field Guide signals—time-travel `employee_count` entry reconstruction with point-in-time `cutoffDate` safety, Round N-1 upstream feeder syndicate separation, filing/runway/velocity "Why Now" arbitrage triggers, temporal `validSince`/`validUntil` founder alumni lineage, and a 4-agent auditable copilot trace—deepens VC diligence and search intelligence while preserving all flat obsidian UI & budget invariants.
+- **Files touched:** `src/data.mjs`, `src/engine.mjs`, `server.mjs`, `public/app.js`, `test/engine.test.mjs`
+- **Before -> After:**
+  - Thesis DNA: static deal counts/averages -> `timeTravelProfile` (`16` median entry employees, `~40.3` months post-founding, `58%` `FILING`/`PRIMARY` provenance) and `upstreamFeeders` (`Inventure`, `Maki Ventures`, `Icebreaker.vc` Round N-1 feeders + `feeder_to_lead` warm paths)
+  - Startup Signals & Modal: generic stage/round rows -> real `employeeCountSeries`, UK Companies House `financialMetrics`, `FINANCING_RAISED_OR_FACILITY_ENTERED` filings, `alumniSpinout` operator lineage (`Henrik Ranta (ex-ICEYE, since 2023)`), `whyNowTrigger` quick pill, and 4 flat `.cala-ts-row` rows inside `Backing & Leadership`
+  - AI Search Copilot: keyword & basic criteria matching -> agentic intents (`fast headcount growth`, `feeder syndicate`, `filing signal`, `alumni founder`) with 4-agent trace pills (`1. Time-Travel DNA Profiler` -> `2. Upstream Syndicate Mapper` -> `3. Filing & Velocity Arbitrage Scout` -> `4. Provenance Gate`)
+- **Tests:** PASS (`15/15` sandboxed unit tests, `86.3ms`), `node --check` pass, zero `<details>` / `+` CSS / green / emoji / hygiene checks pass; Live Chrome verified (`final_step_1083.png`, `0` console/HTTP errors, `8/8` Cala preserved)
+- **Decision:** KEEP

@@ -283,6 +283,8 @@ export function createAppServer(options = {}) {
             companiesIndexed: COMPANIES.length,
             roundsIndexed: COMPANIES.reduce((s, c) => s + c.rounds.length, 0),
             sourcesIndexed: Object.keys(SOURCES).length,
+            companiesHouseIndexed: COMPANIES.filter((c) => Boolean(c.companiesHouseNumber)).length,
+            timeSeriesPointsIndexed: COMPANIES.reduce((s, c) => s + (c.employeeCountSeries?.length || 0), 0),
             liveCalaConfigured: Boolean(process.env.CALA_API_KEY),
             calaBudget: calaClient.getBudgetStatus()
           }
@@ -403,6 +405,10 @@ export function createAppServer(options = {}) {
           excludeSector: body.excludeSector,
           raisingSoonOnly: body.raisingSoonOnly,
           untappedOnly: body.untappedOnly,
+          highVelocityOnly: body.highVelocityOnly,
+          feederOnly: body.feederOnly,
+          filingOnly: body.filingOnly,
+          alumniOnly: body.alumniOnly,
           queryText: body.queryText
         });
         sendJson(res, 200, refined);

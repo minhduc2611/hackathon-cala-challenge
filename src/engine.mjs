@@ -45,6 +45,63 @@ export function median(values) {
   return Math.round(((nums[mid - 1] + nums[mid]) / 2) * 10) / 10;
 }
 
+export function interpolateHeadcountAtDate(company, isoDate, cutoffDate = null) {
+  const rawSeries = Array.isArray(company?.employeeCountSeries) ? company.employeeCountSeries : [];
+  const series = rawSeries
+    .filter((obs) => !cutoffDate || obs.date < cutoffDate)
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  if (!series.length) {
+    return {
+      headcount: Number(company?.employeeCount || 12),
+      preRoundVelocityPct: 0,
+      observationDate: cutoffDate || REFERENCE_DATE,
+      sourceId: company?.rounds?.[0]?.sourceIds?.[0] || null
+    };
+  }
+
+  const targetDate = isoDate || cutoffDate || REFERENCE_DATE;
+  const exact = series.find((obs) => obs.date === targetDate);
+  const onOrBefore = series.filter((obs) => obs.date <= targetDate);
+  const after = series.filter((obs) => obs.date > targetDate);
+
+  let headcount;
+  let usedObs;
+
+  if (exact) {
+    headcount = exact.value;
+    usedObs = exact;
+  } else if (onOrBefore.length > 0 && after.length > 0) {
+    const prev = onOrBefore[onOrBefore.length - 1];
+    const next = after[0];
+    const spanMs = Math.max(1, new Date(next.date).getTime() - new Date(prev.date).getTime());
+    const elapsedMs = Math.max(0, new Date(targetDate).getTime() - new Date(prev.date).getTime());
+    const ratio = Math.min(1, elapsedMs / spanMs);
+    headcount = Math.round(prev.value + (next.value - prev.value) * ratio);
+    usedObs = prev;
+  } else if (onOrBefore.length > 0) {
+    usedObs = onOrBefore[onOrBefore.length - 1];
+    headcount = usedObs.value;
+  } else {
+    usedObs = series[0];
+    headcount = usedObs.value;
+  }
+
+  const earlierObs = series.filter((obs) => obs.date < (exact ? exact.date : targetDate));
+  const baseline = earlierObs.length > 1 ? earlierObs[earlierObs.length - 1] : earlierObs[0];
+  let preRoundVelocityPct = 0;
+  if (baseline && baseline.value > 0 && headcount >= baseline.value) {
+    preRoundVelocityPct = Math.round(((headcount - baseline.value) / baseline.value) * 100);
+  }
+
+  return {
+    headcount,
+    preRoundVelocityPct,
+    observationDate: usedObs.date,
+    sourceId: usedObs.sourceId || null
+  };
+}
+
 function normalizeDistribution(weightMap) {
   const entries = Object.entries(weightMap).filter(([, val]) => val.weight > 0);
   const totalWeight = entries.reduce((sum, [, val]) => sum + val.weight, 0);
@@ -155,7 +212,7 @@ function addToBucket(map, key, weight) {
   map[key].weight += weight;
 }
 
-function analyzeStatedVsRevealed(statedText, sectorMix, geographyMix, stageMix) {
+function analyzeStatedVsRevealed(statedText, sectorMix, geographyMix, stageMix, timeTravelProfile = null, upstreamFeeders = []) {
   const text = String(statedText || '').toLowerCase();
   const topSector = sectorMix[0];
   const topTwoSectorShare = (sectorMix[0]?.sharePct || 0) + (sectorMix[1]?.sharePct || 0);
@@ -183,6 +240,16 @@ function analyzeStatedVsRevealed(statedText, sectorMix, geographyMix, stageMix) 
   if (topStage) {
     findings.push(
       `Actual entry discipline centres on ${topStage.label} (${topStage.sharePct}% weighted share), confirming stage alignment.`
+    );
+  }
+  if (timeTravelProfile?.medianEntryHeadcount != null) {
+    findings.push(
+      `Time-travel entry DNA: writes checks at a median of ${timeTravelProfile.medianEntryHeadcount} employees (${timeTravelProfile.entryHeadcountBand}), ~${timeTravelProfile.medianEntryAgeMonths} months post-incorporation (${timeTravelProfile.filingVerifiedSharePct}% FILING/PRIMARY verified).`
+    );
+  }
+  if (upstreamFeeders.length > 0) {
+    findings.push(
+      `Upstream feeder reliance: ${upstreamFeeders.slice(0, 2).map((f) => `${f.name} (${f.fedDealsCount}x prior round)`).join(' and ')} backed Round N-1 ahead of follow-on entry.`
     );
   }
   if (!findings.length) {
@@ -273,6 +340,43 @@ export function computeRevealedThesis(input, options = {}) {
   let recentCount = 0;
   let olderCount = 0;
 
+  const entryHeadcounts = [];
+  const entryAgeMonthsList = [];
+  const preRoundVelocities = [];
+  const dealSnapshots = [];
+  let filingVerifiedDeals = 0;
+
+  const entryByCompany = new Map();
+  for (const { company, round } of [...deals].sort((a, b) => a.round.date.localeCompare(b.round.date))) {
+    if (!entryByCompany.has(company.id)) {
+      entryByCompany.set(company.id, { company, round });
+    }
+  }
+
+  for (const { company, round } of [...entryByCompany.values()].sort((a, b) => b.round.date.localeCompare(a.round.date))) {
+    const entryObs = interpolateHeadcountAtDate(company, round.date, cutoffDate);
+    const foundingIso = company.foundingDate || `${company.foundedYear}-02-15`;
+    const entryAgeMonths = monthsBetween(foundingIso, round.date);
+    const resolvedSrcs = resolveSources(round.sourceIds || []);
+    const hasFilingOrPrimary = resolvedSrcs.some((s) => s.sourceRank === 'FILING' || s.sourceRank === 'PRIMARY');
+    if (hasFilingOrPrimary) filingVerifiedDeals += 1;
+
+    entryHeadcounts.push(entryObs.headcount);
+    entryAgeMonthsList.push(entryAgeMonths);
+    preRoundVelocities.push(entryObs.preRoundVelocityPct);
+    dealSnapshots.push({
+      companyId: company.id,
+      companyName: company.name,
+      roundType: round.type,
+      roundDate: round.date,
+      entryHeadcount: entryObs.headcount,
+      entryAgeMonths,
+      preRoundVelocityPct: entryObs.preRoundVelocityPct
+    });
+  }
+
+  const totalEntryDeals = entryByCompany.size || deals.length;
+
   for (const { company, round } of deals) {
     const isRecent = round.date >= recencyCutoff;
     const weight = isRecent ? 2.0 : 1.0;
@@ -317,6 +421,74 @@ export function computeRevealedThesis(input, options = {}) {
       for (const sId of round.sourceIds || []) coInvestorMap[invId].sourceIds.add(sId);
     }
   }
+
+  // Upstream "Feeder" Syndicate Graph: Round N-1 investors before target fund entered Round N
+  const upstreamFeederMap = {};
+  for (const compId of portfolioCompanyIds) {
+    const company = COMPANIES.find((c) => c.id === compId);
+    if (!company) continue;
+    const compRounds = company.rounds
+      .filter((r) => !cutoffDate || r.date < cutoffDate)
+      .sort((a, b) => a.date.localeCompare(b.date));
+    if (compRounds.length < 2) continue;
+
+    let entryIdx = compRounds.length - 1;
+    if (mode === 'fund') {
+      const idx = compRounds.findIndex((r) => r.investorIds.includes(entity.id));
+      if (idx <= 0) continue;
+      entryIdx = idx;
+    }
+
+    for (let i = 0; i < entryIdx; i += 1) {
+      const prevRound = compRounds[i];
+      for (const invId of prevRound.investorIds) {
+        if ((mode === 'fund' && invId === entity.id) || invId === 'angel-syndicate') continue;
+        if (!upstreamFeederMap[invId]) {
+          upstreamFeederMap[invId] = {
+            id: invId,
+            name: PEER_INVESTORS[invId] || invId,
+            fedDealsCount: 0,
+            companies: new Set(),
+            sourceIds: new Set(),
+            relationshipType: 'feeder_to_lead'
+          };
+        }
+        upstreamFeederMap[invId].fedDealsCount += 1;
+        upstreamFeederMap[invId].companies.add(company.name);
+        for (const sId of prevRound.sourceIds || []) upstreamFeederMap[invId].sourceIds.add(sId);
+      }
+    }
+  }
+
+  const upstreamFeeders = Object.values(upstreamFeederMap)
+    .map((f) => ({
+      id: f.id,
+      name: f.name,
+      fedDealsCount: f.fedDealsCount,
+      companies: [...f.companies],
+      relationshipType: f.relationshipType,
+      sourceIds: [...f.sourceIds]
+    }))
+    .sort((a, b) => b.fedDealsCount - a.fedDealsCount || a.name.localeCompare(b.name));
+
+  const sortedHc = [...entryHeadcounts].sort((a, b) => a - b);
+  const lowHc = sortedHc.length ? sortedHc[Math.floor(sortedHc.length * 0.2)] : null;
+  const highHc = sortedHc.length ? sortedHc[Math.min(sortedHc.length - 1, Math.floor(sortedHc.length * 0.8))] : null;
+  const entryHeadcountBand =
+    lowHc === null
+      ? 'Not enough rounds'
+      : lowHc === highHc
+        ? `${lowHc} employees at entry`
+        : `${lowHc}-${highHc} employees at entry`;
+
+  const timeTravelProfile = {
+    medianEntryHeadcount: median(entryHeadcounts),
+    entryHeadcountBand,
+    medianEntryAgeMonths: median(entryAgeMonthsList),
+    medianPreRoundVelocityPct: median(preRoundVelocities) ?? 0,
+    filingVerifiedSharePct: totalEntryDeals > 0 ? Math.round((filingVerifiedDeals / totalEntryDeals) * 100) : 0,
+    dealSnapshots: dealSnapshots.slice(0, 8)
+  };
 
   const stageMix = normalizeDistribution(stageBuckets);
   const sectorMix = normalizeDistribution(sectorBuckets);
@@ -368,7 +540,14 @@ export function computeRevealedThesis(input, options = {}) {
   const leadRatePct = deals.length > 0 ? Math.round((leadCount / deals.length) * 100) : 0;
 
   const statedText = options.statedThesisOverride || entity.statedThesis;
-  const statedVsRevealed = analyzeStatedVsRevealed(statedText, sectorMix, geographyMix, stageMix);
+  const statedVsRevealed = analyzeStatedVsRevealed(
+    statedText,
+    sectorMix,
+    geographyMix,
+    stageMix,
+    timeTravelProfile,
+    upstreamFeeders
+  );
 
   const portfolioList = [...portfolioCompanyIds]
     .map((id) => COMPANIES.find((c) => c.id === id))
@@ -412,6 +591,8 @@ export function computeRevealedThesis(input, options = {}) {
     driftSummary,
     statedThesis: statedText,
     statedVsRevealed,
+    timeTravelProfile,
+    upstreamFeeders,
     topCoInvestors,
     portfolioCompanyIds: [...portfolioCompanyIds],
     portfolioCompetitorGroups: Object.fromEntries(portfolioCompetitorGroups),
@@ -430,32 +611,185 @@ function getWeights(rankingMode) {
 }
 
 function buildCoInvestorPath(thesis, company, visibleRounds) {
-  const coInvestorLookup = new Map(thesis.topCoInvestors.map((ci) => [ci.id, ci]));
+  const coInvestorLookup = new Map((thesis.topCoInvestors || []).map((ci) => [ci.id, ci]));
+  const feederLookup = new Map((thesis.upstreamFeeders || []).map((f) => [f.id, f]));
   let bestPath = null;
 
   for (const round of visibleRounds) {
     for (const invId of round.investorIds) {
       const ci = coInvestorLookup.get(invId);
-      if (!ci) continue;
+      const feeder = feederLookup.get(invId);
+      if (!ci && !feeder) continue;
       const isLead = round.leadInvestorId === invId;
-      const rankScore = ci.sharedRounds * 2 + (isLead ? 1 : 0);
+      const sharedCount = ci?.sharedRounds || 0;
+      const feederCount = feeder?.fedDealsCount || 0;
+      const rankScore = sharedCount * 2 + feederCount * 2 + (isLead ? 1 : 0);
       if (!bestPath || rankScore > bestPath.rankScore) {
+        const invName = ci?.name || feeder?.name || PEER_INVESTORS[invId] || invId;
+        const sampleCompanies = (ci?.companies || feeder?.companies || []).slice(0, 2);
+        const sourceIds = [
+          ...new Set([
+            ...(ci?.sourceIds || []).slice(0, 1),
+            ...(feeder?.sourceIds || []).slice(0, 1),
+            ...(round.sourceIds || []).slice(0, 1)
+          ])
+        ];
+        const summary = feeder
+          ? `Upstream feeder ${invName} (${feederCount}x Round N-1 feeder${sampleCompanies.length ? `: ${sampleCompanies.join(', ')}` : ''}) ${isLead ? 'led' : 'backed'} ${company.name} ${round.type} (${round.date.slice(0, 7)}).`
+          : `Co-invested with ${invName} ${sharedCount}x (${sampleCompanies.join(', ')}); ${invName} ${isLead ? 'led' : 'joined'} ${company.name} ${round.type} (${round.date.slice(0, 7)}).`;
         bestPath = {
           rankScore,
-          coInvestorId: ci.id,
-          coInvestorName: ci.name,
-          sharedCount: ci.sharedRounds,
-          sharedPortfolioSample: ci.companies.slice(0, 2),
+          coInvestorId: invId,
+          coInvestorName: invName,
+          sharedCount,
+          feederDealsCount: feederCount,
+          isUpstreamFeeder: Boolean(feeder),
+          pathwayType: feeder ? 'feeder_to_lead' : 'same_round_syndicate',
+          sharedPortfolioSample: sampleCompanies,
           startupRole: isLead ? 'led' : 'joined',
           roundType: round.type,
           roundDate: round.date,
-          sourceIds: [...new Set([...(ci.sourceIds || []).slice(0, 1), ...(round.sourceIds || []).slice(0, 1)])],
-          summary: `Co-invested with ${ci.name} ${ci.sharedRounds}x (${ci.companies.slice(0, 2).join(', ')}); ${ci.name} ${isLead ? 'led' : 'joined'} ${company.name} ${round.type} (${round.date.slice(0, 7)}).`
+          sourceIds,
+          summary
         };
       }
     }
   }
   return bestPath;
+}
+
+function extractCandidateSignals(company, visibleRounds, evalDate, cutoffDate = null, coInvestorPath = null) {
+  const sortedRounds = [...(visibleRounds || [])].sort((a, b) => a.date.localeCompare(b.date));
+  const latestRound = sortedRounds[sortedRounds.length - 1] || null;
+  const visibleSeries = (company.employeeCountSeries || [])
+    .filter((pt) => !cutoffDate || pt.date < cutoffDate)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const visibleCorpEvents = (company.corporateEvents || [])
+    .filter((ev) => !cutoffDate || ev.eventDate < cutoffDate)
+    .sort((a, b) => a.eventDate.localeCompare(b.eventDate));
+  const visibleFinMetrics = (company.financialMetrics || [])
+    .filter((m) => !cutoffDate || (m.filingDate || m.periodEnd) < cutoffDate)
+    .sort((a, b) => (a.periodEnd || '').localeCompare(b.periodEnd || ''));
+  const visibleDomains = (company.domainHistory || [])
+    .filter((d) => !cutoffDate || d.validSince < cutoffDate);
+
+  const entryObs = latestRound
+    ? interpolateHeadcountAtDate(company, latestRound.date, cutoffDate)
+    : interpolateHeadcountAtDate(company, evalDate, cutoffDate);
+  const latestObs = interpolateHeadcountAtDate(company, evalDate, cutoffDate);
+
+  const headcountAtLastRound = entryObs.headcount;
+  const currentObservedEmp = latestObs.headcount;
+  const headcountGrowthPct =
+    headcountAtLastRound > 0
+      ? Math.max(0, Math.round(((currentObservedEmp - headcountAtLastRound) / headcountAtLastRound) * 100))
+      : 0;
+
+  const alumniRole = (company.peopleCoverage?.roles || []).find((r) => Boolean(r.priorCompany)) || null;
+  const alumniSpinout = alumniRole
+    ? {
+        name: alumniRole.name,
+        role: alumniRole.role,
+        relation: alumniRole.relation,
+        validSince: alumniRole.validSince,
+        priorCompany: alumniRole.priorCompany,
+        priorRole: alumniRole.priorRole,
+        priorValidUntil: alumniRole.priorValidUntil,
+        sourceId: alumniRole.sourceId || latestRound?.sourceIds?.[0] || null
+      }
+    : null;
+
+  const arbitrageSignals = [];
+  const filingEvent = visibleCorpEvents.find((ev) => ev.unannouncedFiling);
+  if (filingEvent) {
+    arbitrageSignals.push({
+      type: 'filing_arbitrage',
+      label: filingEvent.name,
+      detail: filingEvent.summary,
+      date: filingEvent.eventDate,
+      sourceRank: 'FILING',
+      sourceIds: [filingEvent.sourceId, ...(latestRound?.sourceIds || [])].filter((id) => id && SOURCES[id])
+    });
+  }
+
+  if (headcountGrowthPct >= 30) {
+    arbitrageSignals.push({
+      type: 'headcount_velocity',
+      label: `+${headcountGrowthPct}% team growth`,
+      detail: `Team expanded ${headcountAtLastRound} to ${currentObservedEmp} employees since ${latestRound?.type || 'last round'}.`,
+      date: latestObs.observationDate,
+      sourceRank: visibleSeries[visibleSeries.length - 1]?.sourceRank || 'PRIMARY',
+      sourceIds: [latestObs.sourceId, ...(latestRound?.sourceIds || [])].filter((id) => id && SOURCES[id])
+    });
+  }
+
+  const latestFin = visibleFinMetrics[visibleFinMetrics.length - 1] || null;
+  if (latestFin) {
+    arbitrageSignals.push({
+      type: 'companies_house_metric',
+      label: `Companies House #${company.companiesHouseNumber}`,
+      detail: `Cash EUR ${latestFin.cashEurM}M, net assets EUR ${latestFin.netAssetsEurM}M (~${latestFin.runwayMonthsEst}m runway est.).`,
+      date: latestFin.filingDate || latestFin.periodEnd,
+      sourceRank: 'FILING',
+      sourceIds: [latestFin.sourceId].filter((id) => id && SOURCES[id])
+    });
+  }
+
+  const activeAiDomain = visibleDomains.find((d) => d.status === 'ACTIVE' && d.domain.endsWith('.ai'));
+  if (activeAiDomain && visibleDomains.some((d) => d.status === 'INACTIVE')) {
+    arbitrageSignals.push({
+      type: 'domain_shift',
+      label: `Domain upgrade -> ${activeAiDomain.domain}`,
+      detail: `HAS_DOMAIN_NAME activated ${activeAiDomain.domain} on ${activeAiDomain.validSince}.`,
+      date: activeAiDomain.validSince,
+      sourceRank: 'PRIMARY',
+      sourceIds: [...(latestRound?.sourceIds || [])].filter((id) => id && SOURCES[id])
+    });
+  }
+
+  if (alumniSpinout) {
+    arbitrageSignals.push({
+      type: 'alumni_lineage',
+      label: `Ex-${alumniSpinout.priorCompany} founder`,
+      detail: `${alumniSpinout.name} (${alumniSpinout.priorRole}, until ${alumniSpinout.priorValidUntil}) -> ${alumniSpinout.role}.`,
+      date: alumniSpinout.validSince,
+      sourceRank: 'FILING',
+      sourceIds: [alumniSpinout.sourceId, ...(latestRound?.sourceIds || [])].filter((id) => id && SOURCES[id])
+    });
+  }
+
+  const monthsSince = latestRound ? monthsBetween(latestRound.date, evalDate) : 0;
+  const raisingSoon = monthsSince >= 12 && monthsSince <= 24;
+
+  let whyNowTrigger = '';
+  if (filingEvent) {
+    whyNowTrigger = `New ${company.country === 'United Kingdom' ? 'Companies House SH01' : 'registry'} filing (${filingEvent.eventDate.slice(0, 7)})`;
+  } else if (headcountGrowthPct >= 35) {
+    whyNowTrigger = `+${headcountGrowthPct}% hiring velocity since ${latestRound?.type || 'round'}`;
+  } else if (latestFin && latestFin.runwayMonthsEst <= 15) {
+    whyNowTrigger = `Companies House: EUR ${latestFin.cashEurM}M cash (~${latestFin.runwayMonthsEst}m runway)`;
+  } else if (coInvestorPath?.isUpstreamFeeder) {
+    whyNowTrigger = `Feeder backed: ${coInvestorPath.coInvestorName}`;
+  } else if (alumniSpinout) {
+    whyNowTrigger = `Ex-${alumniSpinout.priorCompany} spinout (${alumniSpinout.name.split(' ')[0]})`;
+  } else if (raisingSoon && latestRound) {
+    whyNowTrigger = `${NEXT_STAGE[latestRound.type] || 'Next'} window (${Math.round(monthsSince)}m post-${latestRound.type})`;
+  } else if (latestRound) {
+    whyNowTrigger = `${latestRound.type} (${latestRound.date.slice(0, 7)}) · ${headcountAtLastRound}->${currentObservedEmp} team`;
+  }
+
+  return {
+    visibleSeries,
+    visibleCorpEvents,
+    visibleFinMetrics,
+    visibleDomains,
+    headcountAtLastRound,
+    currentObservedEmp,
+    headcountGrowthPct,
+    alumniSpinout,
+    arbitrageSignals,
+    whyNowTrigger
+  };
 }
 
 function buildRelationshipGraph(thesis, company, visibleRounds, coInvestorPath) {
@@ -592,12 +926,19 @@ export function scoreAndRankCandidates(thesis, options = {}) {
       roundSizePts = Math.round(weights.roundSize * bestSizeFit * 10) / 10;
     }
 
-    // Timing & Untapped Discovery nudges (deterministic)
+    // Timing, Untapped Discovery & Agentic Arbitrage nudges (deterministic)
     const raisingSoon = monthsSince >= 12 && monthsSince <= 24;
     const untappedBoost = rankingMode === 'untapped' && hasAngelOnly ? 4 : 0;
+    const signals = extractCandidateSignals(company, visibleRounds, evalDate, cutoffDate, coInvestorPath);
+    const hasFilingArbitrage = signals.visibleCorpEvents.some((ev) => ev.unannouncedFiling);
+    const agenticBoost = Math.min(
+      2,
+      (signals.headcountGrowthPct >= 40 ? 1 : 0) +
+        (coInvestorPath?.isUpstreamFeeder || hasFilingArbitrage ? 1 : 0)
+    );
     const totalScore = Math.min(
       99,
-      Math.round(sectorPts + stagePts + coInvestorPts + geoPts + roundSizePts + untappedBoost)
+      Math.round(sectorPts + stagePts + coInvestorPts + geoPts + roundSizePts + untappedBoost + agenticBoost)
     );
 
     const directCompetitorOf = thesis.portfolioCompetitorGroups[company.competitorGroup] || null;
@@ -656,6 +997,14 @@ export function scoreAndRankCandidates(thesis, options = {}) {
       candidateReasons.push({
         text: `Latest round was €${latestRound.amountEurM}M ${latestRound.type} on ${latestRound.date.slice(0, 7)} (${monthsSince} months ago).`,
         sourceIds: primarySourceIds
+      });
+    }
+
+    if (signals.arbitrageSignals.length > 0) {
+      const topSig = signals.arbitrageSignals[0];
+      candidateReasons.push({
+        text: `${topSig.label}: ${topSig.detail}`,
+        sourceIds: topSig.sourceIds.length ? topSig.sourceIds : primarySourceIds
       });
     }
 
@@ -749,7 +1098,19 @@ export function scoreAndRankCandidates(thesis, options = {}) {
       country: company.country,
       region: company.region,
       hqCity: company.hqCity,
-      employeeCount: company.employeeCount,
+      foundingDate: company.foundingDate || `${company.foundedYear}-02-15`,
+      employeeCount: signals.currentObservedEmp,
+      headcountAtLastRound: signals.headcountAtLastRound,
+      headcountGrowthPct: signals.headcountGrowthPct,
+      employeeCountSeries: signals.visibleSeries,
+      whyNowTrigger: signals.whyNowTrigger,
+      arbitrageSignals: signals.arbitrageSignals,
+      alumniSpinout: signals.alumniSpinout,
+      companiesHouseNumber: company.companiesHouseNumber || null,
+      financialMetrics: signals.visibleFinMetrics,
+      corporateEvents: signals.visibleCorpEvents,
+      domainHistory: signals.visibleDomains,
+      peopleCoverage: company.peopleCoverage,
       stage: latestRound.type,
       likelyNextStage,
       lastRoundDate: latestRound.date,
@@ -908,28 +1269,41 @@ export function buildStartupBrief(startupId, fundId = null) {
     sources: resolveSources(r.sourceIds)
   }));
 
+  const signals = extractCandidateSignals(
+    company,
+    company.rounds,
+    REFERENCE_DATE,
+    null,
+    matchContext?.coInvestorPath || null
+  );
+
   const allSourcesMap = new Map();
   for (const r of roundsWithSources) {
     for (const s of r.sources) allSourcesMap.set(s.id, s);
   }
 
   const notFoundInCala = [
-    { field: 'Private revenue, ARR, and burn rate', status: 'Not found in Cala', reason: 'Cala financial metrics cover public exchange filings only.' },
+    { field: 'Private revenue, ARR, and burn rate', status: 'Not found in Cala', reason: company.financialMetrics?.length ? 'UK Companies House provides balance sheet cash/creditors only; ARR splits remain private.' : 'Cala financial metrics cover UK/public statutory filings only.' },
     { field: 'Individual fund cheque sizes', status: 'Not found in Cala', reason: 'Round totals are public; investor-level splits are estimated as not disclosed.' },
     { field: 'Personal founder-partner connections', status: 'Not found in Cala', reason: 'Personal relationships reside in LinkedIn or private CRMs (not scraped).' },
-    { field: 'Historical employee growth curve', status: 'Not found in Cala', reason: `Only current employee count (${company.employeeCount}) is indexed.` }
+    { field: 'Customer cohort retention and net revenue churn', status: 'Not found in Cala', reason: 'Private unit economics and cohort retention metrics are not disclosed in statutory filings.' }
   ];
 
   const memoLines = [
     `# Investment Brief: ${company.name}`,
     `Cala Entity ID: ${company.calaEntityId}`,
-    `HQ: ${company.hqCity}, ${company.country} | Sector: ${company.sector} | Employees: ${company.employeeCount} | Founded: ${company.foundedYear}`,
+    `HQ: ${company.hqCity}, ${company.country} | Sector: ${company.sector} | Employees: ${company.employeeCount} | Founded: ${company.foundingDate || company.foundedYear}`,
     ``,
     `## Overview`,
     `${company.description}`,
     ``,
     matchContext ? `## Fit vs. ${matchContext.suitabilityScore}/100 Suitability Score` : `## Fit Context`,
     ...(matchContext ? matchContext.reasons.map((r) => `- ${r.text} [${r.sources.map((s) => s.title).join('; ')}]`) : ['- Standalone Cala company profile']),
+    ``,
+    `## Time-Series & Filing Arbitrage Signals`,
+    `- Why Now: ${signals.whyNowTrigger}`,
+    `- Headcount Velocity: ${signals.headcountAtLastRound} -> ${signals.currentObservedEmp} employees (+${signals.headcountGrowthPct}% since latest round)`,
+    ...signals.arbitrageSignals.map((sig) => `- [${sig.sourceRank}] ${sig.label}: ${sig.detail} (${sig.date})`),
     ``,
     `## Funding History (Cala Sourced)`,
     ...roundsWithSources.map(
@@ -953,7 +1327,18 @@ export function buildStartupBrief(startupId, fundId = null) {
     country: company.country,
     region: company.region,
     foundedYear: company.foundedYear,
+    foundingDate: company.foundingDate || `${company.foundedYear}-02-15`,
     employeeCount: company.employeeCount,
+    headcountAtLastRound: signals.headcountAtLastRound,
+    headcountGrowthPct: signals.headcountGrowthPct,
+    employeeCountSeries: signals.visibleSeries,
+    whyNowTrigger: signals.whyNowTrigger,
+    arbitrageSignals: signals.arbitrageSignals,
+    alumniSpinout: signals.alumniSpinout,
+    companiesHouseNumber: company.companiesHouseNumber || null,
+    financialMetrics: signals.visibleFinMetrics,
+    corporateEvents: signals.visibleCorpEvents,
+    domainHistory: signals.visibleDomains,
     peopleCoverage: {
       available: company.peopleCoverage.available,
       note: company.peopleCoverage.note,
@@ -985,6 +1370,41 @@ function matchesStageGroup(stageValue, stageFilter) {
   return s.includes(stageFilter.toLowerCase());
 }
 
+export function buildAgentPipeline(thesis, shortlist = [], options = {}) {
+  const feederCount = (thesis.upstreamFeeders || []).length;
+  const topFeeders = (thesis.upstreamFeeders || []).slice(0, 2).map((f) => f.name).join(', ') || 'none indexed';
+  const tt = thesis.timeTravelProfile || {};
+  const arbitrageHits = shortlist.filter((s) => (s.arbitrageSignals || []).length > 0).length;
+  const activeFilterNote = options.filterLabel ? ` Filtered on ${options.filterLabel}.` : '';
+
+  return [
+    {
+      step: 1,
+      agent: 'Time-Travel DNA Profiler',
+      status: 'completed',
+      detail: `Reconstructed ${thesis.dealsAnalyzedCount} entry rounds (median ${tt.medianEntryHeadcount ?? '--'} employees, ~${tt.medianEntryAgeMonths ?? '--'}m post-founding).`
+    },
+    {
+      step: 2,
+      agent: 'Upstream Syndicate Mapper',
+      status: 'completed',
+      detail: `Mapped ${(thesis.topCoInvestors || []).length} co-investors and ${feederCount} Round N-1 upstream feeders (${topFeeders}).`
+    },
+    {
+      step: 3,
+      agent: 'Filing & Velocity Arbitrage Scout',
+      status: 'completed',
+      detail: `Flagged ${arbitrageHits} candidates with +30% employee_count growth, statutory PRH/Companies House filings, or alumni spinout lineage.${activeFilterNote}`
+    },
+    {
+      step: 4,
+      agent: 'Provenance Gate',
+      status: 'completed',
+      detail: `${tt.filingVerifiedSharePct ?? 0}% deal history backed by FILING/PRIMARY sources; 100% shortlist reasons citation-enforced.`
+    }
+  ];
+}
+
 export function refineShortlist(thesis, allRanked, refinement = {}) {
   const rawQuery = String(refinement.queryText || '').trim();
   const query = rawQuery.toLowerCase();
@@ -993,6 +1413,10 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
   let excludeSector = refinement.excludeSector || 'none';
   let raisingSoonOnly = Boolean(refinement.raisingSoonOnly);
   let untappedOnly = Boolean(refinement.untappedOnly);
+  let highVelocityOnly = Boolean(refinement.highVelocityOnly);
+  let feederOnly = Boolean(refinement.feederOnly);
+  let filingOnly = Boolean(refinement.filingOnly);
+  let alumniOnly = Boolean(refinement.alumniOnly);
   let sectorFilter = null;
   let investorFilter = null;
   let companyMatchName = null;
@@ -1035,6 +1459,26 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
     if (query.includes('untapped') || query.includes('angel')) {
       untappedOnly = true;
       matchedStructured = true;
+    }
+    if (/(fast headcount|headcount growth|headcount velocity|high growth|team velocity|hiring velocity)/i.test(query)) {
+      highVelocityOnly = true;
+      matchedStructured = true;
+      aiTrace.push('Filter: Post-round headcount growth >= 30% (employee_count time-series)');
+    }
+    if (/(feeder syndicate|upstream feeder|prior[- ]round feeder|feeder)/i.test(query)) {
+      feederOnly = true;
+      matchedStructured = true;
+      aiTrace.push('Filter: Backed by Round N-1 upstream feeder syndicate');
+    }
+    if (/(filing signal|filing arbitrage|companies house|share allotment|unannounced filing|facility)/i.test(query)) {
+      filingOnly = true;
+      matchedStructured = true;
+      aiTrace.push('Filter: Statutory FILING provenance (PRH / UK Companies House / HRB)');
+    }
+    if (/(alumni founder|spinout|operator lineage|ex-iceye|ex-aiven|ex-iqm|ex-oura|ex-silo)/i.test(query)) {
+      alumniOnly = true;
+      matchedStructured = true;
+      aiTrace.push('Filter: Temporal FOUNDED / valid_until scaleup alumni spinout');
     }
 
     const whyMatch = query.match(/why not\s+([a-z0-9\s.-]+)/i);
@@ -1133,6 +1577,10 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
     if (excludeSector !== 'none' && item.sector === excludeSector) return false;
     if (raisingSoonOnly && !item.raisingSoon) return false;
     if (untappedOnly && !item.untappedSignal) return false;
+    if (highVelocityOnly && (item.headcountGrowthPct || 0) < 30) return false;
+    if (feederOnly && !item.coInvestorPath?.isUpstreamFeeder) return false;
+    if (filingOnly && !(item.arbitrageSignals || []).some((s) => s.sourceRank === 'FILING')) return false;
+    if (alumniOnly && !item.alumniSpinout) return false;
     if (investorFilter) {
       const hasInv =
         item.coInvestorPath?.coInvestorName === investorFilter ||
@@ -1158,6 +1606,8 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
         item.stage,
         item.oneLiner,
         item.description,
+        item.whyNowTrigger,
+        item.alumniSpinout?.priorCompany,
         ...(item.subSectors || []),
         ...(item.roundHistory || []).flatMap((r) => r.investorNames || [])
       ]
@@ -1175,21 +1625,35 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
       const bHit = b.name.toLowerCase().includes(companyMatchName.toLowerCase()) ? 1 : 0;
       return bHit - aHit || b.suitabilityScore - a.suitabilityScore;
     });
+  } else if (highVelocityOnly) {
+    filtered.sort((a, b) => (b.headcountGrowthPct || 0) - (a.headcountGrowthPct || 0) || b.suitabilityScore - a.suitabilityScore);
   }
 
   if (!explanation && query) {
     explanation = `Matched ${filtered.length} startups from ${thesis.fundName} pool using verified Cala records.`;
   }
 
+  const agentPipeline = buildAgentPipeline(thesis, filtered, {
+    filterLabel: rawQuery || null
+  });
+  for (const stage of agentPipeline) {
+    aiTrace.push(`${stage.step}. ${stage.agent}: ${stage.detail}`);
+  }
+
   return {
     searchIntent,
     aiTrace,
+    agentPipeline,
     appliedFilters: {
       region: regionFilter,
       stageFilter,
       excludeSector,
       raisingSoonOnly,
       untappedOnly,
+      highVelocityOnly,
+      feederOnly,
+      filingOnly,
+      alumniOnly,
       sectorFilter,
       investorFilter,
       queryText: rawQuery
@@ -1208,6 +1672,7 @@ export function runFullAnalysis(input, options = {}) {
     limit: 20
   });
   const backtest = thesis.mode === 'fund' ? runPointInTimeBacktest(thesis.fundId) : null;
+  const agentPipeline = buildAgentPipeline(thesis, ranking.shortlist);
 
   const uniqueSourceIds = new Set();
   for (const item of ranking.shortlist) {
@@ -1224,6 +1689,7 @@ export function runFullAnalysis(input, options = {}) {
     shortlist: ranking.shortlist,
     allRanked: ranking.allRanked,
     backtest,
+    agentPipeline,
     calaTelemetry: {
       entitiesIndexed: FUNDS.length + COMPANIES.length,
       roundsInspected: COMPANIES.reduce((sum, c) => sum + c.rounds.length, 0),
