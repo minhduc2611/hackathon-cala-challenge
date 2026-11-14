@@ -5,6 +5,18 @@
  */
 
 const PREFS_STORAGE_KEY = "rte_user_prefs_v1";
+const ANALYST_DECISIONS_KEY = "revealed_thesis_analyst_decisions_v1";
+
+function loadAnalystDecisionsFromStorage() {
+  try {
+    const raw = localStorage.getItem(ANALYST_DECISIONS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
 
 const state = {
   bootstrap: null,
@@ -39,6 +51,7 @@ const state = {
   // Constellation & Right-Side Evidence Rail state
   hideMegaHubs: true,
   bridgeFamily: "all",
+  contributionGroup: "all",
   filingOnly: false,
   untappedOnly: false,
   lastRefineResponse: null,
@@ -46,13 +59,30 @@ const state = {
   selectedStartupId: null,
   selectedBridgeId: null,
   hoveredNodeId: null,
+  selectedAnchorId: null,
+  expandedGroupKey: null, // null | 'access' | 'lineage' | 'timing' | 'caution'
+  pinnedEntities: [],
+  compareBoxOpen: false,
+  legendPopoverOpen: false,
+  filtersPanelOpen: false,
+  compareSearchTimer: null,
+  compareSuggestItems: [],
   sideRailOpen: false,
   sideRailTab: "matches", // "matches" | "evidence" | "strategy"
+  sideRailWidth: null,
   mapZoom: 1,
   mapPanX: 0,
   mapPanY: 0,
   mapLayoutNodes: null,
-  railNarratedBriefs: new Map()
+  railNarratedBriefs: new Map(),
+  railExpandCalaLoading: false,
+  railExpandCalaResult: null,
+  analystDecisions: loadAnalystDecisionsFromStorage(),
+  activeScreeningFlagId: null,
+  startGuideDismissed: false,
+  expandedFormulas: new Set(),
+  lastLiveDiscoveredQuery: "",
+  liveCalaSearchLoading: false
 };
 
 const SLUSH_2026_EVENT_ID = "bc844d56-6ab4-452b-96bf-2661e86e592b";
@@ -196,8 +226,10 @@ function getStartupCalaFieldProfile(candidate) {
 
   const isSlushAttendee =
     Boolean(candidate.attendingSlush2026) ||
-    SLUSH_2026_ATTENDEE_IDS.has(candidate.id) ||
-    (["Finland", "Sweden", "Estonia", "Denmark", "Norway"].includes(candidate.country) && emp <= 80);
+    (Array.isArray(candidate.corporateEvents) &&
+      candidate.corporateEvents.some(
+        (ev) => ev?.id === SLUSH_2026_EVENT_ID || /slush/i.test(String(ev?.name || ""))
+      ));
 
   const foundedYear = Number(candidate.foundedYear || 2023);
   let obs = [];
@@ -1068,7 +1100,8 @@ async function runAnalysis() {
     seenCompanyNames: getSeenCompanyNamesList(),
     entityScope: document.getElementById("filterEntityScope")?.value || "startups",
     hideMegaHubs: state.hideMegaHubs !== false,
-    bridgeFamily: state.bridgeFamily && state.bridgeFamily !== "all" ? state.bridgeFamily : "all"
+    bridgeFamily: state.bridgeFamily && state.bridgeFamily !== "all" ? state.bridgeFamily : "all",
+    contributionGroup: state.contributionGroup && state.contributionGroup !== "all" ? state.contributionGroup : "all"
   };
 
   const result = await fetchJson("/api/analyze", {
@@ -1081,6 +1114,9 @@ async function runAnalysis() {
   state.lastRefineResponse = null;
   state.DisplayedShortlist = result.shortlist || [];
   registerKnownItems(state.DisplayedShortlist);
+  if (typeof seedPrimaryPinnedEntity === "function") {
+    seedPrimaryPinnedEntity(result, { resetExtraPins: false });
+  }
 
   if (
     !state.activeStartupId ||
@@ -1095,11 +1131,19 @@ async function runAnalysis() {
     state.selectedStartupId = null;
   }
   state.selectedBridgeId = null;
+  state.selectedAnchorId = null;
+  state.expandedGroupKey = null;
 
   updateTelemetryMasthead(result.calaBudget || state.bootstrap?.coverageStats?.calaBudget);
   syncInlineCalibrationStrip();
   if (typeof syncConstellationControls === "function") {
     syncConstellationControls();
+  }
+  if (typeof renderExploredEntitiesBox === "function") {
+    renderExploredEntitiesBox();
+  }
+  if (typeof renderQuickInspectorCard === "function") {
+    renderQuickInspectorCard();
   }
   if (typeof updateDynamicStarterPrompt === "function") {
     updateDynamicStarterPrompt();
@@ -1132,7 +1176,7 @@ async function runAnalysis() {
       updateAiSynthesisBanner(null);
     }
     if (typeof renderConstellationMap === "function") {
-      renderConstellationMap(state.bridgeMap, { fit: true });
+      renderConstellationMap(getEffectiveBridgeMap(), { fit: true });
     }
     if (typeof renderSideEvidenceRail === "function") {
       renderSideEvidenceRail();
@@ -1351,16 +1395,82 @@ function toggleCallListStartup(companyId) {
   renderStartupGrid(state.DisplayedShortlist);
 }
 
-const CONSTELLATION_W = 1680;
-const CONSTELLATION_H = 1040;
+const CONSTELLATION_W = 1960;
+const CONSTELLATION_H = 1400;
+const CONSTELLATION_CX = 980;
+const CONSTELLATION_CY = 700;
+
+const ANCHOR_PALETTE = [
+  { hex: "#38bdf8", glow: "rgba(56, 189, 248, 0.44)", edge: "#0284c7" },
+  { hex: "#a78bfa", glow: "rgba(167, 139, 250, 0.44)", edge: "#7c3aed" },
+  { hex: "#f59e0b", glow: "rgba(245, 158, 11, 0.44)", edge: "#d97706" },
+  { hex: "#fb7185", glow: "rgba(251, 113, 133, 0.44)", edge: "#e11d48" }
+];
+
+const ORBIT_QUADRANTS = [
+  { key: "access", group: "access", label: "ACCESS", minDeg: 195, maxDeg: 255, colorFamily: "feeder" },
+  { key: "lineage", group: "lineage", label: "LINEAGE", minDeg: 285, maxDeg: 345, colorFamily: "alumni_spinout" },
+  { key: "timing", group: "timing", label: "TIMING", minDeg: 15, maxDeg: 75, colorFamily: "event" },
+  { key: "caution", group: "caution", label: "CAUTION", minDeg: 105, maxDeg: 165, colorFamily: "portfolio_twin" }
+];
+
+const CONTRIBUTION_VISUAL_META = {
+  access: {
+    group: "access",
+    label: "Warm Access",
+    headerLabel: "ACCESS",
+    shortLabel: "Access",
+    subtitle: "Warm intro routes & syndicate trust",
+    darkColor: "#38bdf8",
+    lightColor: "#0284c7",
+    darkGlow: "rgba(56, 189, 248, 0.46)",
+    darkEdge: "#0284c7"
+  },
+  lineage: {
+    group: "lineage",
+    label: "Team Lineage",
+    headerLabel: "LINEAGE",
+    shortLabel: "Lineage",
+    subtitle: "Operator DNA & portfolio twins",
+    darkColor: "#a78bfa",
+    lightColor: "#7c3aed",
+    darkGlow: "rgba(167, 139, 250, 0.46)",
+    darkEdge: "#7c3aed"
+  },
+  timing: {
+    group: "timing",
+    label: "Why Now",
+    headerLabel: "TIMING",
+    shortLabel: "Timing",
+    subtitle: "Pre-press filings, velocity & events",
+    darkColor: "#f59e0b",
+    lightColor: "#d97706",
+    darkGlow: "rgba(245, 158, 11, 0.46)",
+    darkEdge: "#d97706"
+  },
+  caution: {
+    group: "caution",
+    label: "Caution / Conflicts",
+    headerLabel: "CAUTION",
+    shortLabel: "Caution",
+    subtitle: "Portfolio conflicts, hubs & proof gaps",
+    darkColor: "#fb7185",
+    lightColor: "#e11d48",
+    darkGlow: "rgba(251, 113, 133, 0.46)",
+    darkEdge: "#e11d48"
+  }
+};
 
 const BRIDGE_FAMILY_VISUAL_META = {
   feeder: {
     label: "Feeder Bridges",
     hullTitle: "FEEDER BRIDGES",
+    subtitle: "Funds that feed your benchmark",
     shortLabel: "Feeder",
     darkColor: "#38bdf8",
     lightColor: "#0284c7",
+    darkGlow: "rgba(56, 189, 248, 0.44)",
+    darkEdge: "#0284c7",
     darkFill: "rgba(56, 189, 248, 0.08)",
     lightFill: "rgba(2, 132, 199, 0.06)",
     darkStroke: "rgba(56, 189, 248, 0.28)",
@@ -1369,9 +1479,12 @@ const BRIDGE_FAMILY_VISUAL_META = {
   co_investor: {
     label: "Co-Investor Bridges",
     hullTitle: "CO-INVESTOR BRIDGES",
+    subtitle: "Shared syndicate partners",
     shortLabel: "Co-Investor",
     darkColor: "#60a5fa",
     lightColor: "#2563eb",
+    darkGlow: "rgba(96, 165, 250, 0.44)",
+    darkEdge: "#2563eb",
     darkFill: "rgba(96, 165, 250, 0.08)",
     lightFill: "rgba(37, 99, 235, 0.06)",
     darkStroke: "rgba(96, 165, 250, 0.28)",
@@ -1380,26 +1493,375 @@ const BRIDGE_FAMILY_VISUAL_META = {
   alumni_spinout: {
     label: "Alumni & Spinouts",
     hullTitle: "ALUMNI & SPINOUTS",
+    subtitle: "Operator & founder lineage",
     shortLabel: "Spinout",
     darkColor: "#a78bfa",
     lightColor: "#7c3aed",
+    darkGlow: "rgba(167, 139, 250, 0.44)",
+    darkEdge: "#7c3aed",
     darkFill: "rgba(167, 139, 250, 0.08)",
     lightFill: "rgba(124, 58, 237, 0.06)",
     darkStroke: "rgba(167, 139, 250, 0.28)",
     lightStroke: "rgba(124, 58, 237, 0.25)"
   },
+  portfolio_twin: {
+    label: "Portfolio Twins",
+    hullTitle: "PORTFOLIO TWINS",
+    subtitle: "Structural portfolio comps",
+    shortLabel: "Twin",
+    darkColor: "#fb7185",
+    lightColor: "#e11d48",
+    darkGlow: "rgba(251, 113, 133, 0.44)",
+    darkEdge: "#e11d48",
+    darkFill: "rgba(251, 113, 133, 0.08)",
+    lightFill: "rgba(225, 29, 72, 0.06)",
+    darkStroke: "rgba(251, 113, 133, 0.28)",
+    lightStroke: "rgba(225, 29, 72, 0.25)"
+  },
   event: {
     label: "Event & Ecosystem",
     hullTitle: "EVENT & ECOSYSTEM",
+    subtitle: "Shared event & Slush ties",
     shortLabel: "Event",
     darkColor: "#f59e0b",
     lightColor: "#d97706",
+    darkGlow: "rgba(245, 158, 11, 0.44)",
+    darkEdge: "#d97706",
     darkFill: "rgba(245, 158, 11, 0.08)",
     lightFill: "rgba(217, 119, 6, 0.06)",
     darkStroke: "rgba(245, 158, 11, 0.28)",
     lightStroke: "rgba(217, 119, 6, 0.25)"
   }
 };
+
+function slugifyCompareKey(text) {
+  return String(text || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function getFamilyGlowRgba(family) {
+  const meta = BRIDGE_FAMILY_VISUAL_META[family] || BRIDGE_FAMILY_VISUAL_META.feeder;
+  return meta.darkGlow || "rgba(56, 189, 248, 0.42)";
+}
+
+function deriveContributionGroupFrontend(item) {
+  if (!item) return "access";
+  const explicit = String(item.contributionGroup || "").toLowerCase();
+  if (explicit === "access" || explicit === "lineage" || explicit === "timing" || explicit === "caution") {
+    return explicit;
+  }
+  const fam = String(item.bridgeFamily || "").toLowerCase();
+  const bType = String(item.bridgeType || "").toLowerCase();
+  const labelLower = String(item.label || item.bridgeEntityName || "").toLowerCase();
+  if (fam === "co_investor" || bType.includes("investor")) return "access";
+  if (fam === "alumni_spinout" || fam === "portfolio_twin" || bType.includes("employer") || bType.includes("university") || bType.includes("academic") || bType.includes("twin")) {
+    return "lineage";
+  }
+  if (bType.includes("caution") || labelLower.includes("conflict") || labelLower.includes("overlap") || labelLower.includes("press-only") || labelLower.includes("no warm")) {
+    return "caution";
+  }
+  if (fam === "event" || bType.includes("catalyst") || labelLower.includes("pre-press") || labelLower.includes("hiring") || labelLower.includes("domain") || labelLower.includes("raise") || labelLower.includes("slush")) {
+    return "timing";
+  }
+  return "access";
+}
+
+function getNodeContributionGroup(node) {
+  return deriveContributionGroupFrontend(node);
+}
+
+function getContributionColorHex(group) {
+  const meta = CONTRIBUTION_VISUAL_META[group] || CONTRIBUTION_VISUAL_META.access;
+  return getActiveTheme() === "light" ? meta.lightColor : meta.darkColor;
+}
+
+function getContributionGlowRgba(group) {
+  const meta = CONTRIBUTION_VISUAL_META[group] || CONTRIBUTION_VISUAL_META.access;
+  return meta.darkGlow || "rgba(56, 189, 248, 0.44)";
+}
+
+function formatShortBridgeLabel(label, bridge = null, seenSet = null) {
+  let text = cleanUiCopy(label || bridge?.label || "Signal").trim();
+  // Strip verbose structural prefixes while retaining concise entity / catalyst identity
+  text = text
+    .replace(/^(Partner feeder|Feeder|Alumni bridge|Alumni spinout|Portfolio Twin|Twin comp|Co-investor|Direct Investor|Event overlap|2-Hop Route|Pre-press):\s*/i, "")
+    .replace(/\s*\(([^)]*)\)\s*/g, " ")
+    .replace(/\s+\u00b7\s+.*$/, "")
+    .trim();
+
+  if (/^pre-?press\s+filing/i.test(text)) text = "Pre-Press Filing";
+  else if (/domain\s*(-+>|to)\s*\.ai/i.test(text) || /domain upgrade/i.test(text)) text = "Domain -> .ai";
+  else if (/hiring/i.test(text) && /\+\d+%/i.test(text)) {
+    const pct = text.match(/(\+\d+%)/);
+    text = `Hiring ${pct ? pct[1] : "+30%+"}`;
+  } else if (/raise window/i.test(text)) text = "Raise Window";
+  else if (/portfolio conflict/i.test(text)) text = "Portfolio Conflict";
+  else if (/sector overlap/i.test(text)) text = "Sector Overlap";
+  else if (/press-only/i.test(text)) text = "Press-Only Proof";
+  else if (/no warm intro/i.test(text)) text = "No Warm Intro";
+  else if (/slush\s*2026/i.test(text)) text = "Slush 2026";
+  else if (/slush/i.test(text)) text = "Slush Ecosystem";
+  else if (/\balumni\b/i.test(text)) text = text.replace(/\s+Alumni.*$/i, " Alumni");
+
+  if (text.length > 22) {
+    const words = text.split(/\s+/);
+    let compact = "";
+    for (const w of words) {
+      if ((compact ? `${compact} ${w}` : w).length <= 21) {
+        compact = compact ? `${compact} ${w}` : w;
+      } else break;
+    }
+    text = compact || `${text.slice(0, 20).trim()}.`;
+  }
+
+  if (seenSet) {
+    const groupKey = `${getNodeContributionGroup(bridge)}:${text.toLowerCase()}`;
+    if (seenSet.has(groupKey)) {
+      const famTag = bridge?.bridgeFamily === "alumni_spinout"
+        ? "DNA"
+        : bridge?.bridgeFamily === "co_investor"
+          ? "Synd"
+          : bridge?.bridgeFamily === "portfolio_twin"
+            ? "Twin"
+            : "";
+      if (famTag && !text.toLowerCase().includes(famTag.toLowerCase())) {
+        const candidate = `${text.slice(0, Math.max(8, 19 - famTag.length))} ${famTag}`.trim();
+        text = candidate;
+      }
+    }
+    seenSet.add(`${getNodeContributionGroup(bridge)}:${text.toLowerCase()}`);
+  }
+  return text || "Bridge";
+}
+
+function formatCompactEntityName(rawLabel, maxWords = 2, maxChars = 18) {
+  let text = cleanUiCopy(rawLabel || "Entity")
+    .replace(/\s*\([^)]*\)\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return "Entity";
+  const words = text.split(/\s+/);
+  if (words.length > maxWords || text.length > maxChars) {
+    const stripped = text.replace(/\b(?:Oy|Oyj|AB|Ltd\.?|Limited|Inc\.?|GmbH|AG|S\.L\.|SL|SAS|B\.V\.|BV|AS|ApS|LTDA|PTE\.?|CORP\.?|PLC)\b\.?/gi, "").replace(/\s+/g, " ").trim();
+    if (stripped) text = stripped;
+  }
+  const cleanWords = text.split(/\s+/).slice(0, maxWords);
+  let out = "";
+  for (const w of cleanWords) {
+    const cand = out ? `${out} ${w}` : w;
+    if (cand.length <= maxChars || !out) {
+      out = cand;
+    } else {
+      break;
+    }
+  }
+  if (out.length > maxChars + 2) {
+    out = `${out.slice(0, maxChars).trim()}.`;
+  }
+  return out || words[0] || "Entity";
+}
+
+function computeContributionWeightsFrontend(bridgeMap, explicitBridgeNodes = null, explicitEdges = null) {
+  const fromPayload = Array.isArray(bridgeMap?.contributionClusters) ? bridgeMap.contributionClusters : [];
+  const hasPayloadWeights = fromPayload.length >= 4 && fromPayload.every((c) => typeof c.visualWeight === "number" && typeof c.significanceScore === "number");
+  const groups = ["access", "lineage", "timing", "caution"];
+  const sigFormula = "topSignalRarity + mean(top3Bridges) + min(4.5, FILING_count * 1.5)";
+
+  if (hasPayloadWeights && !explicitBridgeNodes) {
+    const out = {};
+    for (const c of fromPayload) {
+      const g = String(c.group || c.contributionGroup || "").toLowerCase();
+      if (!g) continue;
+      const topR = Number(c.topRarity || 0);
+      const top3M = Number(c.top3MeanRarity || 0);
+      const fCount = c.filingCount ?? c.filingVerifiedCount ?? 0;
+      const fBonus = Number(c.filingBonus ?? Math.min(4.5, fCount * 1.5));
+      const sCount = c.startupCount ?? 0;
+      out[g] = {
+        significanceScore: c.significanceScore,
+        visualWeight: c.visualWeight,
+        topRarity: topR,
+        top3MeanRarity: top3M,
+        filingCount: fCount,
+        filingBonus: fBonus,
+        startupCount: sCount,
+        topContributors: Array.isArray(c.topContributors) ? c.topContributors : [],
+        significanceFormula: c.significanceFormula || sigFormula,
+        significanceInputs:
+          c.significanceInputs ||
+          `Top: ${topR.toFixed(1)} + Top3 avg: ${top3M.toFixed(1)} + ${fCount} FILING (+${fBonus.toFixed(1)}) = ${Number(c.significanceScore || 0).toFixed(1)} pts | ${sCount} ${sCount === 1 ? "startup" : "startups"} connected`
+      };
+    }
+    if (groups.every((g) => out[g])) return out;
+  }
+
+  const nodes = explicitBridgeNodes || (bridgeMap?.nodes || []).filter((n) => n.kind === "bridge");
+  const edges = explicitEdges || (bridgeMap?.edges || []);
+  const bridgeGroupById = new Map(nodes.map((n) => [n.id, getNodeContributionGroup(n)]));
+  const startupSetByGroup = { access: new Set(), lineage: new Set(), timing: new Set(), caution: new Set() };
+  for (const e of edges) {
+    const bg = bridgeGroupById.get(e.from) || getNodeContributionGroup(e);
+    if (bg && startupSetByGroup[bg] && e.to && !String(e.to).startsWith("bridge:")) {
+      startupSetByGroup[bg].add(e.to);
+    }
+  }
+  const payloadByGroup = new Map(fromPayload.map((c) => [String(c.group || c.contributionGroup || "").toLowerCase(), c]));
+  const stats = {};
+
+  for (const g of groups) {
+    const pc = payloadByGroup.get(g);
+    const members = nodes.filter((n) => getNodeContributionGroup(n) === g);
+    const sCount = startupSetByGroup[g].size || pc?.startupCount || 0;
+    if (!members.length) {
+      stats[g] = {
+        significanceScore: 0,
+        visualWeight: 0.6,
+        topRarity: 0,
+        top3MeanRarity: 0,
+        filingCount: 0,
+        filingBonus: 0,
+        startupCount: sCount,
+        topContributors: [],
+        significanceFormula: sigFormula,
+        significanceInputs: `Top: 0.0 + Top3 avg: 0.0 + 0 FILING (+0.0) = 0.0 pts | ${sCount} ${sCount === 1 ? "startup" : "startups"} connected`
+      };
+      continue;
+    }
+    if (pc && typeof pc.significanceScore === "number" && typeof pc.visualWeight === "number" && members.length === (pc.nodeCount ?? members.length)) {
+      const topR = Number(pc.topRarity || 0);
+      const top3M = Number(pc.top3MeanRarity || 0);
+      const fCount = pc.filingCount ?? pc.filingVerifiedCount ?? 0;
+      const fBonus = Number(pc.filingBonus ?? Math.min(4.5, fCount * 1.5));
+      stats[g] = {
+        significanceScore: pc.significanceScore,
+        visualWeight: pc.visualWeight,
+        topRarity: topR,
+        top3MeanRarity: top3M,
+        filingCount: fCount,
+        filingBonus: fBonus,
+        startupCount: pc.startupCount ?? sCount,
+        topContributors: Array.isArray(pc.topContributors) ? pc.topContributors : [],
+        significanceFormula: pc.significanceFormula || sigFormula,
+        significanceInputs:
+          pc.significanceInputs ||
+          `Top: ${topR.toFixed(1)} + Top3 avg: ${top3M.toFixed(1)} + ${fCount} FILING (+${fBonus.toFixed(1)}) = ${Number(pc.significanceScore || 0).toFixed(1)} pts | ${pc.startupCount ?? sCount} startups connected`
+      };
+      continue;
+    }
+    const sortedMembers = [...members].sort(
+      (a, b) =>
+        (a.isMegaHub ? 1 : 0) - (b.isMegaHub ? 1 : 0) ||
+        Number(b.rarityScore ?? ((Number(b.lift) || 0.5) * 10)) - Number(a.rarityScore ?? ((Number(a.lift) || 0.5) * 10))
+    );
+    const rarities = members
+      .map((m) => (m.isMegaHub ? 1.0 : Math.max(0, Number(m.rarityScore ?? ((Number(m.lift) || 0.5) * 10)))))
+      .sort((a, b) => b - a);
+    const topRarity = rarities[0] || 0;
+    const top3 = rarities.slice(0, 3);
+    const top3Mean = top3.length ? top3.reduce((s, v) => s + v, 0) / top3.length : 0;
+    const filingCount = members.filter((m) => !m.isMegaHub && String(m.topSourceRank || "").toUpperCase() === "FILING").length;
+    const filingBonus = Math.min(4.5, filingCount * 1.5);
+    const sigScore = Math.round((topRarity + top3Mean + filingBonus) * 100) / 100;
+    const topR = Math.round(topRarity * 100) / 100;
+    const top3M = Math.round(top3Mean * 100) / 100;
+    const fBonus = Math.round(filingBonus * 100) / 100;
+    stats[g] = {
+      significanceScore: sigScore,
+      visualWeight: 0.6,
+      topRarity: topR,
+      top3MeanRarity: top3M,
+      filingCount,
+      filingBonus: fBonus,
+      startupCount: sCount,
+      topContributors: sortedMembers.slice(0, 3).map((m) => ({
+        id: m.id,
+        label: m.label,
+        lift: m.lift != null ? Math.round(Number(m.lift) * 100) / 100 : null,
+        rarityScore: Math.round((Number(m.rarityScore ?? ((Number(m.lift) || 0.5) * 10))) * 100) / 100,
+        topSourceRank: m.topSourceRank || "AGGREGATOR",
+        bridgeFamily: m.bridgeFamily || null,
+        totalDeals: m.totalDeals ?? null
+      })),
+      significanceFormula: sigFormula,
+      significanceInputs: `Top: ${topR.toFixed(1)} + Top3 avg: ${top3M.toFixed(1)} + ${filingCount} FILING (+${fBonus.toFixed(1)}) = ${sigScore.toFixed(1)} pts | ${sCount} ${sCount === 1 ? "startup" : "startups"} connected`
+    };
+  }
+
+  const active = Object.values(stats).filter((s) => s.significanceScore > 0).map((s) => s.significanceScore);
+  if (!active.length) {
+    for (const s of Object.values(stats)) s.visualWeight = 1.0;
+    return stats;
+  }
+  const maxSig = Math.max(...active);
+  const minSig = Math.min(...active);
+  for (const s of Object.values(stats)) {
+    if (s.significanceScore <= 0) {
+      s.visualWeight = 0.6;
+    } else if (maxSig <= minSig) {
+      s.visualWeight = 1.25;
+    } else {
+      const ratio = (s.significanceScore - minSig) / (maxSig - minSig);
+      s.visualWeight = Math.round(Math.min(1.65, Math.max(0.6, 0.75 + ratio * (1.65 - 0.75))) * 100) / 100;
+    }
+  }
+  return stats;
+}
+
+function allocateProportionalSectorSpans(weights, totalDeg = 360, minSpan = 55, maxSpan = 115) {
+  const n = weights.length;
+  const safeW = weights.map((w) => Math.max(0.1, Number(w) || 1));
+  const fixed = new Array(n).fill(null);
+  let remaining = totalDeg;
+
+  for (let iter = 0; iter < n; iter++) {
+    let openSum = 0;
+    for (let i = 0; i < n; i++) {
+      if (fixed[i] === null) openSum += safeW[i];
+    }
+    if (openSum <= 0) break;
+
+    let worstIdx = -1;
+    let worstViolation = 0;
+    let worstClamp = 0;
+    for (let i = 0; i < n; i++) {
+      if (fixed[i] !== null) continue;
+      const raw = (safeW[i] / openSum) * remaining;
+      if (raw < minSpan && (minSpan - raw) > worstViolation) {
+        worstViolation = minSpan - raw;
+        worstIdx = i;
+        worstClamp = minSpan;
+      } else if (raw > maxSpan && (raw - maxSpan) > worstViolation) {
+        worstViolation = raw - maxSpan;
+        worstIdx = i;
+        worstClamp = maxSpan;
+      }
+    }
+    if (worstIdx !== -1) {
+      fixed[worstIdx] = worstClamp;
+      remaining -= worstClamp;
+    } else {
+      for (let i = 0; i < n; i++) {
+        if (fixed[i] === null) fixed[i] = (safeW[i] / openSum) * remaining;
+      }
+      break;
+    }
+  }
+  return fixed.map((v) => Math.round((v ?? (totalDeg / n)) * 100) / 100);
+}
+
+function computeBridgeOrbSize(bridgeNode, groupVisualWeight = 1) {
+  const effRarity = bridgeNode?.isMegaHub
+    ? 4
+    : Math.max(4, Number(bridgeNode?.rarityScore ?? ((Number(bridgeNode?.lift) || 1) * 10)));
+  const rarityNorm = Math.max(0, Math.min(1, (effRarity - 6) / 28));
+  const groupNorm = Math.max(0, Math.min(1, (Number(groupVisualWeight || 1) - 0.6) / 1.05));
+  const overlapBoost = bridgeNode?.isSharedOverlap ? 0.14 : 0;
+  const combined = Math.min(1, rarityNorm * 0.68 + groupNorm * 0.32 + overlapBoost);
+  return Math.round(Math.min(26, Math.max(12, 12 + combined * 14)));
+}
 
 function cleanUiCopy(value) {
   return String(value ?? "").replace(/\s*\u2014\s*/g, " - ");
@@ -1447,8 +1909,7 @@ function getFilteredShortlistItems(shortlist) {
   return visibleList;
 }
 
-function getEffectiveBridgeMap() {
-  const raw = state.bridgeMap;
+function filterSingleBridgeMap(raw) {
   if (!raw) return null;
   if (!state.onlyCallList && !state.onlySlush2026) return raw;
 
@@ -1483,11 +1944,37 @@ function getEffectiveBridgeMap() {
     };
   });
 
+  const keptBridgeNodes = keptNodes.filter((n) => n.kind === "bridge");
+  const filteredContribWeights = computeContributionWeightsFrontend(null, keptBridgeNodes, finalEdges);
+  const contributionClusters = (raw.contributionClusters || []).map((cc) => {
+    const cg = cc.group || cc.contributionGroup;
+    const bNodes = keptBridgeNodes.filter((n) => getNodeContributionGroup(n) === cg);
+    const eCount = finalEdges.filter((e) => getNodeContributionGroup(e) === cg).length;
+    const w = filteredContribWeights[cg] || { significanceScore: 0, visualWeight: 0.6 };
+    return {
+      ...cc,
+      nodeCount: bNodes.length,
+      edgeCount: eCount,
+      startupCount: w.startupCount ?? cc.startupCount ?? 0,
+      filingCount: w.filingCount ?? cc.filingCount ?? 0,
+      topRarity: w.topRarity ?? cc.topRarity ?? 0,
+      top3MeanRarity: w.top3MeanRarity ?? cc.top3MeanRarity ?? 0,
+      filingBonus: w.filingBonus ?? cc.filingBonus ?? 0,
+      topContributors: w.topContributors ?? cc.topContributors ?? [],
+      significanceFormula: w.significanceFormula || cc.significanceFormula,
+      significanceInputs: w.significanceInputs || cc.significanceInputs,
+      significanceScore: w.significanceScore,
+      visualWeight: w.visualWeight
+    };
+  });
+
   return {
     ...raw,
     clusters,
+    contributionClusters,
     nodes: keptNodes,
     edges: finalEdges,
+    peerEdges: (raw.peerEdges || []).filter((pe) => visibleIds.has(pe.from) && visibleIds.has(pe.to)),
     stats: {
       ...(raw.stats || {}),
       renderedStartups: keptNodes.filter((n) => n.kind === "startup").length,
@@ -1496,10 +1983,569 @@ function getEffectiveBridgeMap() {
   };
 }
 
+function buildStartupCompareMapFromBrief(brief, anchorKey, anchorLabel) {
+  const anchorNode = {
+    id: anchorKey,
+    label: brief?.name || anchorLabel || "Pinned Startup",
+    kind: "anchor",
+    entityType: "startup",
+    startupId: brief?.id || null,
+    contributionGroup: "all",
+    subtitle: [brief?.sector, brief?.stage, brief?.country].filter(Boolean).join(" · "),
+    topSourceRank: brief?.dataConfidence?.topSourceRank || "AGGREGATOR"
+  };
+
+  const nodeMap = new Map([[anchorKey, anchorNode]]);
+  const edges = [];
+  const seenEdges = new Set();
+  const paths = brief?.evidenceFolders?.hiddenBridges?.paths || [];
+  const hideMega = state.hideMegaHubs !== false;
+  const activeFam = state.bridgeFamily && state.bridgeFamily !== "all" ? state.bridgeFamily : "all";
+  const activeContrib = state.contributionGroup && state.contributionGroup !== "all" ? state.contributionGroup : "all";
+
+  for (const p of paths) {
+    if (hideMega && p.isMegaHub) continue;
+    const fam = p.bridgeFamily || "feeder";
+    if (activeFam !== "all" && fam !== activeFam) continue;
+    const cg = deriveContributionGroupFrontend(p);
+    if (activeContrib !== "all" && cg !== activeContrib) continue;
+    const bSlug = p.bridgeEntityId || slugifyCompareKey(p.bridgeEntityName || p.label || "bridge");
+    const bridgeId = `bridge:${fam}:${bSlug}`;
+    if (!nodeMap.has(bridgeId)) {
+      nodeMap.set(bridgeId, {
+        id: bridgeId,
+        label: p.bridgeEntityName || "Bridge Entity",
+        kind: "bridge",
+        bridgeFamily: fam,
+        contributionGroup: cg,
+        hopKind: p.hopKind || null,
+        whyMatters: p.whyMatters || p.summary || null,
+        topSourceRank: p.topSourceRank || "AGGREGATOR",
+        sourceIds: p.sourceIds || [],
+        isMegaHub: Boolean(p.isMegaHub),
+        totalDeals: p.totalDeals ?? null,
+        lift: p.lift ?? null,
+        formulaBreakdown: p.formulaBreakdown || null
+      });
+    }
+    const trunkId = `edge:${anchorKey}:${bridgeId}`;
+    if (!seenEdges.has(trunkId)) {
+      seenEdges.add(trunkId);
+      edges.push({
+        id: trunkId,
+        from: anchorKey,
+        to: bridgeId,
+        bridgeFamily: fam,
+        contributionGroup: cg,
+        rarityScore: p.rarityScore ?? 1.5,
+        topSourceRank: p.topSourceRank || "AGGREGATOR",
+        whyMatters: p.whyMatters || p.summary || "",
+        formulaBreakdown: p.formulaBreakdown || null,
+        label: p.summary || ""
+      });
+    }
+  }
+
+  for (const peer of (brief?.peerStartups || []).slice(0, 6)) {
+    if (!peer?.id || peer.id === brief?.id) continue;
+    const fam = "portfolio_twin";
+    const cg = "lineage";
+    if (activeFam !== "all" && activeFam !== fam) continue;
+    if (activeContrib !== "all" && cg !== activeContrib) continue;
+    const twinBridgeId = `bridge:${fam}:peer-${slugifyCompareKey(peer.sector || brief?.sector || "peer")}`;
+    if (!nodeMap.has(twinBridgeId)) {
+      nodeMap.set(twinBridgeId, {
+        id: twinBridgeId,
+        label: `${peer.sector || brief?.sector || "Peer"} Cluster`,
+        kind: "bridge",
+        bridgeFamily: fam,
+        contributionGroup: cg,
+        topSourceRank: "PRIMARY",
+        lift: 1.2,
+        whyMatters: `Structural peer group linked to ${brief?.name || anchorLabel}.`
+      });
+      edges.push({
+        id: `edge:${anchorKey}:${twinBridgeId}`,
+        from: anchorKey,
+        to: twinBridgeId,
+        bridgeFamily: fam,
+        contributionGroup: cg,
+        rarityScore: 1.4,
+        topSourceRank: "PRIMARY",
+        label: `${peer.sector || ""} peer`
+      });
+    }
+    if (!nodeMap.has(peer.id)) {
+      nodeMap.set(peer.id, {
+        id: peer.id,
+        label: peer.name,
+        kind: "startup",
+        startupId: peer.id,
+        contributionGroup: cg,
+        triageRank: 99,
+        signalTier: "Contextual Match",
+        sector: peer.sector,
+        country: peer.country,
+        stage: peer.stage,
+        topSourceRank: "PRIMARY"
+      });
+    }
+    edges.push({
+      id: `edge:${twinBridgeId}:${peer.id}`,
+      from: twinBridgeId,
+      to: peer.id,
+      bridgeFamily: fam,
+      contributionGroup: cg,
+      rarityScore: 1.2,
+      topSourceRank: "PRIMARY",
+      label: `Peer comp with ${brief?.name || anchorLabel}`
+    });
+  }
+
+  const allNodes = [...nodeMap.values()];
+  const bridgeNodesOnly = allNodes.filter((n) => n.kind === "bridge");
+  const startupContribWeights = computeContributionWeightsFrontend(null, bridgeNodesOnly, edges);
+  const contributionClusters = Object.values(CONTRIBUTION_VISUAL_META).map((meta) => {
+    const w = startupContribWeights[meta.group] || { significanceScore: 0, visualWeight: 0.6 };
+    return {
+      contributionGroup: meta.group,
+      label: meta.label,
+      headerLabel: meta.headerLabel,
+      nodeCount: bridgeNodesOnly.filter((n) => getNodeContributionGroup(n) === meta.group).length,
+      edgeCount: edges.filter((e) => getNodeContributionGroup(e) === meta.group).length,
+      startupCount: w.startupCount ?? 0,
+      filingCount: w.filingCount ?? 0,
+      topRarity: w.topRarity ?? 0,
+      top3MeanRarity: w.top3MeanRarity ?? 0,
+      filingBonus: w.filingBonus ?? 0,
+      topContributors: w.topContributors || [],
+      significanceFormula: w.significanceFormula,
+      significanceInputs: w.significanceInputs,
+      significanceScore: w.significanceScore,
+      visualWeight: w.visualWeight
+    };
+  });
+
+  return {
+    anchor: anchorNode,
+    nodes: allNodes,
+    edges,
+    peerEdges: [],
+    contributionClusters,
+    stats: {
+      renderedStartups: allNodes.filter((n) => n.kind === "startup").length,
+      renderedBridges: allNodes.filter((n) => n.kind === "bridge").length,
+      suppressedMegaHubCount: 0
+    }
+  };
+}
+
+function seedPrimaryPinnedEntity(data = null, opts = {}) {
+  const isFund = state.inputMode === "fund";
+  const id = isFund ? state.selectedFundId : (state.selectedCompanyIds || []).join(",") || "custom";
+  const entityType = isFund ? "fund" : "custom";
+  const key = `${entityType}:${id}`;
+  const label = getSelectedBenchmarkLabel();
+  const primaryPin = {
+    key,
+    entityType,
+    id,
+    name: label,
+    meta: isFund ? "Anchor Fund" : "Portfolio Proxy",
+    isPrimary: true,
+    loading: false,
+    bridgeMap: data?.bridgeMap || state.bridgeMap || null,
+    shortlist: data?.shortlist || state.DisplayedShortlist || []
+  };
+
+  if (opts.resetExtraPins || !state.pinnedEntities.length) {
+    state.pinnedEntities = [primaryPin];
+    return;
+  }
+
+  const existingExtra = state.pinnedEntities.slice(1).filter((p) => p.key !== key);
+  state.pinnedEntities = [primaryPin, ...existingExtra].slice(0, 4);
+}
+
+async function fetchEntityGraphContribution(entityRef) {
+  const anchorKey = `anchor:${entityRef.key}`;
+  if (entityRef.entityType === "fund") {
+    const res = await fetchJson("/api/analyze", {
+      method: "POST",
+      body: JSON.stringify({
+        mode: "fund",
+        fundId: entityRef.id,
+        rankingMode: mapScoringModeToApi(state.scoringMode),
+        hideMegaHubs: state.hideMegaHubs !== false,
+        bridgeFamily: state.bridgeFamily && state.bridgeFamily !== "all" ? state.bridgeFamily : "all",
+        contributionGroup: state.contributionGroup && state.contributionGroup !== "all" ? state.contributionGroup : "all"
+      })
+    });
+    if (res.shortlist) registerKnownItems(res.shortlist);
+    return {
+      bridgeMap: res.bridgeMap || null,
+      shortlist: res.shortlist || [],
+      meta: [res.thesis?.sectorFocus?.[0], res.thesis?.stageFocus?.[0]].filter(Boolean).join(" · ") || entityRef.meta || "Fund Anchor"
+    };
+  }
+
+  const qs = new URLSearchParams({
+    startupId: entityRef.id,
+    fundId: state.inputMode === "fund" ? state.selectedFundId : ""
+  });
+  const brief = await fetchJson(`/api/brief?${qs.toString()}`);
+  state.briefCache.set(`${entityRef.id}:${state.selectedFundId}`, brief);
+  registerKnownItems([brief]);
+  return {
+    bridgeMap: buildStartupCompareMapFromBrief(brief, anchorKey, entityRef.name),
+    shortlist: [],
+    meta: [brief.sector, brief.stage, brief.country].filter(Boolean).join(" · ") || entityRef.meta || "Startup Anchor"
+  };
+}
+
+async function pinEntityForCompare(entityRef) {
+  if (!entityRef || !entityRef.id) return;
+  if (!state.pinnedEntities.length && state.bridgeMap) {
+    seedPrimaryPinnedEntity({ bridgeMap: state.bridgeMap, shortlist: state.DisplayedShortlist });
+  }
+  const key = `${entityRef.entityType}:${entityRef.id}`;
+  if (state.pinnedEntities.some((p) => p.key === key)) {
+    showUiToast(`${entityRef.name} is already pinned.`);
+    return;
+  }
+  if (state.pinnedEntities.length >= 4) {
+    showUiToast("Compare supports up to 4 pinned entities at once.");
+    return;
+  }
+
+  const newPin = {
+    key,
+    entityType: entityRef.entityType,
+    id: entityRef.id,
+    name: entityRef.name,
+    meta: entityRef.meta || (entityRef.entityType === "fund" ? "Fund" : "Startup"),
+    isPrimary: false,
+    loading: true,
+    bridgeMap: null,
+    shortlist: []
+  };
+  state.pinnedEntities = [...state.pinnedEntities, newPin];
+  renderExploredEntitiesBox();
+
+  try {
+    const data = await fetchEntityGraphContribution(newPin);
+    state.pinnedEntities = state.pinnedEntities.map((p) =>
+      p.key === key
+        ? { ...p, loading: false, meta: data.meta || p.meta, bridgeMap: data.bridgeMap, shortlist: data.shortlist }
+        : p
+    );
+    state.selectedStartupId = null;
+    state.selectedBridgeId = null;
+    state.selectedAnchorId = null;
+    syncConstellationControls();
+    renderExploredEntitiesBox();
+    updateAiSynthesisBanner(null);
+    renderConstellationMap(getEffectiveBridgeMap(), { fit: true });
+    renderSideEvidenceRail();
+  } catch (err) {
+    state.pinnedEntities = state.pinnedEntities.filter((p) => p.key !== key);
+    renderExploredEntitiesBox();
+    showUiToast(err.message || "Could not load entity comparison graph.");
+  }
+}
+
+async function refreshExtraPinnedEntities() {
+  if (state.pinnedEntities.length <= 1) return;
+  const extras = state.pinnedEntities.slice(1);
+  await Promise.all(
+    extras.map(async (pin) => {
+      try {
+        const data = await fetchEntityGraphContribution(pin);
+        pin.bridgeMap = data.bridgeMap;
+        pin.shortlist = data.shortlist;
+      } catch {
+        // retain prior slice
+      }
+    })
+  );
+}
+
+function unpinEntityFromCompare(pinKey) {
+  if (state.pinnedEntities.length <= 1) {
+    showUiToast("At least one primary anchor remains active.");
+    return;
+  }
+  state.pinnedEntities = state.pinnedEntities.filter((p) => p.key !== pinKey);
+  state.selectedStartupId = null;
+  state.selectedBridgeId = null;
+  state.selectedAnchorId = null;
+  state.expandedGroupKey = null;
+  syncConstellationControls();
+  renderExploredEntitiesBox();
+  updateAiSynthesisBanner(null);
+  renderConstellationMap(getEffectiveBridgeMap(), { fit: true });
+  renderSideEvidenceRail();
+}
+
+function clearComparePins() {
+  if (state.pinnedEntities.length > 1) {
+    state.pinnedEntities = state.pinnedEntities.slice(0, 1);
+  }
+  state.selectedStartupId = null;
+  state.selectedBridgeId = null;
+  state.selectedAnchorId = null;
+  state.expandedGroupKey = null;
+  state.hoveredNodeId = null;
+  syncConstellationControls();
+  renderExploredEntitiesBox();
+  updateAiSynthesisBanner(null);
+  renderConstellationMap(getEffectiveBridgeMap(), { fit: true });
+  renderSideEvidenceRail();
+}
+
+function getMergedMultiEntityBridgeMap() {
+  const validPins = state.pinnedEntities.filter((p) => p.bridgeMap);
+  if (validPins.length <= 1) {
+    return filterSingleBridgeMap(state.bridgeMap);
+  }
+
+  const nodeMap = new Map();
+  const nodeAnchors = new Map();
+  const nodePrimaryOwner = new Map();
+  const edgeMap = new Map();
+  const peerEdgeMap = new Map();
+  let suppressedMegaHubCount = 0;
+
+  const markOwner = (nodeId, anchorId) => {
+    if (!nodeAnchors.has(nodeId)) nodeAnchors.set(nodeId, new Set());
+    nodeAnchors.get(nodeId).add(anchorId);
+    if (!nodePrimaryOwner.has(nodeId)) nodePrimaryOwner.set(nodeId, anchorId);
+  };
+
+  validPins.forEach((pin, idx) => {
+    const rawMap = idx === 0 ? (filterSingleBridgeMap(state.bridgeMap) || pin.bridgeMap) : pin.bridgeMap;
+    if (!rawMap) return;
+    suppressedMegaHubCount += rawMap.stats?.suppressedMegaHubCount || 0;
+
+    const palette = ANCHOR_PALETTE[idx % ANCHOR_PALETTE.length];
+    const rawAnchorId = rawMap.anchor?.id || (rawMap.nodes || []).find((n) => n.kind === "anchor")?.id || pin.id;
+    const unifiedAnchorId = `anchor:${pin.key}`;
+    const pinStartupCount = (rawMap.nodes || []).filter((n) => n.kind === "startup").length;
+    const pinBridgeCount = (rawMap.nodes || []).filter((n) => n.kind === "bridge").length;
+
+    nodeMap.set(unifiedAnchorId, {
+      id: unifiedAnchorId,
+      label: pin.name,
+      kind: "anchor",
+      entityType: pin.entityType,
+      entityKey: pin.key,
+      anchorIndex: idx,
+      anchorColor: palette.hex,
+      anchorGlow: palette.glow,
+      anchorEdge: palette.edge,
+      subtitle: pin.meta || rawMap.anchor?.subtitle || "",
+      bridgeCount: pinBridgeCount,
+      startupCount: pinStartupCount
+    });
+
+    for (const n of rawMap.nodes || []) {
+      if (n.kind === "anchor") continue;
+      if (!nodeMap.has(n.id)) {
+        nodeMap.set(n.id, { ...n });
+      } else if (n.kind === "startup" && (n.triageRank || 99) < (nodeMap.get(n.id).triageRank || 99)) {
+        nodeMap.set(n.id, { ...nodeMap.get(n.id), triageRank: n.triageRank });
+      }
+      markOwner(n.id, unifiedAnchorId);
+    }
+
+    if (pin.entityType === "startup") {
+      markOwner(pin.id, unifiedAnchorId);
+      for (const existingEdge of [...edgeMap.values()]) {
+        if (existingEdge.to === pin.id && existingEdge.from.startsWith("bridge:")) {
+          markOwner(existingEdge.from, unifiedAnchorId);
+          const crossId = `edge:${unifiedAnchorId}:${existingEdge.from}`;
+          if (!edgeMap.has(crossId)) {
+            edgeMap.set(crossId, {
+              ...existingEdge,
+              id: crossId,
+              from: unifiedAnchorId,
+              to: existingEdge.from,
+              ownerAnchorId: unifiedAnchorId,
+              anchorBow: idx % 2 === 0 ? 1 : -1
+            });
+          }
+        }
+      }
+    }
+
+    for (const e of rawMap.edges || []) {
+      const fromId = e.from === rawAnchorId ? unifiedAnchorId : e.from;
+      const toId = e.to === rawAnchorId ? unifiedAnchorId : e.to;
+      if (fromId !== unifiedAnchorId) markOwner(fromId, unifiedAnchorId);
+      if (toId !== unifiedAnchorId) markOwner(toId, unifiedAnchorId);
+
+      const dedupEdgeId = `cmp:${fromId}:${toId}:${e.contributionGroup || e.bridgeFamily || "x"}`;
+      if (!edgeMap.has(dedupEdgeId)) {
+        edgeMap.set(dedupEdgeId, {
+          ...e,
+          id: dedupEdgeId,
+          from: fromId,
+          to: toId,
+          ownerAnchorId: unifiedAnchorId,
+          anchorBow: idx % 2 === 0 ? 1 : -1
+        });
+      }
+    }
+
+    for (const pe of rawMap.peerEdges || []) {
+      if (!peerEdgeMap.has(pe.id)) {
+        peerEdgeMap.set(pe.id, pe);
+      }
+    }
+  });
+
+  for (const [nid, node] of nodeMap.entries()) {
+    if (node.kind === "anchor") continue;
+    const owners = [...(nodeAnchors.get(nid) || [])];
+    node.connectedAnchorIds = owners;
+    node.primaryAnchorId = owners[0] || nodePrimaryOwner.get(nid) || null;
+    node.isSharedOverlap = owners.length >= 2;
+  }
+
+  for (const edge of edgeMap.values()) {
+    const toNode = nodeMap.get(edge.to);
+    const fromNode = nodeMap.get(edge.from);
+    edge.isSharedEdge = Boolean(toNode?.isSharedOverlap || fromNode?.isSharedOverlap);
+  }
+
+  const allNodes = [...nodeMap.values()];
+  return {
+    compareMode: true,
+    anchorCount: validPins.length,
+    nodes: allNodes,
+    edges: [...edgeMap.values()],
+    peerEdges: [...peerEdgeMap.values()],
+    clusters: state.bridgeMap?.clusters || [],
+    contributionClusters: state.bridgeMap?.contributionClusters || [],
+    stats: {
+      renderedStartups: allNodes.filter((n) => n.kind === "startup").length,
+      renderedBridges: allNodes.filter((n) => n.kind === "bridge").length,
+      sharedOverlapCount: allNodes.filter((n) => n.isSharedOverlap).length,
+      suppressedMegaHubCount
+    }
+  };
+}
+
+function getEffectiveBridgeMap() {
+  if (state.pinnedEntities && state.pinnedEntities.filter((p) => p.bridgeMap).length >= 2) {
+    return getMergedMultiEntityBridgeMap();
+  }
+  return filterSingleBridgeMap(state.bridgeMap);
+}
+
+function countActiveWorkspaceFilters() {
+  let count = 0;
+  if (state.hideMegaHubs === false) count += 1;
+  if (state.contributionGroup && state.contributionGroup !== "all") count += 1;
+  if (state.bridgeFamily && state.bridgeFamily !== "all") count += 1;
+  if (state.filingOnly) count += 1;
+  if (state.onlySlush2026) count += 1;
+  if (state.untappedOnly) count += 1;
+  if (state.onlyCallList) count += 1;
+  if (typeof countActiveRefineFilters === "function") {
+    count += countActiveRefineFilters();
+  }
+  return count;
+}
+
+function setFiltersPanelOpen(open, options = {}) {
+  state.filtersPanelOpen = Boolean(open);
+  const ribbonEl = document.getElementById("constellationFilterRibbon");
+  const stripEl = document.getElementById("collapsibleFilterStrip");
+  if (ribbonEl) ribbonEl.hidden = !state.filtersPanelOpen;
+  if (stripEl && options.includeAdvanced !== undefined) {
+    stripEl.hidden = !(state.filtersPanelOpen && options.includeAdvanced);
+  } else if (stripEl && !state.filtersPanelOpen) {
+    stripEl.hidden = true;
+  }
+
+  const expStr = state.filtersPanelOpen ? "true" : "false";
+  document.getElementById("exploredFiltersToggleBtn")?.setAttribute("aria-expanded", expStr);
+  document.getElementById("mapFiltersToggleBtn")?.setAttribute("aria-expanded", expStr);
+  document.getElementById("toggleFiltersBtn")?.setAttribute("aria-expanded", expStr);
+}
+
+function setLegendPopoverOpen(open) {
+  state.legendPopoverOpen = Boolean(open);
+  const popEl = document.getElementById("mapLegendPopover");
+  const btnEl = document.getElementById("mapLegendToggleBtn");
+  if (popEl) popEl.hidden = !state.legendPopoverOpen;
+  if (btnEl) {
+    btnEl.setAttribute("aria-expanded", state.legendPopoverOpen ? "true" : "false");
+    btnEl.classList.toggle("is-active", state.legendPopoverOpen);
+  }
+}
+
+function renderExploredEntitiesBox() {
+  const boxEl = document.getElementById("exploredEntitiesBox");
+  const drawerEl = document.getElementById("exploredCompareDrawer");
+  const toggleBtnEl = document.getElementById("toggleCompareBoxBtn");
+  const listEl = document.getElementById("pinnedEntitiesList");
+  const modeBadgeEl = document.getElementById("exploreModeBadge");
+  const badgeEl = document.getElementById("exploredFiltersBadge");
+  if (!listEl) return;
+
+  if (!state.pinnedEntities.length && state.bridgeMap) {
+    seedPrimaryPinnedEntity({ bridgeMap: state.bridgeMap, shortlist: state.DisplayedShortlist });
+  }
+
+  const count = state.pinnedEntities.length;
+  const isCompareExpanded = Boolean(state.compareBoxOpen || count >= 2);
+  if (boxEl) {
+    boxEl.classList.toggle("is-expanded", isCompareExpanded);
+  }
+  if (drawerEl) {
+    drawerEl.hidden = !isCompareExpanded;
+  }
+  if (toggleBtnEl) {
+    toggleBtnEl.setAttribute("aria-expanded", isCompareExpanded ? "true" : "false");
+    toggleBtnEl.classList.toggle("is-active", isCompareExpanded);
+    toggleBtnEl.textContent = count >= 2 ? `Compare (${count})` : (isCompareExpanded ? "Close" : "+ Compare");
+  }
+  if (modeBadgeEl) {
+    modeBadgeEl.textContent = count >= 2 ? `Compare ${count}` : "360° Polar";
+  }
+
+  listEl.innerHTML = state.pinnedEntities
+    .map((pin, idx) => {
+      const pal = ANCHOR_PALETTE[idx % ANCHOR_PALETTE.length];
+      const kindLabel = pin.entityType === "startup" ? "Startup" : "Fund";
+      const removeBtn = count > 1
+        ? `<button type="button" class="pinned-entity-remove" data-unpin-key="${escapeHtml(pin.key)}" aria-label="Remove ${escapeHtml(pin.name)}">x</button>`
+        : "";
+      return `
+        <span class="pinned-entity-chip" data-pin-key="${escapeHtml(pin.key)}">
+          <span class="pinned-entity-dot" style="background:${pal.hex}; color:${pal.hex};"></span>
+          <span class="pinned-entity-name" title="${escapeHtml(pin.name)}">${escapeHtml(pin.name)}</span>
+          ${count >= 2 || state.compareBoxOpen ? `<span class="pinned-entity-kind">${pin.loading ? "..." : kindLabel}</span>` : ""}
+          ${removeBtn}
+        </span>
+      `;
+    })
+    .join("");
+
+  if (badgeEl) {
+    const activeCount = countActiveWorkspaceFilters();
+    badgeEl.hidden = activeCount === 0;
+    badgeEl.textContent = String(activeCount);
+  }
+}
+
 function syncConstellationControls() {
   const megaBtn = document.getElementById("toggleHideMegaHubsBtn");
   const megaPill = document.getElementById("megaHubCounterPill");
-  const suppressedCount = state.bridgeMap?.stats?.suppressedMegaHubCount ?? 0;
+  const effMap = getEffectiveBridgeMap();
+  const suppressedCount = effMap?.stats?.suppressedMegaHubCount ?? state.bridgeMap?.stats?.suppressedMegaHubCount ?? 0;
   if (megaBtn) {
     megaBtn.classList.toggle("is-active", state.hideMegaHubs !== false);
     megaBtn.setAttribute("aria-pressed", state.hideMegaHubs !== false ? "true" : "false");
@@ -1510,9 +2556,25 @@ function syncConstellationControls() {
       : "all shown";
   }
 
-  document.querySelectorAll("#bridgeFamilySwitcher [data-bridge-family]").forEach((btn) => {
-    const fam = btn.dataset.bridgeFamily || "all";
-    btn.classList.toggle("is-active", (state.bridgeFamily || "all") === fam);
+  document.querySelectorAll("#bridgeFamilySwitcher [data-contribution-group]").forEach((btn) => {
+    const cg = btn.dataset.contributionGroup || "all";
+    btn.classList.toggle("is-active", (state.contributionGroup || "all") === cg);
+    btn.setAttribute("aria-pressed", (state.contributionGroup || "all") === cg ? "true" : "false");
+  });
+
+  const contribCounts = { all: 0, access: 0, lineage: 0, timing: 0, caution: 0 };
+  const activeBridgeNodes = (effMap?.nodes || []).filter((n) => n.kind === "bridge");
+  for (const bn of activeBridgeNodes) {
+    const cg = getNodeContributionGroup(bn);
+    if (contribCounts[cg] !== undefined) {
+      contribCounts[cg] += 1;
+      contribCounts.all += 1;
+    }
+  }
+  document.querySelectorAll("[data-contrib-count]").forEach((el) => {
+    const k = el.dataset.contribCount;
+    const cnt = contribCounts[k] ?? 0;
+    el.textContent = cnt > 0 ? String(cnt) : "";
   });
 
   const filingBtn = document.getElementById("chipFilingOnlyBtn");
@@ -1530,36 +2592,64 @@ function syncConstellationControls() {
     untappedBtn.classList.toggle("is-active", Boolean(state.untappedOnly));
     untappedBtn.setAttribute("aria-pressed", state.untappedOnly ? "true" : "false");
   }
+  renderExploredEntitiesBox();
 }
 
 function updateAiSynthesisBanner(context = null) {
   const bannerEl = document.getElementById("aiSynthesisBanner");
-  if (!bannerEl) return;
-  const effMap = getEffectiveBridgeMap();
-  const renderedStartups = effMap?.stats?.renderedStartups ?? getFilteredShortlistItems(state.DisplayedShortlist).length;
-  const renderedBridges = effMap?.stats?.renderedBridges ?? 0;
-  const suppressed = effMap?.stats?.suppressedMegaHubCount ?? 0;
+  const livePillEl = document.getElementById("mapLiveStatusPill");
 
-  if (context?.synthesis) {
-    bannerEl.innerHTML = cleanUiCopy(context.synthesis);
+  if (livePillEl) {
+    if (context?.loadingMessage) {
+      livePillEl.innerHTML = `<span class="live-loading-pulse" aria-hidden="true"></span><span>${escapeHtml(cleanUiCopy(context.loadingMessage))}</span>`;
+      livePillEl.hidden = false;
+    } else {
+      livePillEl.hidden = true;
+      livePillEl.innerHTML = "";
+    }
+  }
+  if (!bannerEl) return;
+
+  if (context?.loadingMessage) {
+    bannerEl.hidden = true;
+    bannerEl.innerHTML = "";
     return;
   }
 
-  const benchmarkName = getSelectedBenchmarkLabel();
-  const famLabel = state.bridgeFamily && state.bridgeFamily !== "all"
-    ? (BRIDGE_FAMILY_VISUAL_META[state.bridgeFamily]?.label || state.bridgeFamily)
-    : "All bridge families";
-  const hubSummary = state.hideMegaHubs !== false
-    ? `${suppressed} mega-hubs filtered`
-    : "mega-hubs visible";
+  const effMap = getEffectiveBridgeMap();
+  const currentQuery = (document.getElementById("aiSearchInput")?.value || "").trim();
+  const canRefreshLive =
+    Boolean(currentQuery) &&
+    !/^\s*why not\s+/i.test(currentQuery) &&
+    !effMap?.compareMode;
+  const refreshHtml = canRefreshLive
+    ? ` <button type="button" class="banner-refresh-live-btn" id="refreshLiveCalaBtn" title="Force re-query Live Cala knowledge graph for this search">Refresh Live Cala</button>`
+    : "";
 
-  bannerEl.innerHTML = `<strong>${escapeHtml(benchmarkName)}</strong> · ${escapeHtml(famLabel)} · ${renderedStartups} startups · ${renderedBridges} hidden bridges · ${escapeHtml(hubSummary)}`;
+  if (context?.synthesis) {
+    bannerEl.innerHTML = `${cleanUiCopy(context.synthesis)}${refreshHtml}`;
+    bannerEl.hidden = false;
+    return;
+  }
+
+  if (canRefreshLive) {
+    bannerEl.innerHTML = `<strong>Query:</strong> "${escapeHtml(cleanUiCopy(currentQuery))}"${refreshHtml}`;
+    bannerEl.hidden = false;
+    return;
+  }
+
+  bannerEl.innerHTML = "";
+  bannerEl.hidden = true;
 }
 
 function applyMapViewportTransform() {
   const vp = document.getElementById("mapPanZoomViewport");
   if (vp) {
     vp.style.transform = `translate(${state.mapPanX}px, ${state.mapPanY}px) scale(${state.mapZoom})`;
+  }
+  const canvasEl = document.getElementById("bridgeMapCanvas");
+  if (canvasEl) {
+    canvasEl.classList.toggle("is-zoomed-detail", state.mapZoom >= 1.00);
   }
   const readout = document.getElementById("mapZoomReadout");
   if (readout) {
@@ -1568,14 +2658,33 @@ function applyMapViewportTransform() {
 }
 
 function clampZoom(z) {
-  return Math.min(1.5, Math.max(0.45, Math.round(z * 100) / 100));
+  return Math.min(1.6, Math.max(0.36, Math.round(z * 100) / 100));
+}
+
+function getActiveRailOffset() {
+  if (!state.sideRailOpen) return 58;
+  const railEl = document.getElementById("sideEvidenceRail");
+  const measuredW = railEl && !railEl.hidden ? Math.round(railEl.getBoundingClientRect().width) : 0;
+  const fallbackW =
+    Number(state.sideRailWidth) ||
+    Math.min(360, Math.max(310, Math.round((window.innerWidth || 1280) * 0.25)));
+  const resolvedW = measuredW > 120 ? measuredW : fallbackW;
+  document.documentElement.style.setProperty("--rail-width", `${resolvedW}px`);
+  return resolvedW + 74;
+}
+
+function getTooltipRightReserve() {
+  if (state.sideRailOpen) return getActiveRailOffset();
+  const qc = document.getElementById("mapQuickInspectorCard");
+  if (qc && !qc.hidden) return 336;
+  return 68;
 }
 
 function fitConstellationToViewport() {
   const canvasEl = document.getElementById("bridgeMapCanvas");
   const layout = state.mapLayoutNodes;
   if (!canvasEl || !layout || !layout.bounds) {
-    state.mapZoom = 0.72;
+    state.mapZoom = 0.80;
     state.mapPanX = 24;
     state.mapPanY = 18;
     applyMapViewportTransform();
@@ -1584,31 +2693,61 @@ function fitConstellationToViewport() {
 
   const rect = canvasEl.getBoundingClientRect();
   if (!rect.width || !rect.height) {
-    state.mapZoom = 0.72;
+    state.mapZoom = 0.80;
     state.mapPanX = 24;
     state.mapPanY = 18;
     applyMapViewportTransform();
     return;
   }
 
-  const railOffset = state.sideRailOpen ? 442 : 0;
-  const availW = Math.max(320, rect.width - railOffset - 56);
-  const availH = Math.max(260, rect.height - 96);
-  const contentW = Math.max(400, layout.bounds.maxX - layout.bounds.minX);
-  const contentH = Math.max(300, layout.bounds.maxY - layout.bounds.minY);
+  const railOffset = getActiveRailOffset();
+  const openLeft = rect.width >= 820 ? (state.sideRailOpen ? 92 : 44) : 20;
+  const openRight = rect.width - railOffset - 20;
+  const openTop = rect.width >= 820 ? (state.expandedGroupKey ? 56 : 44) : 38;
+  const openBottom = rect.height - 54;
 
-  const rawZoom = Math.min(availW / contentW, availH / contentH);
+  const availW = Math.max(300, openRight - openLeft);
+  const availH = Math.max(260, openBottom - openTop);
+  const contentW = Math.max(420, layout.bounds.maxX - layout.bounds.minX);
+  const contentH = Math.max(360, layout.bounds.maxY - layout.bounds.minY);
+
+  const maxOverviewFit = layout.mode === "polar" && !state.expandedGroupKey ? 0.86 : 0.94;
+  const rawZoom = Math.min(availW / contentW, availH / contentH, maxOverviewFit);
   const zoom = clampZoom(rawZoom);
   const centerContentX = (layout.bounds.minX + layout.bounds.maxX) / 2;
   const centerContentY = (layout.bounds.minY + layout.bounds.maxY) / 2;
-  const targetCenterX = (rect.width - railOffset) / 2;
-  const targetCenterY = (rect.height - 26) / 2;
-  const minSafePanX = Math.round(20 - layout.bounds.minX * zoom);
-  const centeredPanX = Math.round(targetCenterX - centerContentX * zoom);
+  const targetCenterX = (openLeft + openRight) / 2;
+  const targetCenterY = (openTop + openBottom) / 2;
 
   state.mapZoom = zoom;
-  state.mapPanX = Math.max(minSafePanX, centeredPanX);
+  state.mapPanX = Math.round(targetCenterX - centerContentX * zoom);
   state.mapPanY = Math.round(targetCenterY - centerContentY * zoom);
+
+  // Guard top-left #exploredEntitiesBox against actual rendered height on desktop
+  const boxEl = document.getElementById("exploredEntitiesBox");
+  if (boxEl && !boxEl.hidden && rect.width >= 820 && !state.sideRailOpen) {
+    const boxW = (boxEl.offsetWidth || 260) + 18;
+    const boxH = (boxEl.offsetHeight || 42) + 18;
+    let pushX = 0;
+    let pushY = 0;
+    for (const pos of layout.posMap.values()) {
+      const syTop = (pos.y - (pos.topPad || 20)) * state.mapZoom + state.mapPanY;
+      const sxLeft = (pos.x - (pos.halfW || 60)) * state.mapZoom + state.mapPanX;
+      if (syTop < boxH && sxLeft < boxW) {
+        pushX = Math.max(pushX, boxW - sxLeft);
+        pushY = Math.max(pushY, boxH - syTop);
+      }
+    }
+    if (pushX > 0 && pushY > 0) {
+      const rightRoom = Math.max(0, (rect.width - railOffset - 18) - (layout.bounds.maxX * state.mapZoom + state.mapPanX));
+      const bottomRoom = Math.max(0, openBottom - (layout.bounds.maxY * state.mapZoom + state.mapPanY));
+      if (pushY <= bottomRoom) {
+        state.mapPanY += Math.round(pushY);
+      } else if (pushX <= rightRoom) {
+        state.mapPanX += Math.round(pushX);
+      }
+    }
+  }
   applyMapViewportTransform();
 }
 
@@ -1621,18 +2760,579 @@ function centerConstellationView() {
     return;
   }
   const layout = state.mapLayoutNodes;
-  const cx = layout?.bounds ? (layout.bounds.minX + layout.bounds.maxX) / 2 : CONSTELLATION_W / 2;
-  const cy = layout?.bounds ? (layout.bounds.minY + layout.bounds.maxY) / 2 : CONSTELLATION_H / 2;
-  const railOffset = state.sideRailOpen ? 442 : 0;
-  state.mapPanX = Math.round((rect.width - railOffset) / 2 - cx * state.mapZoom);
-  state.mapPanY = Math.round((rect.height - 24) / 2 - cy * state.mapZoom);
+  const cx = layout?.bounds ? (layout.bounds.minX + layout.bounds.maxX) / 2 : CONSTELLATION_CX;
+  const cy = layout?.bounds ? (layout.bounds.minY + layout.bounds.maxY) / 2 : CONSTELLATION_CY;
+  const railOffset = getActiveRailOffset();
+  const openLeft = rect.width >= 820 ? (state.sideRailOpen ? 92 : 44) : 20;
+  const openRight = rect.width - railOffset - 20;
+  const openTop = rect.width >= 820 ? (state.expandedGroupKey ? 56 : 44) : 38;
+  const openBottom = rect.height - 54;
+  const targetCenterX = (openLeft + openRight) / 2;
+  const targetCenterY = (openTop + openBottom) / 2;
+  state.mapPanX = Math.round(targetCenterX - cx * state.mapZoom);
+  state.mapPanY = Math.round(targetCenterY - cy * state.mapZoom);
   applyMapViewportTransform();
+}
+
+function polarToCartesian(cx, cy, radius, angleDeg) {
+  const rad = (angleDeg * Math.PI) / 180;
+  return {
+    x: cx + radius * Math.cos(rad),
+    y: cy + radius * Math.sin(rad)
+  };
+}
+
+function computeGroupHubOrbSize(visualWeight = 1) {
+  const norm = Math.max(0, Math.min(1, ((Number(visualWeight) || 0.6) - 0.6) / 1.05));
+  return Math.round(Math.min(34, Math.max(22, 22 + norm * 12)));
+}
+
+function estimateNodeBoxMetrics(node, kind, isTier1 = false, bridgeSize = 16) {
+  const shortStr = kind === "bridge"
+    ? formatCompactEntityName(formatShortBridgeLabel(node.label, node), 3, 21)
+    : kind === "startup"
+      ? formatCompactEntityName(node.label, isTier1 ? 2 : 3, isTier1 ? 18 : 21)
+      : kind === "group_hub"
+        ? formatCompactEntityName(node.label, 1, 14)
+        : formatCompactEntityName(node.label, 2, 22);
+  const labelLen = shortStr.length;
+  if (kind === "anchor") {
+    return { orbR: 28, bridgeSize: 56, halfW: 54, topPad: 34, bottomPad: 38 };
+  }
+  if (kind === "group_hub") {
+    const clampedSize = Math.min(34, Math.max(22, Math.round(Number(bridgeSize) || 26)));
+    const orbR = Math.round(clampedSize / 2);
+    return {
+      orbR,
+      bridgeSize: clampedSize,
+      halfW: 56,
+      topPad: orbR + 6,
+      bottomPad: orbR + 40
+    };
+  }
+  if (kind === "bridge") {
+    const clampedSize = Math.min(26, Math.max(12, Math.round(Number(bridgeSize) || (node.isSharedOverlap ? 21 : 16))));
+    const orbR = Math.round(clampedSize / 2);
+    return {
+      orbR,
+      bridgeSize: clampedSize,
+      halfW: Math.min(82, Math.max(44, labelLen * 3.55 + 14)),
+      topPad: orbR + 6,
+      bottomPad: orbR + 28
+    };
+  }
+  const orbR = isTier1 || node.isSharedOverlap ? 9 : 7;
+  return {
+    orbR,
+    bridgeSize: orbR * 2,
+    halfW: Math.min(82, Math.max(42, labelLen * 3.55 + 14)),
+    topPad: orbR + 6,
+    bottomPad: orbR + 28
+  };
+}
+
+function resolveOrbAndLabelCollisions(posMap, nodeById, ringOptions = null) {
+  const opts = typeof ringOptions === "object" && ringOptions !== null
+    ? ringOptions
+    : { polarRings: Boolean(ringOptions) };
+  const movableIds = [...posMap.keys()].filter((id) => {
+    const k = nodeById.get(id)?.kind;
+    return k !== "anchor" && !posMap.get(id)?.locked;
+  });
+  const fixedPositions = [...posMap.entries()]
+    .filter(([id, p]) => nodeById.get(id)?.kind === "anchor" || p?.locked)
+    .map(([, p]) => p);
+
+  const iterations = 20;
+  for (let pass = 0; pass < iterations; pass++) {
+    for (let i = 0; i < movableIds.length; i++) {
+      const idA = movableIds[i];
+      const pA = posMap.get(idA);
+      const aL = pA.x - pA.halfW - 6;
+      const aR = pA.x + pA.halfW + 6;
+      const aT = pA.y - pA.topPad - 4;
+      const aB = pA.y + pA.bottomPad + 6;
+
+      for (let j = i + 1; j < movableIds.length; j++) {
+        const idB = movableIds[j];
+        const pB = posMap.get(idB);
+        const bL = pB.x - pB.halfW - 6;
+        const bR = pB.x + pB.halfW + 6;
+        const bT = pB.y - pB.topPad - 4;
+        const bB = pB.y + pB.bottomPad + 6;
+
+        const overlapX = Math.min(aR, bR) - Math.max(aL, bL);
+        const overlapY = Math.min(aB, bB) - Math.max(aT, bT);
+        if (overlapX > 0 && overlapY > 0) {
+          let dx = pA.x - pB.x;
+          let dy = pA.y - pB.y;
+          if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) {
+            dx = (i % 2 === 0 ? 1 : -1) * 4;
+            dy = (j % 2 === 0 ? 1 : -1) * 4;
+          }
+          if (overlapY <= overlapX * 0.92) {
+            const pushY = (overlapY * 0.52) * (dy >= 0 ? 1 : -1);
+            const pushX = Math.sign(dx || 1) * Math.min(4, overlapX * 0.08);
+            pA.y += pushY;
+            pB.y -= pushY;
+            pA.x += pushX;
+            pB.x -= pushX;
+          } else {
+            const pushX = (overlapX * 0.52) * (dx >= 0 ? 1 : -1);
+            const pushY = Math.sign(dy || 1) * Math.min(4, overlapY * 0.12);
+            pA.x += pushX;
+            pB.x -= pushX;
+            pA.y += pushY;
+            pB.y -= pushY;
+          }
+        }
+      }
+
+      // Keep clear of Anchor and locked Group Hub orbs
+      for (const fp of fixedPositions) {
+        const dx = pA.x - fp.x;
+        const dy = pA.y - fp.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        const minClear = fp.orbR >= 24 ? 115 : 88;
+        if (dist < minClear) {
+          const push = (minClear - dist) * 0.72;
+          pA.x += (dx / dist) * push;
+          pA.y += (dy / dist) * push;
+        }
+      }
+
+      if (opts.polarRings) {
+        const dx = pA.x - CONSTELLATION_CX;
+        const dy = pA.y - CONSTELLATION_CY;
+        let dist = Math.hypot(dx, dy) || 1;
+        const minR = pA.minRingR ?? 220;
+        const maxR = pA.maxRingR ?? 460;
+        if (pass < iterations - 2 && (dist < minR || dist > maxR)) {
+          const targetR = Math.max(minR, Math.min(maxR, dist));
+          dist = dist + (targetR - dist) * 0.72;
+        }
+        if (typeof pA.sectorMinDeg === "number" && typeof pA.sectorMaxDeg === "number") {
+          let ang = (Math.atan2(dy, dx) * 180) / Math.PI;
+          const mid = (pA.sectorMinDeg + pA.sectorMaxDeg) / 2;
+          while (ang < mid - 180) ang += 360;
+          while (ang > mid + 180) ang -= 360;
+          const clampedAng = Math.max(pA.sectorMinDeg, Math.min(pA.sectorMaxDeg, ang));
+          const rad = (clampedAng * Math.PI) / 180;
+          pA.x = CONSTELLATION_CX + dist * Math.cos(rad);
+          pA.y = CONSTELLATION_CY + dist * Math.sin(rad);
+        } else if (dist !== Math.hypot(dx, dy)) {
+          pA.x = CONSTELLATION_CX + (dx / (Math.hypot(dx, dy) || 1)) * dist;
+          pA.y = CONSTELLATION_CY + (dy / (Math.hypot(dx, dy) || 1)) * dist;
+        }
+      }
+    }
+  }
+}
+
+function buildPolarContributionTreeData(bridgeMap, shortlistOrder) {
+  const nodes = bridgeMap?.nodes || [];
+  const edges = bridgeMap?.edges || [];
+  const primaryAnchor = nodes.find((n) => n.kind === "anchor")
+    || (bridgeMap?.anchor ? { ...bridgeMap.anchor, kind: "anchor" } : { id: "query-anchor", label: getSelectedBenchmarkLabel(), kind: "anchor" });
+
+  const allBridges = nodes.filter((n) => n.kind === "bridge");
+  const allStartups = nodes.filter((n) => n.kind === "startup");
+  const bridgeById = new Map(allBridges.map((b) => [b.id, b]));
+
+  const sortedStartups = [...allStartups].sort((a, b) => {
+    const ra = a.triageRank || (shortlistOrder.get(a.id) ?? 99) + 1;
+    const rb = b.triageRank || (shortlistOrder.get(b.id) ?? 99) + 1;
+    return ra - rb;
+  });
+
+  const contribWeights = computeContributionWeightsFrontend(bridgeMap, allBridges);
+  const quadrantWeights = ORBIT_QUADRANTS.map((q) => contribWeights[q.group]?.visualWeight ?? 1);
+  const allocatedSpans = allocateProportionalSectorSpans(quadrantWeights, 360, 55, 115);
+
+  let maxActiveSig = 0;
+  let strongestGroupKey = null;
+  for (const q of ORBIT_QUADRANTS) {
+    const sig = contribWeights[q.group]?.significanceScore || 0;
+    if (sig > maxActiveSig) {
+      maxActiveSig = sig;
+      strongestGroupKey = q.group;
+    }
+  }
+
+  const sectorMetaForSvg = [];
+  const sectorMap = new Map();
+  let degCursor = 180;
+  ORBIT_QUADRANTS.forEach((q, qIdx) => {
+    const qBridges = allBridges
+      .filter((b) => getNodeContributionGroup(b) === q.group)
+      .sort((a, b) => (b.rarityScore || 0) - (a.rarityScore || 0) || (b.lift || 0) - (a.lift || 0) || a.label.localeCompare(b.label));
+    const spanDeg = allocatedSpans[qIdx] || 90;
+    const slotStart = degCursor;
+    const slotEnd = degCursor + spanDeg;
+    degCursor = slotEnd;
+    const gapPad = Math.min(10, spanDeg * 0.14);
+    const qStats = contribWeights[q.group] || { significanceScore: 0, visualWeight: 0.6 };
+
+    const meta = {
+      ...q,
+      slotStart,
+      slotEnd,
+      minDeg: slotStart + gapPad,
+      maxDeg: slotEnd - gapPad,
+      spanDeg,
+      bridges: qBridges,
+      count: qBridges.length,
+      midDeg: (slotStart + slotEnd) / 2,
+      significanceScore: qStats.significanceScore,
+      visualWeight: qStats.visualWeight,
+      topRarity: qStats.topRarity ?? 0,
+      top3MeanRarity: qStats.top3MeanRarity ?? 0,
+      filingCount: qStats.filingCount ?? 0,
+      filingBonus: qStats.filingBonus ?? 0,
+      startupCount: qStats.startupCount ?? 0,
+      topContributors: qStats.topContributors || [],
+      significanceFormula: qStats.significanceFormula || "topSignalRarity + mean(top3Bridges) + min(4.5, FILING_count * 1.5)",
+      significanceInputs: qStats.significanceInputs || "",
+      isStrongest: q.group === strongestGroupKey
+    };
+    sectorMetaForSvg.push(meta);
+    sectorMap.set(q.group, meta);
+  });
+
+  // Map every startup -> { group -> best bridge evidence } and strongest primary group
+  const SOURCE_RANK_PRIORITY = { FILING: 4, PRIMARY: 3, PRESS: 2, AGGREGATOR: 1 };
+  const startupGroupEvidence = new Map();
+  const startupPrimaryGroup = new Map();
+  for (const sn of sortedStartups) {
+    const byGrp = {};
+    const incEdges = edges.filter((e) => e.to === sn.id && bridgeById.has(e.from));
+    for (const edge of incEdges) {
+      const bn = bridgeById.get(edge.from);
+      const grp = getNodeContributionGroup(bn || edge);
+      const rankScore = SOURCE_RANK_PRIORITY[String(edge.topSourceRank || bn?.topSourceRank || "").toUpperCase()] || 1;
+      const effRarity = Number(edge.rarityScore ?? bn?.rarityScore ?? ((Number(bn?.lift) || 0.5) * 10));
+      if (!byGrp[grp]) {
+        byGrp[grp] = {
+          group: grp,
+          count: 1,
+          bestBridge: bn,
+          bestEdge: edge,
+          topRarity: effRarity,
+          topRankScore: rankScore,
+          topSourceRank: edge.topSourceRank || bn?.topSourceRank || "AGGREGATOR"
+        };
+      } else {
+        byGrp[grp].count += 1;
+        if (effRarity > byGrp[grp].topRarity || (effRarity === byGrp[grp].topRarity && rankScore > byGrp[grp].topRankScore)) {
+          byGrp[grp].bestBridge = bn;
+          byGrp[grp].bestEdge = edge;
+          byGrp[grp].topRarity = effRarity;
+          byGrp[grp].topRankScore = rankScore;
+          byGrp[grp].topSourceRank = edge.topSourceRank || bn?.topSourceRank || byGrp[grp].topSourceRank;
+        }
+      }
+    }
+    startupGroupEvidence.set(sn.id, byGrp);
+
+    const candidateGroups = Object.values(byGrp).sort(
+      (a, b) => (b.topRarity - a.topRarity) || (b.topRankScore - a.topRankScore) || (b.count - a.count)
+    );
+    const chosenGroup = candidateGroups[0]?.group || getNodeContributionGroup(sn);
+    startupPrimaryGroup.set(sn.id, chosenGroup);
+  }
+
+  const expandedGrp = state.expandedGroupKey && sectorMap.has(state.expandedGroupKey)
+    ? state.expandedGroupKey
+    : null;
+
+  // Helper to construct the 4 Group Hub orbs cleanly
+  const buildGroupHubNode = (qMeta, isExpanded = false, isDimmed = false) => {
+    const qBridges = qMeta.bridges || [];
+    const connectedStartups = new Set();
+    for (const sn of sortedStartups) {
+      const evMap = startupGroupEvidence.get(sn.id) || {};
+      if (evMap[qMeta.group] || startupPrimaryGroup.get(sn.id) === qMeta.group) {
+        connectedStartups.add(sn.id);
+      }
+    }
+    const hubStartupCount = connectedStartups.size || qMeta.startupCount || 0;
+    const maxLift = qBridges.reduce((mx, b) => {
+      const l = Number(b.lift) || 0;
+      return l > mx ? l : mx;
+    }, 0);
+    const sigRounded = Math.round((qMeta.significanceScore || 0) * 10) / 10;
+    const clueMetric = `${hubStartupCount} ${hubStartupCount === 1 ? "startup" : "startups"} · ${sigRounded.toFixed(1)} pts`;
+    const hasFilingOrPrimary = qBridges.some((b) => {
+      const r = String(b.topSourceRank || "").toUpperCase();
+      return r === "FILING" || r === "PRIMARY";
+    });
+    const bestBridge = qBridges[0] || null;
+    const fallbackContributors = qBridges.slice(0, 3).map((b) => ({
+      id: b.id,
+      label: b.label,
+      lift: b.lift != null ? Math.round(Number(b.lift) * 100) / 100 : null,
+      rarityScore: b.rarityScore ?? null,
+      topSourceRank: b.topSourceRank || "AGGREGATOR",
+      bridgeFamily: b.bridgeFamily || null,
+      totalDeals: b.totalDeals ?? null
+    }));
+
+    return {
+      id: `group-hub:${qMeta.group}`,
+      kind: "group_hub",
+      groupKey: qMeta.group,
+      contributionGroup: qMeta.group,
+      label: qMeta.label,
+      clueMetric,
+      bridgeCount: qBridges.length,
+      startupCount: hubStartupCount,
+      filingCount: qMeta.filingCount ?? 0,
+      filingBonus: qMeta.filingBonus ?? 0,
+      topRarity: qMeta.topRarity ?? 0,
+      top3MeanRarity: qMeta.top3MeanRarity ?? 0,
+      significanceScore: qMeta.significanceScore,
+      visualWeight: qMeta.visualWeight,
+      significanceFormula: qMeta.significanceFormula,
+      significanceInputs: qMeta.significanceInputs || `Top: ${(qMeta.topRarity || 0).toFixed(1)} + Top3 avg: ${(qMeta.top3MeanRarity || 0).toFixed(1)} + ${qMeta.filingCount || 0} FILING (+${(qMeta.filingBonus || 0).toFixed(1)})`,
+      topContributors: (qMeta.topContributors && qMeta.topContributors.length) ? qMeta.topContributors : fallbackContributors,
+      maxLift: maxLift >= 1.05 ? Math.round(maxLift * 10) / 10 : null,
+      topSourceRank: bestBridge?.topSourceRank || (hasFilingOrPrimary ? "PRIMARY" : "AGGREGATOR"),
+      isStrongest: qMeta.isStrongest,
+      isExpandedHub: isExpanded,
+      isGroupDimmed: isDimmed,
+      whyMatters: CONTRIBUTION_VISUAL_META[qMeta.group]?.subtitle || "",
+      formulaBreakdown: bestBridge?.formulaBreakdown || null
+    };
+  };
+
+  if (!expandedGrp) {
+    // LEVEL 1 - OVERVIEW MODE: 1 Anchor + 4 Group Hubs + Top 8 Startups (Max 12 resting radial arcs; 0 cross-wires)
+    const hubNodes = sectorMetaForSvg.map((q) => buildGroupHubNode(q, false, false));
+    const hubByGroup = new Map(hubNodes.map((h) => [h.groupKey, h]));
+    const overviewStartups = sortedStartups.slice(0, 8);
+    const hiddenStartupCount = Math.max(0, sortedStartups.length - overviewStartups.length);
+
+    const displayEdges = [];
+    for (const q of sectorMetaForSvg) {
+      const hubId = `group-hub:${q.group}`;
+      const hNode = hubByGroup.get(q.group);
+      const qBridges = q.bridges || [];
+      const topRank = qBridges.some((b) => String(b.topSourceRank || "").toUpperCase() === "FILING")
+        ? "FILING"
+        : qBridges.some((b) => String(b.topSourceRank || "").toUpperCase() === "PRIMARY")
+          ? "PRIMARY"
+          : "AGGREGATOR";
+      const topBridge = qBridges[0];
+      displayEdges.push({
+        id: `spoke:${primaryAnchor.id}:${hubId}`,
+        from: primaryAnchor.id,
+        to: hubId,
+        label: `${q.label} Contribution Group`,
+        bridgeEntityName: q.label,
+        contributionGroup: q.group,
+        bridgeFamily: topBridge?.bridgeFamily || q.colorFamily,
+        topSourceRank: topRank,
+        lift: hNode?.maxLift ?? null,
+        totalDeals: topBridge?.totalDeals ?? null,
+        rarityScore: Math.round((q.significanceScore || 0) * 100) / 100,
+        whyMatters: `${q.label}: ${qBridges.length} bridges, ${hNode?.startupCount || 0} connected startups.`,
+        formulaBreakdown: {
+          formula: hNode?.significanceFormula || "topSignalRarity + mean(top3Bridges) + min(4.5, FILING_count * 1.5)",
+          inputs: `${hNode?.significanceInputs || `${qBridges.length} signals`} | Sector scale ${Number(q.visualWeight || 1).toFixed(2)}x`,
+          plainMeaning: `${q.label} sector weight across verified shortlist connections.`
+        },
+        isOverviewSpoke: true
+      });
+    }
+
+    for (const sn of overviewStartups) {
+      const pGrp = startupPrimaryGroup.get(sn.id) || "access";
+      const evMap = startupGroupEvidence.get(sn.id) || {};
+      const primaryEv = evMap[pGrp] || null;
+      const primaryHubId = `group-hub:${pGrp}`;
+      const pBestBridge = primaryEv?.bestBridge || null;
+
+      displayEdges.push({
+        id: `primary:${primaryHubId}:${sn.id}`,
+        from: primaryHubId,
+        to: sn.id,
+        label: pBestBridge?.label || primaryEv?.bestEdge?.label || `${CONTRIBUTION_VISUAL_META[pGrp]?.headerLabel || pGrp} -> ${sn.label}`,
+        bridgeEntityName: pBestBridge?.label || null,
+        contributionGroup: pGrp,
+        bridgeFamily: pBestBridge?.bridgeFamily || sn.bridgeFamily || "feeder",
+        topSourceRank: primaryEv?.topSourceRank || sn.topSourceRank || "AGGREGATOR",
+        lift: pBestBridge?.lift ?? null,
+        totalDeals: pBestBridge?.totalDeals ?? null,
+        rarityScore: Math.round((primaryEv?.topRarity || 1.8) * 100) / 100,
+        whyMatters: primaryEv?.bestEdge?.whyMatters || pBestBridge?.whyMatters || sn.bestBridgeSummary || `Primary ${pGrp} match.`,
+        formulaBreakdown: primaryEv?.bestEdge?.formulaBreakdown || pBestBridge?.formulaBreakdown || sn.bestBridgeFormula || {
+          formula: "topBridgeRarity = lift * 10 + sourceRankBonus",
+          inputs: `${pBestBridge?.label || sn.bestBridgeSummary || pGrp}; rarity ${Number(primaryEv?.topRarity || 1.8).toFixed(1)} pts; ${primaryEv?.topSourceRank || sn.topSourceRank || "AGGREGATOR"}`,
+          plainMeaning: `Strongest ${CONTRIBUTION_VISUAL_META[pGrp]?.headerLabel || pGrp} contribution for ${sn.label}.`
+        },
+        isPrimaryOverviewEdge: true
+      });
+
+      // Secondary cross-quadrant factor edges: hidden at rest, revealed cleanly ONLY on single startup hover/selection
+      for (const [secGrp, secEv] of Object.entries(evMap)) {
+        if (secGrp === pGrp) continue;
+        const secHubId = `group-hub:${secGrp}`;
+        const sBestBridge = secEv.bestBridge || null;
+        displayEdges.push({
+          id: `sec:${secGrp}:${sn.id}`,
+          from: secHubId,
+          to: sn.id,
+          label: sBestBridge?.label || secEv.bestEdge?.label || `${CONTRIBUTION_VISUAL_META[secGrp]?.headerLabel || secGrp} -> ${sn.label}`,
+          bridgeEntityName: sBestBridge?.label || null,
+          contributionGroup: secGrp,
+          bridgeFamily: sBestBridge?.bridgeFamily || "feeder",
+          topSourceRank: secEv.topSourceRank || "AGGREGATOR",
+          lift: sBestBridge?.lift ?? null,
+          totalDeals: sBestBridge?.totalDeals ?? null,
+          rarityScore: Math.round((secEv.topRarity || 1.2) * 100) / 100,
+          whyMatters: secEv.bestEdge?.whyMatters || sBestBridge?.whyMatters || `${CONTRIBUTION_VISUAL_META[secGrp]?.label || secGrp} secondary factor.`,
+          formulaBreakdown: secEv.bestEdge?.formulaBreakdown || sBestBridge?.formulaBreakdown || {
+            formula: "secondaryBridgeRarity = lift * 10 + sourceRankBonus",
+            inputs: `${sBestBridge?.label || secGrp}; rarity ${Number(secEv.topRarity || 1.2).toFixed(1)} pts; ${secEv.topSourceRank || "AGGREGATOR"}`,
+            plainMeaning: `Cross-quadrant ${CONTRIBUTION_VISUAL_META[secGrp]?.headerLabel || secGrp} tie on ${sn.label}.`
+          },
+          isSecondaryOverviewLink: true,
+          secondaryForStartupId: sn.id,
+          anchorBow: 1
+        });
+      }
+    }
+
+    return {
+      treeMode: "overview",
+      focusedGroupKey: null,
+      primaryAnchor,
+      hubNodes,
+      bridgeNodes: [],
+      startupNodes: overviewStartups,
+      startupPrimaryGroup,
+      startupGroupEvidence,
+      displayEdges,
+      displayPeerEdges: [],
+      sectorMetaForSvg,
+      sectorMap,
+      totalStartupCount: sortedStartups.length,
+      hiddenStartupCount
+    };
+  }
+
+  // LEVEL 2 - GROUP DRILL-DOWN MODE: Expand ONLY state.expandedGroupKey into specific sub-bridges & ALL matching startups
+  const activeSector = sectorMap.get(expandedGrp);
+  const focusedBridges = activeSector?.bridges || [];
+  const focusedBridgeIds = new Set(focusedBridges.map((b) => b.id));
+
+  const hubNodes = sectorMetaForSvg.map((q) => buildGroupHubNode(q, q.group === expandedGrp, q.group !== expandedGrp));
+  const hubByGroup = new Map(hubNodes.map((h) => [h.groupKey, h]));
+  const activeHubId = `group-hub:${expandedGrp}`;
+
+  // ALL startups matching this contribution group (connected to any focused bridge OR primary group match)
+  const focusedStartups = sortedStartups.filter((sn) => {
+    const evMap = startupGroupEvidence.get(sn.id) || {};
+    if (evMap[expandedGrp]) return true;
+    return startupPrimaryGroup.get(sn.id) === expandedGrp;
+  });
+
+  const displayEdges = [];
+  for (const q of sectorMetaForSvg) {
+    const hubId = `group-hub:${q.group}`;
+    const hNode = hubByGroup.get(q.group);
+    const isExp = q.group === expandedGrp;
+    const topB = (q.bridges || [])[0];
+    displayEdges.push({
+      id: `spoke:${primaryAnchor.id}:${hubId}`,
+      from: primaryAnchor.id,
+      to: hubId,
+      label: `${q.label} Contribution Group`,
+      bridgeEntityName: q.label,
+      contributionGroup: q.group,
+      bridgeFamily: topB?.bridgeFamily || q.colorFamily,
+      topSourceRank: isExp ? (topB?.topSourceRank || "PRIMARY") : "AGGREGATOR",
+      lift: hNode?.maxLift ?? null,
+      rarityScore: Math.round((q.significanceScore || 0) * 100) / 100,
+      whyMatters: isExp ? `Focused on ${q.label} contribution group.` : `${q.label} (collapsed)`,
+      formulaBreakdown: {
+        formula: hNode?.significanceFormula || "topSignalRarity + mean(top3Bridges) + min(4.5, FILING_count * 1.5)",
+        inputs: hNode?.significanceInputs || `${(q.bridges || []).length} signals`,
+        plainMeaning: isExp ? `Drilling into ${q.label} bridges and targets.` : `${q.label} dimmed during drill-down.`
+      },
+      isGroupDimmedEdge: !isExp
+    });
+  }
+
+  for (const b of focusedBridges) {
+    displayEdges.push({
+      id: `hub-bridge:${activeHubId}:${b.id}`,
+      from: activeHubId,
+      to: b.id,
+      label: b.label,
+      bridgeEntityName: b.label,
+      contributionGroup: expandedGrp,
+      bridgeFamily: b.bridgeFamily || activeSector.colorFamily,
+      topSourceRank: b.topSourceRank || "AGGREGATOR",
+      lift: b.lift ?? null,
+      totalDeals: b.totalDeals ?? null,
+      rarityScore: Number(b.rarityScore) || 1.6,
+      whyMatters: b.whyMatters || `${b.label} in ${activeSector.label}`,
+      formulaBreakdown: b.formulaBreakdown || null
+    });
+  }
+
+  const focusedStartupIds = new Set(focusedStartups.map((s) => s.id));
+  const coveredStartups = new Set();
+  for (const edge of edges) {
+    if (focusedBridgeIds.has(edge.from) && focusedStartupIds.has(edge.to)) {
+      displayEdges.push({
+        ...edge,
+        contributionGroup: expandedGrp
+      });
+      coveredStartups.add(edge.to);
+    }
+  }
+  for (const sn of focusedStartups) {
+    if (!coveredStartups.has(sn.id)) {
+      displayEdges.push({
+        id: `hub-startup:${activeHubId}:${sn.id}`,
+        from: activeHubId,
+        to: sn.id,
+        contributionGroup: expandedGrp,
+        bridgeFamily: sn.bridgeFamily || activeSector.colorFamily,
+        topSourceRank: sn.topSourceRank || "AGGREGATOR",
+        rarityScore: 1.4,
+        whyMatters: `${activeSector.label} profile alignment.`
+      });
+    }
+  }
+
+  return {
+    treeMode: "drilldown",
+    focusedGroupKey: expandedGrp,
+    primaryAnchor,
+    hubNodes,
+    bridgeNodes: focusedBridges,
+    startupNodes: focusedStartups,
+    startupPrimaryGroup,
+    startupGroupEvidence,
+    displayEdges,
+    displayPeerEdges: [],
+    sectorMetaForSvg,
+    sectorMap,
+    totalStartupCount: sortedStartups.length,
+    hiddenStartupCount: 0
+  };
 }
 
 function layoutBridgeMapNodes(bridgeMap) {
   const nodes = bridgeMap?.nodes || [];
   const edges = bridgeMap?.edges || [];
-  const anchorNode = nodes.find((n) => n.kind === "anchor") || bridgeMap?.anchor;
+  const anchorNodes = nodes.filter((n) => n.kind === "anchor");
+  if (!anchorNodes.length && bridgeMap?.anchor) {
+    anchorNodes.push({ ...bridgeMap.anchor, kind: "anchor" });
+  }
   const bridgeNodes = nodes.filter((n) => n.kind === "bridge");
   const startupNodes = nodes.filter((n) => n.kind === "startup");
 
@@ -1640,7 +3340,229 @@ function layoutBridgeMapNodes(bridgeMap) {
   const nodeById = new Map();
   const connectedEdgesByNode = new Map();
 
-  for (const n of nodes) {
+  const isCompareMode = anchorNodes.length >= 2;
+  const shortlistOrder = new Map(
+    (state.DisplayedShortlist || []).map((s, idx) => [s.id, idx])
+  );
+
+  if (!isCompareMode) {
+    // MODE A: Hierarchical 2-Level Contribution Tree (Overview -> Drill-Down)
+    const tree = buildPolarContributionTreeData(bridgeMap, shortlistOrder);
+    const allTreeNodes = [tree.primaryAnchor, ...tree.hubNodes, ...tree.bridgeNodes, ...tree.startupNodes];
+    for (const n of allTreeNodes) {
+      if (!n) continue;
+      nodeById.set(n.id, n);
+      connectedEdgesByNode.set(n.id, []);
+    }
+    for (const e of tree.displayEdges) {
+      if (!connectedEdgesByNode.has(e.from)) connectedEdgesByNode.set(e.from, []);
+      if (!connectedEdgesByNode.has(e.to)) connectedEdgesByNode.set(e.to, []);
+      connectedEdgesByNode.get(e.from).push(e);
+      connectedEdgesByNode.get(e.to).push(e);
+    }
+
+    const am = estimateNodeBoxMetrics(tree.primaryAnchor, "anchor");
+    posMap.set(tree.primaryAnchor.id, {
+      x: CONSTELLATION_CX,
+      y: CONSTELLATION_CY,
+      locked: true,
+      ...am
+    });
+
+    if (tree.treeMode === "overview") {
+      // Ring 1: ONLY 4 Contribution Group Hubs cleanly on their sector mid-angles
+      for (const hub of tree.hubNodes) {
+        const qMeta = tree.sectorMap.get(hub.groupKey);
+        const angleDeg = qMeta?.midDeg ?? 0;
+        const radius = 152;
+        const pt = polarToCartesian(CONSTELLATION_CX, CONSTELLATION_CY, radius, angleDeg);
+        const hubSize = computeGroupHubOrbSize(hub.visualWeight);
+        const hm = estimateNodeBoxMetrics(hub, "group_hub", false, hubSize);
+        posMap.set(hub.id, {
+          x: pt.x,
+          y: pt.y,
+          angleDeg,
+          radius,
+          locked: true,
+          ...hm
+        });
+      }
+
+      // Ring 2: Top 8 Startups strictly partitioned inside their primary Contribution Group wedge
+      const startupsByGroup = new Map([["access", []], ["lineage", []], ["timing", []], ["caution", []]]);
+      for (const sn of tree.startupNodes) {
+        const pGrp = tree.startupPrimaryGroup.get(sn.id) || "access";
+        if (!startupsByGroup.has(pGrp)) startupsByGroup.set(pGrp, []);
+        startupsByGroup.get(pGrp).push(sn);
+      }
+
+      for (const qMeta of tree.sectorMetaForSvg) {
+        const groupItems = startupsByGroup.get(qMeta.group) || [];
+        if (!groupItems.length) continue;
+        const nS = groupItems.length;
+        const sectorPad = Math.min(12, qMeta.spanDeg * 0.16);
+        const a0 = qMeta.slotStart + sectorPad;
+        const a1 = qMeta.slotEnd - sectorPad;
+        const safeMinDeg = qMeta.slotStart + 5;
+        const safeMaxDeg = qMeta.slotEnd - 5;
+
+        groupItems.forEach((sn, idx) => {
+          const angleDeg = nS === 1
+            ? qMeta.midDeg
+            : a0 + (idx / (nS - 1)) * (a1 - a0);
+          const radius = nS <= 2
+            ? 294
+            : idx % 2 === 0
+              ? 280
+              : 326;
+          const pt = polarToCartesian(CONSTELLATION_CX, CONSTELLATION_CY, radius, angleDeg);
+          const triageRank = sn.triageRank || (shortlistOrder.get(sn.id) ?? 99) + 1;
+          const isTier1 = triageRank <= 3 && sn.signalTier !== "Sparse / Baseline";
+          const sm = estimateNodeBoxMetrics(sn, "startup", isTier1);
+          posMap.set(sn.id, {
+            x: pt.x,
+            y: pt.y,
+            angleDeg,
+            radius,
+            placedGroup: qMeta.group,
+            sectorMinDeg: safeMinDeg,
+            sectorMaxDeg: safeMaxDeg,
+            minRingR: 266,
+            maxRingR: 344,
+            ...sm
+          });
+        });
+      }
+
+      resolveOrbAndLabelCollisions(posMap, nodeById, { polarRings: true });
+    } else {
+      // LEVEL 2: Focused Group Drill-Down Layout
+      const activeSector = tree.sectorMap.get(tree.focusedGroupKey);
+      const centerDeg = activeSector?.midDeg ?? 315;
+
+      for (const hub of tree.hubNodes) {
+        const qMeta = tree.sectorMap.get(hub.groupKey);
+        const isExp = hub.isExpandedHub;
+        const angleDeg = qMeta?.midDeg ?? 0;
+        const radius = isExp ? 148 : 118;
+        const pt = polarToCartesian(CONSTELLATION_CX, CONSTELLATION_CY, radius, angleDeg);
+        const hubSize = isExp ? Math.max(28, computeGroupHubOrbSize(hub.visualWeight)) : 20;
+        const hm = estimateNodeBoxMetrics(hub, "group_hub", false, hubSize);
+        posMap.set(hub.id, {
+          x: pt.x,
+          y: pt.y,
+          angleDeg,
+          radius,
+          locked: true,
+          ...hm
+        });
+      }
+
+      const nB = tree.bridgeNodes.length;
+      const fanHalf = Math.min(88, Math.max(40, Math.max(nB, tree.startupNodes.length) * 14));
+      const fanStart = centerDeg - fanHalf;
+      const fanEnd = centerDeg + fanHalf;
+
+      tree.bridgeNodes.forEach((bn, idx) => {
+        const angleDeg = nB === 1 ? centerDeg : fanStart + (idx / (nB - 1)) * (fanEnd - fanStart);
+        const radius = nB >= 6 ? [252, 306][idx % 2] : 272;
+        const pt = polarToCartesian(CONSTELLATION_CX, CONSTELLATION_CY, radius, angleDeg);
+        const bSize = computeBridgeOrbSize(bn, activeSector?.visualWeight ?? 1);
+        const bm = estimateNodeBoxMetrics(bn, "bridge", false, bSize);
+        posMap.set(bn.id, {
+          x: pt.x,
+          y: pt.y,
+          angleDeg,
+          radius,
+          sectorMinDeg: fanStart - 8,
+          sectorMaxDeg: fanEnd + 8,
+          minRingR: 238,
+          maxRingR: 325,
+          ...bm
+        });
+      });
+
+      // Place each focused startup behind its highest-rarity focused bridge
+      const bridgeFocusSet = new Set(tree.bridgeNodes.map((b) => b.id));
+      const focusedStartupsSorted = [...tree.startupNodes].map((sn) => {
+        const bestBridgeEdge = tree.displayEdges
+          .filter((e) => e.to === sn.id && bridgeFocusSet.has(e.from))
+          .sort((a, b) => (b.rarityScore || 0) - (a.rarityScore || 0))[0];
+        const parentPos = bestBridgeEdge ? posMap.get(bestBridgeEdge.from) : null;
+        return {
+          node: sn,
+          targetAngle: parentPos?.angleDeg ?? centerDeg,
+          triageRank: sn.triageRank || (shortlistOrder.get(sn.id) ?? 99) + 1
+        };
+      }).sort((a, b) => a.targetAngle - b.targetAngle || a.triageRank - b.triageRank);
+
+      const nS = focusedStartupsSorted.length;
+      focusedStartupsSorted.forEach((entry, idx) => {
+        const spreadAngle = nS === 1
+          ? centerDeg
+          : Math.max(fanStart - 10, Math.min(fanEnd + 10, (fanStart + (idx / (nS - 1)) * (fanEnd - fanStart)) * 0.65 + entry.targetAngle * 0.35));
+        const radius = nS >= 6 ? [388, 444][idx % 2] : 404;
+        const pt = polarToCartesian(CONSTELLATION_CX, CONSTELLATION_CY, radius, spreadAngle);
+        const isTier1 = entry.triageRank <= 3 && entry.node.signalTier !== "Sparse / Baseline";
+        const sm = estimateNodeBoxMetrics(entry.node, "startup", isTier1);
+        posMap.set(entry.node.id, {
+          x: pt.x,
+          y: pt.y,
+          angleDeg: spreadAngle,
+          radius,
+          placedGroup: tree.focusedGroupKey,
+          sectorMinDeg: fanStart - 14,
+          sectorMaxDeg: fanEnd + 14,
+          minRingR: 372,
+          maxRingR: 472,
+          ...sm
+        });
+      });
+
+      resolveOrbAndLabelCollisions(posMap, nodeById, { polarRings: true });
+    }
+
+    let minX = CONSTELLATION_W;
+    let minY = CONSTELLATION_H;
+    let maxX = 0;
+    let maxY = 0;
+    for (const pos of posMap.values()) {
+      minX = Math.min(minX, pos.x - (pos.halfW || 64));
+      minY = Math.min(minY, pos.y - (pos.topPad || 22));
+      maxX = Math.max(maxX, pos.x + (pos.halfW || 64));
+      maxY = Math.max(maxY, pos.y + (pos.bottomPad || 40));
+    }
+
+    return {
+      mode: "polar",
+      treeMode: tree.treeMode,
+      focusedGroupKey: tree.focusedGroupKey,
+      anchorCount: 1,
+      anchorIds: new Set([tree.primaryAnchor.id]),
+      anchorId: tree.primaryAnchor.id,
+      posMap,
+      hulls: [],
+      sectorMetaForSvg: tree.sectorMetaForSvg,
+      nodeById,
+      connectedEdgesByNode,
+      displayNodes: [...allTreeNodes],
+      displayEdges: tree.displayEdges,
+      displayPeerEdges: tree.displayPeerEdges,
+      startupPrimaryGroup: tree.startupPrimaryGroup,
+      startupGroupEvidence: tree.startupGroupEvidence,
+      totalStartupCount: tree.totalStartupCount,
+      hiddenStartupCount: tree.hiddenStartupCount,
+      bounds: {
+        minX: minX - 36,
+        minY: minY - 36,
+        maxX: maxX + 36,
+        maxY: maxY + 36
+      }
+    };
+  }
+
+  // MODE B: 2-4 Entity Comparison Layout (preserved for multi-entity comparison)
+  for (const n of [...anchorNodes, ...bridgeNodes, ...startupNodes]) {
     nodeById.set(n.id, n);
     connectedEdgesByNode.set(n.id, []);
   }
@@ -1651,122 +3573,127 @@ function layoutBridgeMapNodes(bridgeMap) {
     connectedEdgesByNode.get(e.to).push(e);
   }
 
-  // Hop 0: Left-focal anchor emblem
-  const anchorX = 190;
-  const anchorY = 500;
-  if (anchorNode) {
-    nodeById.set(anchorNode.id, anchorNode);
-    posMap.set(anchorNode.id, { x: anchorX, y: anchorY, halfW: 78, halfH: 78 });
-  }
-
-  // Hop 1: Non-empty Factor Island clusters arranged cleanly with zero overlap
-  const familyOrder = ["feeder", "co_investor", "alumni_spinout", "event"];
-  const grouped = familyOrder
-    .map((fam) => {
-      const items = bridgeNodes
-        .filter((n) => n.bridgeFamily === fam)
-        .sort((a, b) => (b.lift || 0) - (a.lift || 0) || a.label.localeCompare(b.label));
-      const clMeta = (bridgeMap?.clusters || []).find((c) => c.bridgeFamily === fam);
-      return {
-        family: fam,
-        label: BRIDGE_FAMILY_VISUAL_META[fam]?.hullTitle || fam.toUpperCase(),
-        items,
-        edgeCount: clMeta?.edgeCount ?? items.length
-      };
-    })
-    .filter((g) => g.items.length > 0);
-
-  const hulls = [];
-  const topBound = 76;
-  const bottomBound = 928;
-  const clusterGap = 24;
-  const headerPad = 38;
-  const bottomPad = 18;
-  const minRowPitch = 78;
-
-  const clusterLayouts = grouped.map((grp) => {
-    const cols = grp.items.length > 3 ? 2 : 1;
-    const rows = Math.ceil(grp.items.length / cols);
-    return { ...grp, cols, rows };
-  });
-
-  const totalRows = clusterLayouts.reduce((sum, g) => sum + g.rows, 0);
-  const fixedOverhead = clusterLayouts.length * (headerPad + bottomPad)
-    + Math.max(0, clusterLayouts.length - 1) * clusterGap;
-  const availableRowSpace = Math.max(120, bottomBound - topBound - fixedOverhead);
-  const effectivePitch = totalRows > 0
-    ? Math.max(minRowPitch, Math.min(104, availableRowSpace / totalRows))
-    : minRowPitch;
-
-  let cursorY = topBound;
-  for (const grp of clusterLayouts) {
-    const blockHeight = headerPad + grp.rows * effectivePitch + bottomPad;
-    const colCenters = grp.cols === 2 ? [510, 796] : [645];
-    const startY = cursorY + headerPad + effectivePitch / 2;
-
-    grp.items.forEach((node, idx) => {
-      const col = idx % grp.cols;
-      const row = Math.floor(idx / grp.cols);
-      const x = colCenters[col];
-      const y = startY + row * effectivePitch;
-      posMap.set(node.id, { x, y, halfW: 122, halfH: 33 });
+  const compareWeights = computeContributionWeightsFrontend(bridgeMap, bridgeNodes);
+  const bridgeBoxForCompare = (bNode) => {
+    const vw = compareWeights[getNodeContributionGroup(bNode)]?.visualWeight ?? 1;
+    return estimateNodeBoxMetrics(bNode, "bridge", false, computeBridgeOrbSize(bNode, vw));
+  };
+  const countA = anchorNodes.length;
+  if (countA === 2) {
+    const p0 = { x: CONSTELLATION_CX - 310, y: CONSTELLATION_CY + 120, outAngle: 158 };
+    const p1 = { x: CONSTELLATION_CX + 310, y: CONSTELLATION_CY - 120, outAngle: 338 };
+    [p0, p1].forEach((pt, idx) => {
+      const aNode = anchorNodes[idx];
+      const am = estimateNodeBoxMetrics(aNode, "anchor");
+      posMap.set(aNode.id, { x: pt.x, y: pt.y, outAngle: pt.outAngle, ...am });
     });
 
-    const minColX = colCenters[0] - 122 - 20;
-    const maxColX = colCenters[colCenters.length - 1] + 122 + 20;
-    hulls.push({
-      id: `hull-${grp.family}`,
-      bridgeFamily: grp.family,
-      label: grp.label,
-      nodeCount: grp.items.length,
-      edgeCount: grp.edgeCount,
-      x: minColX,
-      y: cursorY,
-      width: maxColX - minColX,
-      height: blockHeight
+    const sharedNodes = [...bridgeNodes, ...startupNodes].filter((n) => n.isSharedOverlap);
+    const sharedBridges = sharedNodes.filter((n) => n.kind === "bridge");
+    const sharedStartups = sharedNodes.filter((n) => n.kind === "startup");
+
+    const dx = p1.x - p0.x;
+    const dy = p1.y - p0.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const axisX = dx / dist;
+    const axisY = dy / dist;
+    const perpX = -dy / dist;
+    const perpY = dx / dist;
+
+    sharedBridges.forEach((n, idx) => {
+      const t = sharedBridges.length === 1 ? 0 : idx - (sharedBridges.length - 1) / 2;
+      const along = (idx % 2 === 0 ? -45 : 45);
+      const perp = t * 94;
+      const bm = bridgeBoxForCompare(n);
+      posMap.set(n.id, {
+        x: CONSTELLATION_CX + axisX * along + perpX * perp,
+        y: CONSTELLATION_CY + axisY * along + perpY * perp,
+        ...bm
+      });
     });
 
-    cursorY += blockHeight + clusterGap;
+    sharedStartups.forEach((n, idx) => {
+      const t = sharedStartups.length === 1 ? 0 : idx - (sharedStartups.length - 1) / 2;
+      const along = sharedBridges.length ? (idx % 2 === 0 ? 96 : -96) : 0;
+      const perp = t * 102 + (idx % 2 === 0 ? 20 : -20);
+      const sm = estimateNodeBoxMetrics(n, "startup", true);
+      posMap.set(n.id, {
+        x: CONSTELLATION_CX + axisX * along + perpX * perp,
+        y: CONSTELLATION_CY + axisY * along + perpY * perp,
+        ...sm
+      });
+    });
+
+    anchorNodes.forEach((aNode) => {
+      const ap = posMap.get(aNode.id);
+      const uBridges = bridgeNodes.filter((b) => !b.isSharedOverlap && b.primaryAnchorId === aNode.id);
+      const uStartups = startupNodes.filter((s) => !s.isSharedOverlap && s.primaryAnchorId === aNode.id);
+
+      const bCount = uBridges.length;
+      uBridges.forEach((b, idx) => {
+        const deg = bCount === 1 ? ap.outAngle : ap.outAngle - 66 + (idx / (bCount - 1)) * 132;
+        const pt = polarToCartesian(ap.x, ap.y, bCount >= 5 && idx % 2 ? 208 : 175, deg);
+        const bm = bridgeBoxForCompare(b);
+        posMap.set(b.id, { x: pt.x, y: pt.y, angleDeg: deg, ...bm });
+      });
+
+      const sCount = uStartups.length;
+      uStartups.sort((a, b) => (a.triageRank || 99) - (b.triageRank || 99));
+      uStartups.forEach((s, idx) => {
+        const deg = sCount === 1 ? ap.outAngle : ap.outAngle - 78 + (idx / (sCount - 1)) * 156;
+        const rad = idx % 2 === 0 ? 285 : 342;
+        const pt = polarToCartesian(ap.x, ap.y, rad, deg);
+        const isTier1 = (s.triageRank || 99) <= 3;
+        const sm = estimateNodeBoxMetrics(s, "startup", isTier1);
+        posMap.set(s.id, { x: pt.x, y: pt.y, angleDeg: deg, ...sm });
+      });
+    });
+  } else {
+    const anchorDegs = countA === 3 ? [-90, 30, 150] : [-135, -45, 45, 135];
+    const anchorRadius = 335;
+    anchorNodes.forEach((aNode, idx) => {
+      const deg = anchorDegs[idx % anchorDegs.length];
+      const pt = polarToCartesian(CONSTELLATION_CX, CONSTELLATION_CY, anchorRadius, deg);
+      const am = estimateNodeBoxMetrics(aNode, "anchor");
+      posMap.set(aNode.id, { x: pt.x, y: pt.y, outAngle: deg, ...am });
+    });
+
+    const sharedNodes = [...bridgeNodes, ...startupNodes].filter((n) => n.isSharedOverlap);
+    sharedNodes.forEach((n, idx) => {
+      const owners = (n.connectedAnchorIds || []).map((aid) => posMap.get(aid)).filter(Boolean);
+      const cx = owners.length ? owners.reduce((s, p) => s + p.x, 0) / owners.length : CONSTELLATION_CX;
+      const cy = owners.length ? owners.reduce((s, p) => s + p.y, 0) / owners.length : CONSTELLATION_CY;
+      const angle = (idx * 137.5) % 360;
+      const ring = n.kind === "bridge" ? 42 + (idx % 3) * 32 : 78 + (idx % 3) * 36;
+      const pt = polarToCartesian(cx * 0.55 + CONSTELLATION_CX * 0.45, cy * 0.55 + CONSTELLATION_CY * 0.45, ring, angle);
+      const m = n.kind === "bridge" ? bridgeBoxForCompare(n) : estimateNodeBoxMetrics(n, "startup", true);
+      posMap.set(n.id, { x: pt.x, y: pt.y, ...m });
+    });
+
+    anchorNodes.forEach((aNode) => {
+      const ap = posMap.get(aNode.id);
+      const uBridges = bridgeNodes.filter((b) => !b.isSharedOverlap && b.primaryAnchorId === aNode.id);
+      const uStartups = startupNodes.filter((s) => !s.isSharedOverlap && s.primaryAnchorId === aNode.id);
+
+      uBridges.forEach((b, idx) => {
+        const span = Math.min(82, Math.max(0, (uBridges.length - 1) * 20));
+        const deg = uBridges.length === 1 ? ap.outAngle : ap.outAngle - span / 2 + (idx / (uBridges.length - 1)) * span;
+        const pt = polarToCartesian(ap.x, ap.y, 190 + (idx % 2) * 34, deg);
+        const bm = bridgeBoxForCompare(b);
+        posMap.set(b.id, { x: pt.x, y: pt.y, ...bm });
+      });
+
+      uStartups.forEach((s, idx) => {
+        const span = Math.min(96, Math.max(0, (uStartups.length - 1) * 16));
+        const deg = uStartups.length === 1 ? ap.outAngle : ap.outAngle - span / 2 + (idx / (uStartups.length - 1)) * span;
+        const pt = polarToCartesian(ap.x, ap.y, 330 + (idx % 2) * 58, deg);
+        const sm = estimateNodeBoxMetrics(s, "startup", (s.triageRank || 99) <= 3);
+        posMap.set(s.id, { x: pt.x, y: pt.y, ...sm });
+      });
+    });
   }
 
-  // Hop 2: Outer arc Startup nodes ordered by connected bridge barycenter Y
-  const shortlistOrder = new Map(
-    (state.DisplayedShortlist || []).map((s, idx) => [s.id, idx])
-  );
-
-  const startupsWithBarycenter = startupNodes.map((node, idx) => {
-    const incEdges = (connectedEdgesByNode.get(node.id) || []).filter((e) => e.to === node.id);
-    const ys = incEdges
-      .map((e) => posMap.get(e.from)?.y)
-      .filter((y) => Number.isFinite(y));
-    const baryY = ys.length
-      ? ys.reduce((acc, y) => acc + y, 0) / ys.length
-      : 820 + idx * 40;
-    return {
-      node,
-      baryY,
-      rank: shortlistOrder.has(node.id) ? shortlistOrder.get(node.id) : 99 + idx
-    };
-  });
-
-  startupsWithBarycenter.sort((a, b) => a.baryY - b.baryY || a.rank - b.rank);
-
-  const sCount = startupsWithBarycenter.length;
-  const useTwinArc = sCount > 9;
-  const sTop = 94;
-  const sBottom = 936;
-  const sSpan = Math.max(120, sBottom - sTop);
-
-  startupsWithBarycenter.forEach((entry, idx) => {
-    const t = sCount <= 1 ? 0.5 : idx / (sCount - 1);
-    const y = sCount === 1 ? 500 : sTop + t * sSpan;
-    const normDy = (y - 500) / 450;
-    const arcCurve = (1 - Math.min(1, normDy * normDy)) * 58;
-    const x = useTwinArc
-      ? (idx % 2 === 0 ? 1140 + arcCurve * 0.4 : 1458 + arcCurve * 0.4)
-      : 1295 + arcCurve;
-    posMap.set(entry.node.id, { x, y, halfW: 132, halfH: 36 });
-  });
+  resolveOrbAndLabelCollisions(posMap, nodeById, null);
 
   let minX = CONSTELLATION_W;
   let minY = CONSTELLATION_H;
@@ -1774,91 +3701,150 @@ function layoutBridgeMapNodes(bridgeMap) {
   let maxY = 0;
   for (const pos of posMap.values()) {
     minX = Math.min(minX, pos.x - (pos.halfW || 80));
-    minY = Math.min(minY, pos.y - (pos.halfH || 40));
+    minY = Math.min(minY, pos.y - (pos.topPad || 24));
     maxX = Math.max(maxX, pos.x + (pos.halfW || 80));
-    maxY = Math.max(maxY, pos.y + (pos.halfH || 40));
-  }
-  for (const h of hulls) {
-    minX = Math.min(minX, h.x);
-    minY = Math.min(minY, h.y);
-    maxX = Math.max(maxX, h.x + h.width);
-    maxY = Math.max(maxY, h.y + h.height);
+    maxY = Math.max(maxY, pos.y + (pos.bottomPad || 44));
   }
   if (!posMap.size) {
-    minX = 40;
-    minY = 40;
-    maxX = 1600;
-    maxY = 960;
+    minX = 240;
+    minY = 120;
+    maxX = 1720;
+    maxY = 1280;
   }
 
   return {
+    mode: "compare",
+    treeMode: "compare",
+    focusedGroupKey: null,
+    anchorCount: anchorNodes.length,
+    anchorIds: new Set(anchorNodes.map((a) => a.id)),
+    anchorId: anchorNodes[0]?.id || null,
     posMap,
-    hulls,
+    hulls: [],
+    sectorMetaForSvg: [],
     nodeById,
     connectedEdgesByNode,
-    anchorId: anchorNode?.id || null,
+    displayNodes: [...anchorNodes, ...bridgeNodes, ...startupNodes],
+    displayEdges: edges,
+    displayPeerEdges: bridgeMap?.peerEdges || [],
+    totalStartupCount: startupNodes.length,
+    hiddenStartupCount: 0,
     bounds: {
-      minX: minX - 36,
-      minY: minY - 40,
-      maxX: maxX + 36,
-      maxY: Math.max(maxY + 40, 960)
+      minX: minX - 48,
+      minY: minY - 48,
+      maxX: maxX + 48,
+      maxY: maxY + 48
     }
   };
 }
 
-function getIsolatedSetForNode(focusNodeId, layout, edges) {
+function getIsolatedSetForNode(focusNodeId, layout, edges, peerEdges = []) {
   const activeNodes = new Set();
   const activeEdges = new Set();
+  const activePeerEdges = new Set();
   const activeFamilies = new Set();
 
   if (!focusNodeId || !layout) {
-    return { activeNodes, activeEdges, activeFamilies };
+    return { activeNodes, activeEdges, activePeerEdges, activeFamilies };
   }
 
   const focusNode = layout.nodeById.get(focusNodeId);
   if (!focusNode) {
-    return { activeNodes, activeEdges, activeFamilies };
+    return { activeNodes, activeEdges, activePeerEdges, activeFamilies };
   }
 
   activeNodes.add(focusNodeId);
 
   if (focusNode.kind === "startup") {
-    const incomingToStartup = edges.filter((e) => e.to === focusNodeId);
-    const connectedBridgeIds = new Set();
+    const incomingToStartup = edges.filter((e) => e.to === focusNodeId || e.from === focusNodeId);
+    const parentNodeIds = new Set();
     for (const edge of incomingToStartup) {
       activeEdges.add(edge.id);
       activeNodes.add(edge.from);
-      connectedBridgeIds.add(edge.from);
+      activeNodes.add(edge.to);
+      const fromKind = layout.nodeById.get(edge.from)?.kind;
+      if (fromKind === "bridge" || fromKind === "group_hub") parentNodeIds.add(edge.from);
       if (edge.bridgeFamily) activeFamilies.add(edge.bridgeFamily);
     }
+    const expandedHubIds = new Set();
     for (const edge of edges) {
-      if (edge.from === layout.anchorId && connectedBridgeIds.has(edge.to)) {
+      if ((layout.anchorIds.has(edge.from) || layout.nodeById.get(edge.from)?.kind === "group_hub") && parentNodeIds.has(edge.to)) {
         activeEdges.add(edge.id);
         activeNodes.add(edge.from);
+        if (layout.nodeById.get(edge.from)?.kind === "group_hub") expandedHubIds.add(edge.from);
         if (edge.bridgeFamily) activeFamilies.add(edge.bridgeFamily);
       }
     }
-  } else if (focusNode.kind === "bridge") {
-    if (focusNode.bridgeFamily) activeFamilies.add(focusNode.bridgeFamily);
+    if (expandedHubIds.size) {
+      for (const edge of edges) {
+        if (layout.anchorIds.has(edge.from) && expandedHubIds.has(edge.to)) {
+          activeEdges.add(edge.id);
+          activeNodes.add(edge.from);
+        }
+      }
+    }
+    for (const pe of peerEdges || []) {
+      if (pe.from === focusNodeId || pe.to === focusNodeId) {
+        activePeerEdges.add(pe.id);
+        activeNodes.add(pe.from);
+        activeNodes.add(pe.to);
+      }
+    }
+  } else if (focusNode.kind === "group_hub") {
+    const downstreamIds = new Set();
     for (const edge of edges) {
       if (edge.from === focusNodeId || edge.to === focusNodeId) {
         activeEdges.add(edge.id);
         activeNodes.add(edge.from);
         activeNodes.add(edge.to);
+        if (edge.from === focusNodeId) downstreamIds.add(edge.to);
+      }
+    }
+    for (const edge of edges) {
+      if (downstreamIds.has(edge.from)) {
+        activeEdges.add(edge.id);
+        activeNodes.add(edge.to);
+      }
+    }
+  } else if (focusNode.kind === "bridge") {
+    if (focusNode.bridgeFamily) activeFamilies.add(focusNode.bridgeFamily);
+    const upHubIds = new Set();
+    for (const edge of edges) {
+      if (edge.from === focusNodeId || edge.to === focusNodeId) {
+        activeEdges.add(edge.id);
+        activeNodes.add(edge.from);
+        activeNodes.add(edge.to);
+        if (layout.nodeById.get(edge.from)?.kind === "group_hub") upHubIds.add(edge.from);
         if (edge.bridgeFamily) activeFamilies.add(edge.bridgeFamily);
       }
     }
-  } else if (focusNode.kind === "anchor") {
     for (const edge of edges) {
-      if (edge.from === focusNodeId) {
+      if (layout.anchorIds.has(edge.from) && upHubIds.has(edge.to)) {
+        activeEdges.add(edge.id);
+        activeNodes.add(edge.from);
+      }
+    }
+  } else if (focusNode.kind === "anchor") {
+    const directTargets = new Set();
+    for (const edge of edges) {
+      if (edge.from === focusNodeId || edge.to === focusNodeId) {
+        activeEdges.add(edge.id);
+        activeNodes.add(edge.from);
+        activeNodes.add(edge.to);
+        const toKind = layout.nodeById.get(edge.to)?.kind;
+        if (toKind === "bridge" || toKind === "group_hub") directTargets.add(edge.to);
+        if (edge.bridgeFamily) activeFamilies.add(edge.bridgeFamily);
+      }
+    }
+    for (const edge of edges) {
+      if (directTargets.has(edge.from)) {
         activeEdges.add(edge.id);
         activeNodes.add(edge.to);
-        if (edge.bridgeFamily) activeFamilies.add(edge.bridgeFamily);
       }
     }
   }
 
-  return { activeNodes, activeEdges, activeFamilies };
+  return { activeNodes, activeEdges, activePeerEdges, activeFamilies };
 }
 
 function applyPathLaserIsolation() {
@@ -1868,34 +3854,46 @@ function applyPathLaserIsolation() {
   const layout = state.mapLayoutNodes;
   if (!svgEl || !nodesLayer || !layout || !effMap) return;
 
-  const focusId = state.hoveredNodeId || state.selectedStartupId || state.selectedBridgeId || null;
+  const focusId = state.hoveredNodeId || state.selectedStartupId || state.selectedBridgeId || state.selectedAnchorId || null;
   if (!focusId) {
     svgEl.classList.remove("has-isolation");
-    svgEl.querySelectorAll(".edge-arc").forEach((el) => el.classList.remove("is-highlighted"));
-    svgEl.querySelectorAll(".factor-island-hull").forEach((el) => el.classList.remove("is-highlighted"));
+    svgEl.querySelectorAll(".edge-arc").forEach((el) => el.classList.remove("is-highlighted", "is-path-active"));
+    svgEl.querySelectorAll(".peer-edge-arc").forEach((el) => el.classList.remove("is-highlighted", "is-path-active"));
     nodesLayer.querySelectorAll(".map-node").forEach((el) => {
-      el.classList.remove("is-dimmed", "is-highlighted");
+      el.classList.remove("is-dimmed", "is-highlighted", "is-path-active");
     });
     return;
   }
 
-  const { activeNodes, activeEdges, activeFamilies } = getIsolatedSetForNode(focusId, layout, effMap.edges || []);
+  const activeEdgeSource = layout.displayEdges || effMap.edges || [];
+  const activePeerSource = layout.displayPeerEdges || effMap.peerEdges || [];
+  const { activeNodes, activeEdges, activePeerEdges } = getIsolatedSetForNode(
+    focusId,
+    layout,
+    activeEdgeSource,
+    activePeerSource
+  );
   svgEl.classList.add("has-isolation");
 
   svgEl.querySelectorAll(".edge-arc").forEach((el) => {
     const eid = el.getAttribute("data-edge-id");
-    el.classList.toggle("is-highlighted", activeEdges.has(eid));
+    const on = activeEdges.has(eid);
+    el.classList.toggle("is-highlighted", on);
+    el.classList.toggle("is-path-active", on);
   });
 
-  svgEl.querySelectorAll(".factor-island-hull").forEach((el) => {
-    const fam = el.getAttribute("data-family");
-    el.classList.toggle("is-highlighted", activeFamilies.has(fam));
+  svgEl.querySelectorAll(".peer-edge-arc").forEach((el) => {
+    const peId = el.getAttribute("data-peer-edge-id");
+    const on = activePeerEdges.has(peId);
+    el.classList.toggle("is-highlighted", on);
+    el.classList.toggle("is-path-active", on);
   });
 
   nodesLayer.querySelectorAll(".map-node").forEach((el) => {
     const nid = el.getAttribute("data-node-id");
     const isActive = activeNodes.has(nid);
     el.classList.toggle("is-highlighted", isActive);
+    el.classList.toggle("is-path-active", isActive);
     el.classList.toggle("is-dimmed", !isActive);
   });
 }
@@ -1909,12 +3907,17 @@ function showMapTooltip(clientX, clientY, htmlContent) {
   tipEl.innerHTML = cleanUiCopy(htmlContent);
   tipEl.hidden = false;
 
+  const tipW = tipEl.offsetWidth || 320;
+  const tipH = tipEl.offsetHeight || 140;
   const rawLeft = clientX - rect.left + 14;
   const rawTop = clientY - rect.top + 14;
-  const maxLeft = Math.max(12, rect.width - (state.sideRailOpen ? 450 : 20) - 310);
-  const maxTop = Math.max(12, rect.height - 130);
-  tipEl.style.left = `${Math.max(12, Math.min(maxLeft, rawLeft))}px`;
-  tipEl.style.top = `${Math.max(12, Math.min(maxTop, rawTop))}px`;
+  const minLeft = rect.width >= 900 ? 24 : 12;
+  const maxLeft = Math.max(minLeft, rect.width - getTooltipRightReserve() - tipW - 12);
+  const maxTop = Math.max(12, rect.height - tipH - 12);
+  const clampedLeft = Math.max(minLeft, Math.min(maxLeft, rawLeft));
+  const clampedTop = rawTop > maxTop ? Math.max(12, clientY - rect.top - tipH - 12) : Math.max(12, rawTop);
+  tipEl.style.left = `${clampedLeft}px`;
+  tipEl.style.top = `${Math.min(maxTop, clampedTop)}px`;
 }
 
 function hideMapTooltip() {
@@ -1922,43 +3925,189 @@ function hideMapTooltip() {
   if (tipEl) tipEl.hidden = true;
 }
 
+function hashEdgeSign(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = (h * 31 + str.charCodeAt(i)) | 0;
+  }
+  return h % 2 === 0 ? 1 : -1;
+}
+
 function buildMapEdgeSvgMarkup(edge, posMap) {
   const p1 = posMap.get(edge.from);
   const p2 = posMap.get(edge.to);
   if (!p1 || !p2) return "";
 
-  const x1 = p1.x + (edge.from === state.mapLayoutNodes?.anchorId ? 70 : (p1.halfW || 110) * 0.92);
-  const y1 = p1.y;
-  const x2 = p2.x - (p2.halfW || 110) * 0.95;
-  const y2 = p2.y;
-  const dx = Math.max(48, Math.abs(x2 - x1) * 0.48);
-  const d = `M ${x1.toFixed(1)} ${y1.toFixed(1)} C ${(x1 + dx).toFixed(1)} ${y1.toFixed(1)}, ${(x2 - dx).toFixed(1)} ${y2.toFixed(1)}, ${x2.toFixed(1)} ${y2.toFixed(1)}`;
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  const dist = Math.hypot(dx, dy) || 1;
+  const ux = dx / dist;
+  const uy = dy / dist;
+
+  const r1 = (p1.orbR || 8) + 2;
+  const r2 = (p2.orbR || 8) + 5;
+  const sx = p1.x + ux * r1;
+  const sy = p1.y + uy * r1;
+  const ex = p2.x - ux * r2;
+  const ey = p2.y - uy * r2;
+
+  const cdx = ex - sx;
+  const cdy = ey - sy;
+  const chord = Math.max(24, Math.hypot(cdx, cdy));
+  const nx = -(cdy / chord);
+  const ny = cdx / chord;
+
+  // Sweep secondary cross-quadrant curves gracefully outward away from Center Anchor
+  let bowSign = edge.anchorBow ? edge.anchorBow : 1;
+  if (edge.isSecondaryOverviewLink) {
+    const mx = (sx + ex) / 2;
+    const my = (sy + ey) / 2;
+    const awayX = mx - CONSTELLATION_CX;
+    const awayY = my - CONSTELLATION_CY;
+    bowSign = (awayX * nx + awayY * ny) >= 0 ? 1 : -1;
+  }
+  const curveScale = edge.isOverviewSpoke ? 0.12 : edge.isSecondaryOverviewLink ? 0.22 : 0.16;
+  const curvature = Math.min(85, chord * curveScale) * bowSign;
+  const cx = (sx + ex) / 2 + nx * curvature;
+  const cy = (sy + ey) / 2 + ny * curvature;
+
+  const d = `M ${sx.toFixed(1)} ${sy.toFixed(1)} Q ${cx.toFixed(1)} ${cy.toFixed(1)} ${ex.toFixed(1)} ${ey.toFixed(1)}`;
 
   const rank = String(edge.topSourceRank || "AGGREGATOR").toUpperCase();
   const isSolid = rank === "FILING" || rank === "PRIMARY";
+  const cg = getNodeContributionGroup(edge);
   const rarity = Number(edge.rarityScore) || 1;
-  const width = Math.min(3.5, Math.max(1.3, 1.25 + rarity * 0.12)).toFixed(2);
-  const opacity = Math.min(0.88, Math.max(0.45, 0.44 + rarity * 0.035)).toFixed(2);
-  const color = getFamilyColorHex(edge.bridgeFamily);
+  const width = Math.min(3.0, Math.max(1.3, 1.25 + rarity * 0.05 + (edge.isSharedEdge ? 0.45 : 0))).toFixed(2);
+  const opacity = edge.isGroupDimmedEdge
+    ? "0.14"
+    : edge.isSecondaryOverviewLink
+      ? "0"
+      : Math.min(0.86, Math.max(0.42, 0.42 + rarity * 0.015 + (edge.isSharedEdge ? 0.16 : 0))).toFixed(2);
+  const color = getContributionColorHex(cg);
 
   return `
     <g class="edge-group">
       <path
-        class="edge-arc ${isSolid ? "is-solid" : "is-dashed"}"
+        class="edge-arc ${isSolid ? "is-solid" : "is-dashed"} ${edge.isSharedEdge ? "is-shared-edge" : ""} ${edge.isSecondaryOverviewLink ? "is-secondary-overview-link" : ""} ${edge.isGroupDimmedEdge ? "is-group-dimmed" : ""}"
         data-edge-id="${escapeHtml(edge.id)}"
+        data-contribution-group="${escapeHtml(cg)}"
         d="${d}"
         stroke="${color}"
         style="color:${color}; stroke-width:${width}px; opacity:${opacity};"
       />
+      ${edge.isSecondaryOverviewLink || edge.isGroupDimmedEdge ? "" : `
       <path
         class="edge-hit-target"
         data-edge-id="${escapeHtml(edge.id)}"
         data-edge-from="${escapeHtml(edge.from)}"
         data-edge-to="${escapeHtml(edge.to)}"
         d="${d}"
+      />`}
+    </g>
+  `;
+}
+
+function getPeerEdgeColor(kind) {
+  if (kind === "shared_alumni") return getContributionColorHex("lineage");
+  if (kind === "shared_investor") return getContributionColorHex("access");
+  return getContributionColorHex("timing");
+}
+
+function getPeerEdgeContribGroup(kind) {
+  if (kind === "shared_alumni") return "lineage";
+  if (kind === "shared_investor") return "access";
+  return "timing";
+}
+
+function buildMapPeerEdgeSvgMarkup(peerEdge, posMap) {
+  const p1 = posMap.get(peerEdge.from);
+  const p2 = posMap.get(peerEdge.to);
+  if (!p1 || !p2) return "";
+
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  const dist = Math.hypot(dx, dy) || 1;
+  const ux = dx / dist;
+  const uy = dy / dist;
+  const r1 = (p1.orbR || 7) + 2;
+  const r2 = (p2.orbR || 7) + 5;
+  const sx = p1.x + ux * r1;
+  const sy = p1.y + uy * r1;
+  const ex = p2.x - ux * r2;
+  const ey = p2.y - uy * r2;
+
+  const chord = Math.max(24, Math.hypot(ex - sx, ey - sy));
+  const mx = (sx + ex) / 2;
+  const my = (sy + ey) / 2;
+  const outX = mx - CONSTELLATION_CX;
+  const outY = my - CONSTELLATION_CY;
+  const outLen = Math.hypot(outX, outY) || 1;
+  const curvature = Math.min(85, Math.max(22, chord * 0.16));
+  const cx = mx + (outX / outLen) * curvature;
+  const cy = my + (outY / outLen) * curvature;
+
+  const d = `M ${sx.toFixed(1)} ${sy.toFixed(1)} Q ${cx.toFixed(1)} ${cy.toFixed(1)} ${ex.toFixed(1)} ${ey.toFixed(1)}`;
+  const color = getPeerEdgeColor(peerEdge.kind);
+  const cg = getPeerEdgeContribGroup(peerEdge.kind);
+
+  return `
+    <g class="peer-edge-group">
+      <path
+        class="peer-edge-arc"
+        data-peer-edge-id="${escapeHtml(peerEdge.id)}"
+        data-contribution-group="${escapeHtml(cg)}"
+        d="${d}"
+        stroke="${color}"
+        style="color:${color}; stroke-width:1.4px; opacity:0.24;"
+      />
+      <path
+        class="peer-edge-hit-target"
+        data-peer-edge-id="${escapeHtml(peerEdge.id)}"
+        data-edge-from="${escapeHtml(peerEdge.from)}"
+        data-edge-to="${escapeHtml(peerEdge.to)}"
+        d="${d}"
       />
     </g>
   `;
+}
+
+function describeSvgArc(cx, cy, radius, startDeg, endDeg) {
+  const pStart = polarToCartesian(cx, cy, radius, startDeg);
+  const pEnd = polarToCartesian(cx, cy, radius, endDeg);
+  const largeArc = Math.abs(endDeg - startDeg) <= 180 ? 0 : 1;
+  return `M ${pStart.x.toFixed(1)} ${pStart.y.toFixed(1)} A ${radius} ${radius} 0 ${largeArc} 1 ${pEnd.x.toFixed(1)} ${pEnd.y.toFixed(1)}`;
+}
+
+function describeSvgSectorWedge(cx, cy, rInner, rOuter, startDeg, endDeg) {
+  const oStart = polarToCartesian(cx, cy, rOuter, startDeg);
+  const oEnd = polarToCartesian(cx, cy, rOuter, endDeg);
+  const iEnd = polarToCartesian(cx, cy, rInner, endDeg);
+  const iStart = polarToCartesian(cx, cy, rInner, startDeg);
+  const largeArc = Math.abs(endDeg - startDeg) <= 180 ? 0 : 1;
+  return `M ${oStart.x.toFixed(1)} ${oStart.y.toFixed(1)} A ${rOuter} ${rOuter} 0 ${largeArc} 1 ${oEnd.x.toFixed(1)} ${oEnd.y.toFixed(1)} L ${iEnd.x.toFixed(1)} ${iEnd.y.toFixed(1)} A ${rInner} ${rInner} 0 ${largeArc} 0 ${iStart.x.toFixed(1)} ${iStart.y.toFixed(1)} Z`;
+}
+
+function buildConstellationSvgDefs() {
+  const groups = ["access", "lineage", "timing", "caution"];
+  const markers = groups.map((g) => {
+    const col = getContributionColorHex(g);
+    return `
+      <marker id="arrow-${g}" viewBox="0 0 10 10" refX="7.5" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M 1.2 1.8 L 8.8 5 L 1.2 8.2 z" fill="${col}" />
+      </marker>
+    `;
+  }).join("");
+  const grads = groups.map((g) => {
+    const col = getContributionColorHex(g);
+    return `
+      <radialGradient id="halo-grad-${g}" cx="${CONSTELLATION_CX}" cy="${CONSTELLATION_CY}" r="490" gradientUnits="userSpaceOnUse">
+        <stop offset="16%" stop-color="${col}" stop-opacity="0.24" />
+        <stop offset="68%" stop-color="${col}" stop-opacity="0.09" />
+        <stop offset="100%" stop-color="${col}" stop-opacity="0" />
+      </radialGradient>
+    `;
+  }).join("");
+  return `<defs>${markers}${grads}</defs>`;
 }
 
 function renderConstellationMap(bridgeMapInput, options = {}) {
@@ -1973,83 +4122,160 @@ function renderConstellationMap(bridgeMapInput, options = {}) {
 
   if (!svgEl || !nodesLayer) return;
 
-  const nodes = effMap?.nodes || [];
-  const edges = effMap?.edges || [];
-  const startupNodes = nodes.filter((n) => n.kind === "startup");
-
   const layout = layoutBridgeMapNodes(effMap || { anchor: { id: "query-anchor", label: getSelectedBenchmarkLabel(), kind: "anchor" }, nodes: [], edges: [], clusters: [] });
   state.mapLayoutNodes = layout;
 
-  const isLight = getActiveTheme() === "light";
+  const displayNodes = layout.displayNodes || [];
+  const edges = layout.displayEdges || effMap?.edges || [];
+  const peerEdges = layout.displayPeerEdges || effMap?.peerEdges || [];
+  const anchorNodes = displayNodes.filter((n) => n.kind === "anchor");
+  const hubNodes = displayNodes.filter((n) => n.kind === "group_hub");
+  const bridgeNodes = displayNodes.filter((n) => n.kind === "bridge");
+  const startupNodes = displayNodes.filter((n) => n.kind === "startup");
 
-  // 1. Render Concentric Hop Guides + Factor Island Hulls + Bezier Edges
-  const ringRadii = [
-    { r: 470, label: "HOP 1 · BRIDGE CLUSTERS", lx: 560, ly: 52 },
-    { r: 1095, label: "HOP 2 · TARGET STARTUPS", lx: 1185, ly: 52 }
-  ];
-  const guidesMarkup = `
-    <text class="hop-guide-label" x="128" y="52">HOP 0 · STRATEGY ANCHOR</text>
-    ${ringRadii.map((rg) => `
-      <circle class="hop-guide-arc" cx="190" cy="500" r="${rg.r}" />
-      <text class="hop-guide-label" x="${rg.lx}" y="${rg.ly}">${rg.label}</text>
-    `).join("")}
-  `;
+  // Update top-center drill-down return pill & bottom-center "+ View all N in Matches" pill
+  const backBtnEl = document.getElementById("mapDrilldownBackBtn");
+  const backBadgeEl = document.getElementById("mapDrilldownGroupBadge");
+  if (backBtnEl) {
+    const showBack = layout.mode === "polar" && layout.treeMode === "drilldown" && Boolean(layout.focusedGroupKey);
+    backBtnEl.hidden = !showBack;
+    if (showBack && backBadgeEl) {
+      const grpMeta = CONTRIBUTION_VISUAL_META[layout.focusedGroupKey];
+      backBadgeEl.textContent = `${grpMeta?.headerLabel || layout.focusedGroupKey.toUpperCase()} (${bridgeNodes.length} bridges, ${startupNodes.length} targets)`;
+      backBadgeEl.dataset.group = layout.focusedGroupKey;
+    }
+  }
 
-  const hullsMarkup = layout.hulls
-    .map((h) => {
-      const meta = BRIDGE_FAMILY_VISUAL_META[h.bridgeFamily] || BRIDGE_FAMILY_VISUAL_META.feeder;
-      const fill = isLight ? meta.lightFill : meta.darkFill;
-      const stroke = isLight ? meta.lightStroke : meta.darkStroke;
-      const titleColor = isLight ? meta.lightColor : meta.darkColor;
-      return `
-        <g>
-          <rect
-            class="factor-island-hull"
-            data-family="${escapeHtml(h.bridgeFamily)}"
-            x="${h.x.toFixed(1)}"
-            y="${h.y.toFixed(1)}"
-            width="${h.width.toFixed(1)}"
-            height="${h.height.toFixed(1)}"
-            rx="18"
-            fill="${fill}"
-            stroke="${stroke}"
-            stroke-width="1.25"
-          />
-          <text
-            class="factor-island-title"
-            x="${(h.x + 14).toFixed(1)}"
-            y="${(h.y + 22).toFixed(1)}"
-            fill="${titleColor}"
-          >${escapeHtml(h.label)} · ${h.nodeCount}</text>
-        </g>
-      `;
-    })
-    .join("");
+  const viewAllEl = document.getElementById("mapViewAllMatchesPill");
+  if (viewAllEl) {
+    const showViewAll = layout.mode === "polar" && layout.treeMode === "overview" && (layout.hiddenStartupCount || 0) > 0;
+    viewAllEl.hidden = !showViewAll;
+    if (showViewAll) {
+      viewAllEl.textContent = `All ${layout.totalStartupCount} targets in Matches rail`;
+    }
+  }
 
+  // 1. Render Concentric Orbit Rings & Weighted Sector Wedges
+  const defsMarkup = buildConstellationSvgDefs();
+  let guidesMarkup = "";
+  if (layout.mode === "polar") {
+    const isLight = getActiveTheme() === "light";
+    const isDrill = layout.treeMode === "drilldown";
+    const outerRadius = isDrill ? 468 : 348;
+    const orbitRadii = isDrill
+      ? [
+          { r: 148, cls: "orbit-guide-ring" },
+          { r: 276, cls: "orbit-guide-ring is-dashed" },
+          { r: 416, cls: "orbit-guide-ring" }
+        ]
+      : [
+          { r: 152, cls: "orbit-guide-ring" },
+          { r: 298, cls: "orbit-guide-ring is-dashed" }
+        ];
+    const qArcs = (layout.sectorMetaForSvg || [])
+      .map((q) => {
+        const arcColor = getContributionColorHex(q.group);
+        const wedgeD = describeSvgSectorWedge(CONSTELLATION_CX, CONSTELLATION_CY, 56, outerRadius, q.slotStart + 2, q.slotEnd - 2);
+        const arcD = describeSvgArc(CONSTELLATION_CX, CONSTELLATION_CY, outerRadius - 4, q.minDeg, q.maxDeg);
+        const weightRatio = Math.max(0, Math.min(1, ((q.visualWeight || 1) - 0.6) / 1.05));
+        const isDimmedSector = isDrill && q.group !== layout.focusedGroupKey;
+        const haloOpacity = isDimmedSector
+          ? 0.08
+          : ((isLight ? 0.24 : 0.30) + weightRatio * (isLight ? 0.38 : 0.50));
+        const arcOpacity = isDimmedSector ? 0.08 : (0.22 + weightRatio * 0.36);
+        return `
+          <path class="sector-halo-wedge ${q.isStrongest && !isDimmedSector ? "is-strongest" : ""}" d="${wedgeD}" fill="url(#halo-grad-${q.group})" style="fill-opacity:${haloOpacity.toFixed(2)};" />
+          <path class="sector-guide-arc ${q.isStrongest && !isDimmedSector ? "is-strongest" : ""}" d="${arcD}" stroke="${arcColor}" style="stroke-opacity:${arcOpacity.toFixed(2)};" />
+        `;
+      })
+      .join("");
+    guidesMarkup = `
+      ${qArcs}
+      ${orbitRadii.map((rg) => `<circle class="${rg.cls}" cx="${CONSTELLATION_CX}" cy="${CONSTELLATION_CY}" r="${rg.r}" />`).join("")}
+    `;
+  } else {
+    const sharedCount = effMap?.stats?.sharedOverlapCount || 0;
+    guidesMarkup = `
+      <ellipse class="compare-overlap-lens" cx="${CONSTELLATION_CX}" cy="${CONSTELLATION_CY}" rx="190" ry="155" />
+      <text class="compare-overlap-label" x="${CONSTELLATION_CX}" y="${CONSTELLATION_CY - 168}" text-anchor="middle">SHARED OVERLAP · ${sharedCount}</text>
+      <circle class="orbit-guide-ring is-dashed" cx="${CONSTELLATION_CX}" cy="${CONSTELLATION_CY}" r="430" />
+    `;
+  }
+
+  const peerEdgesMarkup = peerEdges.map((pe) => buildMapPeerEdgeSvgMarkup(pe, layout.posMap)).join("");
   const edgesMarkup = edges.map((e) => buildMapEdgeSvgMarkup(e, layout.posMap)).join("");
-  svgEl.innerHTML = `${guidesMarkup}${hullsMarkup}${edgesMarkup}`;
+  svgEl.innerHTML = `${defsMarkup}${guidesMarkup}${peerEdgesMarkup}${edgesMarkup}`;
 
-  // 2. Render Interactive HTML Nodes
-  const anchorNode = nodes.find((n) => n.kind === "anchor") || effMap?.anchor;
-  const bridgeNodes = nodes.filter((n) => n.kind === "bridge");
+  // 2. Render Glowing Anchor, Group Hubs (Level 1), Sub-Bridges (Level 2), and Startups
   const suppressed = effMap?.stats?.suppressedMegaHubCount ?? 0;
-
   let nodesHtml = "";
+  const seenShortLabels = new Set();
 
-  if (anchorNode && layout.posMap.has(anchorNode.id)) {
-    const p = layout.posMap.get(anchorNode.id);
-    const isSel = state.selectedStartupId == null && state.selectedBridgeId == null ? "" : "";
+  anchorNodes.forEach((aNode, aIdx) => {
+    const p = layout.posMap.get(aNode.id);
+    if (!p) return;
+    const isSel = state.selectedAnchorId === aNode.id;
+    const pal = ANCHOR_PALETTE[(aNode.anchorIndex ?? aIdx) % ANCHOR_PALETTE.length];
+    const colHex = aNode.anchorColor || pal.hex;
+    const colGlow = aNode.anchorGlow || pal.glow;
+    const colEdge = aNode.anchorEdge || pal.edge;
+    const isCompare = layout.mode === "compare";
+    const fullAnchorLabel = cleanUiCopy(aNode.label || getSelectedBenchmarkLabel());
+    const conciseAnchorLabel = formatCompactEntityName(fullAnchorLabel, 2, 22);
+    const compareTag = isCompare ? (aNode.entityType === "startup" ? `Compare #${aIdx + 1}` : `Anchor #${aIdx + 1}`) : "";
+
     nodesHtml += `
       <button
         type="button"
-        class="map-node node-anchor ${isSel}"
+        class="map-node node-anchor-orb ${isCompare ? "is-compare-anchor" : ""} ${isSel ? "is-selected" : ""}"
         data-node-kind="anchor"
-        data-node-id="${escapeHtml(anchorNode.id)}"
-        style="left:${p.x.toFixed(1)}px; top:${p.y.toFixed(1)}px;"
+        data-node-id="${escapeHtml(aNode.id)}"
+        style="left:${p.x.toFixed(1)}px; top:${p.y.toFixed(1)}px; --orb-color:${colHex}; --orb-glow:${colGlow}; --orb-core-edge:${colEdge};"
       >
-        <span class="anchor-kicker">Origin Anchor</span>
-        <span class="anchor-label">${escapeHtml(anchorNode.label || getSelectedBenchmarkLabel())}</span>
-        <span class="anchor-telemetry">${startupNodes.length} targets · ${suppressed} hubs hidden</span>
+        <span class="orb-core-wrap">
+          <span class="orb-halo-ring" aria-hidden="true"></span>
+          <span class="orb-core-dot" aria-hidden="true">
+            <span class="orb-anchor-inner-name">${escapeHtml(conciseAnchorLabel)}</span>
+          </span>
+        </span>
+        <span class="orb-float-label">
+          ${compareTag ? `<span class="orb-anchor-kicker">${escapeHtml(compareTag)}</span>` : ""}
+          <span class="orb-label-main"><span class="orb-name-text">${escapeHtml(fullAnchorLabel)}</span></span>
+        </span>
+      </button>
+    `;
+  });
+
+  for (const hub of hubNodes) {
+    const p = layout.posMap.get(hub.id);
+    if (!p) continue;
+    const cg = hub.groupKey;
+    const cgMeta = CONTRIBUTION_VISUAL_META[cg] || CONTRIBUTION_VISUAL_META.access;
+    const colHex = getContributionColorHex(cg);
+    const colGlow = getContributionGlowRgba(cg);
+    const colEdge = cgMeta.darkEdge || colHex;
+    const hubSize = p.bridgeSize || computeGroupHubOrbSize(hub.visualWeight);
+
+    nodesHtml += `
+      <button
+        type="button"
+        class="map-node node-group-hub ${hub.isExpandedHub ? "is-expanded-hub is-selected" : ""} ${hub.isGroupDimmed ? "is-group-dimmed" : ""} ${hub.isStrongest ? "is-strongest" : ""}"
+        data-node-kind="group_hub"
+        data-node-id="${escapeHtml(hub.id)}"
+        data-group-key="${escapeHtml(cg)}"
+        data-contribution-group="${escapeHtml(cg)}"
+        style="left:${p.x.toFixed(1)}px; top:${p.y.toFixed(1)}px; --orb-color:${colHex}; --orb-glow:${colGlow}; --orb-core-edge:${colEdge}; --hub-size:${hubSize}px;"
+      >
+        <span class="orb-core-wrap">
+          <span class="orb-halo-ring" aria-hidden="true"></span>
+          <span class="orb-core-dot" aria-hidden="true"></span>
+        </span>
+        <span class="orb-float-label hub-float-label">
+          <span class="orb-label-main">
+            <span class="orb-name-text hub-title-text">${escapeHtml(hub.label)}</span>
+          </span>
+          <span class="hub-clue-metric">${escapeHtml(hub.clueMetric)}</span>
+        </span>
       </button>
     `;
   }
@@ -2059,93 +4285,126 @@ function renderConstellationMap(bridgeMapInput, options = {}) {
     if (!p) continue;
     const isSel = state.selectedBridgeId === b.id;
     const fam = b.bridgeFamily || "feeder";
-    const famShort = BRIDGE_FAMILY_VISUAL_META[fam]?.shortLabel || fam;
-    const liftText = b.lift != null ? `${b.lift}x lift` : famShort;
-    const dealsText = b.totalDeals != null ? `${b.totalDeals}d` : "";
+    const cg = getNodeContributionGroup(b);
+    const cgMeta = CONTRIBUTION_VISUAL_META[cg] || CONTRIBUTION_VISUAL_META.access;
+    const colHex = b.isSharedOverlap ? "#a78bfa" : getContributionColorHex(cg);
+    const colGlow = b.isSharedOverlap ? "rgba(167, 139, 250, 0.50)" : getContributionGlowRgba(cg);
+    const colEdge = cgMeta.darkEdge || colHex;
+    const bridgeSize = p.bridgeSize || computeBridgeOrbSize(b, 1);
+    const shortLabel = formatCompactEntityName(formatShortBridgeLabel(b.label, b, seenShortLabels), 3, 21);
 
     nodesHtml += `
       <button
         type="button"
-        class="map-node node-bridge ${isSel ? "is-selected" : ""}"
+        class="map-node node-bridge-orb ${layout.treeMode === "drilldown" ? "is-drilldown-bridge" : ""} ${b.isSharedOverlap ? "is-shared-overlap" : ""} ${isSel ? "is-selected" : ""}"
         data-node-kind="bridge"
         data-node-id="${escapeHtml(b.id)}"
         data-bridge-id="${escapeHtml(b.id)}"
         data-family="${escapeHtml(fam)}"
-        style="left:${p.x.toFixed(1)}px; top:${p.y.toFixed(1)}px;"
+        data-contribution-group="${escapeHtml(cg)}"
+        style="left:${p.x.toFixed(1)}px; top:${p.y.toFixed(1)}px; --orb-color:${colHex}; --orb-glow:${colGlow}; --orb-core-edge:${colEdge}; --bridge-size:${bridgeSize}px;"
       >
-        <div class="node-bridge-top">
-          <span class="node-bridge-title">${escapeHtml(b.label)}</span>
-          ${getSourceRankBadgeHtml(b.topSourceRank)}
-        </div>
-        <div class="node-bridge-meta">
-          <span>${escapeHtml(famShort)}</span>
-          <span>· ${escapeHtml(liftText)}${dealsText ? ` · ${escapeHtml(dealsText)}` : ""}</span>
-          ${b.isMegaHub ? `<span class="micro-pill micro-megahub">Mega-hub</span>` : ""}
-        </div>
+        <span class="orb-core-wrap">
+          <span class="orb-halo-ring" aria-hidden="true"></span>
+          <span class="orb-core-dot" aria-hidden="true"></span>
+        </span>
+        <span class="orb-float-label">
+          <span class="orb-label-main">
+            <span class="orb-name-text">${escapeHtml(shortLabel)}</span>
+          </span>
+        </span>
       </button>
     `;
   }
 
-  for (const s of startupNodes) {
+  for (let sIdx = 0; sIdx < startupNodes.length; sIdx++) {
+    const s = startupNodes[sIdx];
     const p = layout.posMap.get(s.id);
     if (!p) continue;
     const isSel = state.selectedStartupId === s.id;
     const fullItem = state.DisplayedShortlist.find((c) => c.id === s.id) || state.allKnownItems.get(s.id);
-    const growth = s.headcountGrowthPct ?? fullItem?.headcountGrowthPct ?? 0;
-    const isSlush = Boolean(getStartupCalaFieldProfile(fullItem || s)?.slush2026?.attending);
-    const gapCount = s.missingGapCount ?? fullItem?.evidenceFolders?.proofAndGaps?.missingFromCala?.length ?? 0;
+    const triageRank = s.triageRank || (sIdx + 1);
+    const signalTier = s.signalTier || fullItem?.signalTier || "Contextual Match";
+    const isTier1 = triageRank <= 3 && signalTier !== "Sparse / Baseline";
+    const isTierQuiet = !isTier1 && !s.isSharedOverlap && (signalTier === "Sparse / Baseline" || triageRank > 8);
+    const tierCls = isTier1 ? "is-tier-1" : isTierQuiet ? "is-tier-quiet" : "is-tier-2";
+
+    const cg = (!s.isSharedOverlap && p.placedGroup) ? p.placedGroup : getNodeContributionGroup(s);
+    const cgMeta = CONTRIBUTION_VISUAL_META[cg] || CONTRIBUTION_VISUAL_META.access;
+    const colHex = s.isSharedOverlap ? "#a78bfa" : getContributionColorHex(cg);
+    const colGlow = s.isSharedOverlap ? "rgba(167, 139, 250, 0.55)" : getContributionGlowRgba(cg);
+    const colEdge = cgMeta.darkEdge || colHex;
+    const innerNumeral = isTier1 && triageRank <= 3 ? `<span class="orb-inner-numeral" aria-hidden="true">${triageRank}</span>` : "";
+    const compactName = formatCompactEntityName(s.label, isTier1 ? 2 : 3, isTier1 ? 18 : 21);
 
     nodesHtml += `
       <button
         type="button"
-        class="map-node node-startup ${isSel ? "is-selected" : ""}"
+        class="map-node node-startup-orb ${tierCls} ${s.isSharedOverlap ? "is-shared-overlap" : ""} ${isSel ? "is-selected" : ""}"
         data-node-kind="startup"
         data-node-id="${escapeHtml(s.id)}"
         data-startup-id="${escapeHtml(s.id)}"
-        style="left:${p.x.toFixed(1)}px; top:${p.y.toFixed(1)}px;"
+        data-contribution-group="${escapeHtml(cg)}"
+        style="left:${p.x.toFixed(1)}px; top:${p.y.toFixed(1)}px; --orb-color:${colHex}; --orb-glow:${colGlow}; --orb-core-edge:${colEdge};"
       >
-        <div class="node-startup-head">
-          <span class="node-startup-name">${escapeHtml(s.label)}</span>
-          ${getSourceRankBadgeHtml(s.topSourceRank)}
-        </div>
-        <div class="node-startup-sub">${escapeHtml(s.sector || "")} · ${escapeHtml(s.country || "")} · ${escapeHtml(s.stage || "")}</div>
-        <div class="node-startup-badges">
-          ${growth >= 25 ? `<span class="micro-pill micro-velocity">+${growth}% team</span>` : ""}
-          ${isSlush ? `<span class="micro-pill micro-primary">Slush 2026</span>` : ""}
-          ${gapCount > 0 ? `<span class="micro-pill micro-gap">${gapCount} Cala gaps</span>` : ""}
-        </div>
+        <span class="orb-core-wrap">
+          <span class="orb-halo-ring" aria-hidden="true"></span>
+          <span class="orb-core-dot" aria-hidden="true">${innerNumeral}</span>
+        </span>
+        <span class="orb-float-label">
+          <span class="orb-label-main">
+            <span class="orb-name-text">${escapeHtml(compactName)}</span>
+          </span>
+        </span>
       </button>
     `;
   }
 
   nodesLayer.innerHTML = nodesHtml;
 
-  // 3. Handle Empty States cleanly
+  // 3. Handle Empty States cleanly with actionable relaxSuggestions
+  const emptyRelaxEl = document.getElementById("emptyRelaxSuggestions");
   if (emptyEl) {
-    const noMatches = startupNodes.length === 0;
-    const noBridgesOnly = startupNodes.length > 0 && bridgeNodes.length === 0;
+    const rawStartupCount = (effMap?.nodes || []).filter((n) => n.kind === "startup").length;
+    const rawBridgeCount = (effMap?.nodes || []).filter((n) => n.kind === "bridge").length;
+    const noMatches = rawStartupCount === 0 && !effMap?.compareMode;
+    const noBridgesOnly = rawStartupCount > 0 && rawBridgeCount === 0 && !effMap?.compareMode;
     if (noMatches || noBridgesOnly) {
       emptyEl.hidden = false;
       if (emptyTitleEl) {
         emptyTitleEl.textContent = noMatches
-          ? "0 startups match active filters"
+          ? "0 startups match strict filters"
           : "No bridges visible in current filter";
       }
       if (emptyMsgEl) {
         emptyMsgEl.textContent = noMatches
-          ? "No startups matched the active query and filter combination. Reset filters or reveal suppressed mega-hubs."
+          ? "Strict filters returned 0 exact matches. Relax one constraint below instead of showing off-target startups."
           : suppressed > 0
-            ? `${startupNodes.length} startups matched, and ${suppressed} mega-hub bridges were hidden under active strictness. Reveal mega-hubs or show all bridge families.`
-            : `${startupNodes.length} startups matched, but none hold bridges in this selected family. Switch to All bridge families.`;
+            ? `${rawStartupCount} startups matched, and ${suppressed} mega-hub bridges were suppressed. Reveal suppressed hubs or switch decision lenses.`
+            : `${rawStartupCount} startups matched, but none hold signals in this decision lens. Switch to All Lenses.`;
+      }
+      if (emptyRelaxEl) {
+        const relaxBtns = (state.lastRefineResponse?.relaxSuggestions || [])
+          .map(
+            (r) =>
+              `<button type="button" class="relax-pill-btn" data-relax-filter="${escapeHtml(r.filter)}" data-relax-value="${escapeHtml(String(r.value ?? ""))}">${escapeHtml(cleanUiCopy(r.label))}</button>`
+          )
+          .join("");
+        emptyRelaxEl.innerHTML = relaxBtns;
+        emptyRelaxEl.hidden = !relaxBtns;
       }
       if (revealEmptyBtn) {
         revealEmptyBtn.hidden = !(suppressed > 0 && state.hideMegaHubs !== false);
       }
       if (showAllBridgesBtn) {
-        showAllBridgesBtn.hidden = !(state.bridgeFamily && state.bridgeFamily !== "all");
+        showAllBridgesBtn.hidden = !((state.contributionGroup && state.contributionGroup !== "all") || (state.bridgeFamily && state.bridgeFamily !== "all"));
       }
     } else {
       emptyEl.hidden = true;
+      if (emptyRelaxEl) {
+        emptyRelaxEl.innerHTML = "";
+        emptyRelaxEl.hidden = true;
+      }
     }
   }
 
@@ -2155,81 +4414,620 @@ function renderConstellationMap(bridgeMapInput, options = {}) {
     applyMapViewportTransform();
   }
   applyPathLaserIsolation();
+  renderQuickInspectorCard();
+}
+
+function renderQuickInspectorCard() {
+  const cardEl = document.getElementById("mapQuickInspectorCard");
+  if (!cardEl) return;
+
+  if (state.sideRailOpen) {
+    cardEl.hidden = true;
+    cardEl.innerHTML = "";
+    return;
+  }
+
+  const effMap = getEffectiveBridgeMap();
+  const nodes = effMap?.nodes || state.mapLayoutNodes?.nodeById ? [...(state.mapLayoutNodes?.nodeById?.values() || [])] : [];
+  const findNode = (id) => nodes.find((n) => n.id === id) || state.mapLayoutNodes?.nodeById?.get(id);
+
+  if (state.selectedStartupId) {
+    const item = state.DisplayedShortlist.find((c) => c.id === state.selectedStartupId)
+      || state.allKnownItems.get(state.selectedStartupId);
+    const mNode = findNode(state.selectedStartupId);
+    const label = item?.name || mNode?.label;
+    if (!label) {
+      cardEl.hidden = true;
+      return;
+    }
+
+    const topPath = item?.evidenceFolders?.hiddenBridges?.paths?.[0];
+    const cg = getNodeContributionGroup(mNode || topPath || item);
+    const cgMeta = CONTRIBUTION_VISUAL_META[cg] || CONTRIBUTION_VISUAL_META.access;
+    const colHex = mNode?.isSharedOverlap ? "#a78bfa" : getContributionColorHex(cg);
+    const rankNum = mNode?.triageRank || (state.DisplayedShortlist.findIndex((c) => c.id === state.selectedStartupId) + 1) || null;
+    const rankStr = String(item?.dataConfidence?.topSourceRank || mNode?.topSourceRank || "AGGREGATOR").toUpperCase();
+    const observed = item?.evidenceFolders?.proofAndGaps?.verifiedFacts?.length ?? item?.evidenceFolders?.proofAndGaps?.verifiedRecords?.length ?? item?.dataConfidence?.observedCount ?? 0;
+    const missing = item?.evidenceFolders?.proofAndGaps?.missingFromCala?.length ?? mNode?.missingGapCount ?? 0;
+    const conflict = item?.diligencePacket?.conflictRisk || mNode?.conflictRisk || { level: "None" };
+    const conflictSummary = conflict.level && conflict.level !== "None"
+      ? `${conflict.level}: ${conflict.companyName || "Overlap"}`
+      : "No direct conflict";
+    const pathText = topPath?.bridgeEntityName
+      ? `${topPath.bridgeEntityName}${topPath.lift ? ` (${topPath.lift}x)` : ""}`
+      : (mNode?.bestBridgeSummary || "Direct sector profile");
+    const formulaText = topPath?.formulaBreakdown?.inputs
+      || item?.evidenceFolders?.observedActivity?.velocityFormula
+      || item?.diligencePacket?.timingFormula
+      || mNode?.bestBridgeFormula?.inputs
+      || `${observed} verified records / ${missing} Cala gaps`;
+
+    cardEl.innerHTML = `
+      <div class="quick-card-head">
+        <div class="quick-card-title-row">
+          <span class="quick-card-orb" style="background:${colHex}; color:${colHex};"></span>
+          <div>
+            <h4 class="quick-card-name">${escapeHtml(label)}</h4>
+            <div class="quick-card-sub">${escapeHtml([item?.sector || mNode?.sector, item?.stage || mNode?.stage, item?.country || mNode?.country].filter(Boolean).join(" · "))}</div>
+          </div>
+        </div>
+        <button type="button" class="quick-card-close" id="quickInspectorCloseBtn" aria-label="Close quick facts">x</button>
+      </div>
+      <div class="quick-card-badges">
+        ${rankNum ? `<span class="orb-rank-tag">#${rankNum} Target</span>` : ""}
+        <span class="micro-pill micro-primary">${escapeHtml(cgMeta.headerLabel)}</span>
+        ${getSourceRankBadgeHtml(rankStr)}
+        ${mNode?.isSharedOverlap ? `<span class="orb-overlap-tag">Shared Overlap</span>` : ""}
+        ${(item?.attendingSlush2026 || mNode?.isSlush) ? `<span class="micro-pill micro-velocity">Slush 2026</span>` : ""}
+      </div>
+      <div class="quick-card-props">
+        <div class="quick-prop-row"><span class="quick-prop-k">Warm Path</span><span class="quick-prop-v">${escapeHtml(cleanUiCopy(pathText))}</span></div>
+        <div class="quick-prop-row"><span class="quick-prop-k">Portfolio Check</span><span class="quick-prop-v">${escapeHtml(cleanUiCopy(conflictSummary))}</span></div>
+        <div class="quick-prop-row"><span class="quick-prop-k">Cala Sources</span><span class="quick-prop-v">${observed} verified · ${missing} gaps</span></div>
+      </div>
+      <div class="quick-card-formula"><strong>Formula:</strong> ${escapeHtml(cleanUiCopy(formulaText))}</div>
+      <button type="button" class="btn primary sm quick-card-cta" id="quickInspectorOpenRailBtn">View Full Evidence &amp; Call Questions</button>
+    `;
+    cardEl.hidden = false;
+    return;
+  }
+
+  if (state.selectedBridgeId) {
+    const bNode = findNode(state.selectedBridgeId);
+    if (!bNode) {
+      cardEl.hidden = true;
+      return;
+    }
+    const cg = getNodeContributionGroup(bNode);
+    const cgMeta = CONTRIBUTION_VISUAL_META[cg] || CONTRIBUTION_VISUAL_META.access;
+    const colHex = bNode.isSharedOverlap ? "#a78bfa" : getContributionColorHex(cg);
+    const famLabel = BRIDGE_FAMILY_VISUAL_META[bNode.bridgeFamily]?.shortLabel || bNode.bridgeFamily || "Signal";
+    const subLine = `${cgMeta.label} · ${famLabel}`;
+    const connectedEdges = (effMap?.edges || []).filter((e) => e.from === bNode.id || e.to === bNode.id);
+    const targetCount = new Set(
+      connectedEdges
+        .filter((e) => e.from === bNode.id && !state.mapLayoutNodes?.anchorIds?.has(e.to))
+        .map((e) => e.to)
+    ).size;
+    const anchorCount = (bNode.connectedAnchorIds || []).length;
+    const formulaText = bNode.formulaBreakdown?.inputs
+      || (bNode.totalDeals ? `${bNode.lift || "1.0"}x lift across ${bNode.totalDeals} indexed deals` : bNode.whyMatters || "Connected multi-hop bridge node.");
+
+    cardEl.innerHTML = `
+      <div class="quick-card-head">
+        <div class="quick-card-title-row">
+          <span class="quick-card-orb" style="background:${colHex}; color:${colHex};"></span>
+          <div>
+            <h4 class="quick-card-name">${escapeHtml(bNode.label)}</h4>
+            <div class="quick-card-sub">${escapeHtml(subLine)}</div>
+          </div>
+        </div>
+        <button type="button" class="quick-card-close" id="quickInspectorCloseBtn" aria-label="Close quick facts">x</button>
+      </div>
+      <div class="quick-card-badges">
+        ${getSourceRankBadgeHtml(bNode.topSourceRank)}
+        ${bNode.isSharedOverlap ? `<span class="orb-overlap-tag">Shared by ${anchorCount} anchors</span>` : ""}
+        ${bNode.lift != null ? `<span class="orb-rank-tag">${bNode.lift}x Lift</span>` : ""}
+      </div>
+      <div class="quick-card-props">
+        <div class="quick-prop-row"><span class="quick-prop-k">Target Startups</span><span class="quick-prop-v">${targetCount} connected</span></div>
+        <div class="quick-prop-row"><span class="quick-prop-k">Indexed Deals</span><span class="quick-prop-v">${bNode.totalDeals != null ? `${bNode.totalDeals} deals` : "Direct tie"}</span></div>
+      </div>
+      <div class="quick-card-formula"><strong>Math:</strong> ${escapeHtml(cleanUiCopy(formulaText))}</div>
+      <button type="button" class="btn primary sm quick-card-cta" id="quickInspectorOpenRailBtn">Inspect Connected Targets in Rail</button>
+    `;
+    cardEl.hidden = false;
+    return;
+  }
+
+  if (state.selectedAnchorId) {
+    const aNode = findNode(state.selectedAnchorId);
+    if (!aNode) {
+      cardEl.hidden = true;
+      return;
+    }
+    const pal = ANCHOR_PALETTE[(aNode.anchorIndex ?? 0) % ANCHOR_PALETTE.length];
+    const colHex = aNode.anchorColor || pal.hex;
+    const bridgesLinked = (effMap?.edges || []).filter((e) => e.from === aNode.id).length;
+
+    cardEl.innerHTML = `
+      <div class="quick-card-head">
+        <div class="quick-card-title-row">
+          <span class="quick-card-orb" style="background:${colHex}; color:${colHex};"></span>
+          <div>
+            <h4 class="quick-card-name">${escapeHtml(aNode.label)}</h4>
+            <div class="quick-card-sub">${escapeHtml(cleanUiCopy(aNode.subtitle || (aNode.entityType === "startup" ? "Pinned Startup Anchor" : "Pinned Fund Anchor")))}</div>
+          </div>
+        </div>
+        <button type="button" class="quick-card-close" id="quickInspectorCloseBtn" aria-label="Close quick facts">x</button>
+      </div>
+      <div class="quick-card-props">
+        <div class="quick-prop-row"><span class="quick-prop-k">Entity Role</span><span class="quick-prop-v">${aNode.entityType === "startup" ? "Startup Anchor" : "Strategy Benchmark"}</span></div>
+        <div class="quick-prop-row"><span class="quick-prop-k">Connected Bridges</span><span class="quick-prop-v">${bridgesLinked} direct paths</span></div>
+      </div>
+      <button type="button" class="btn primary sm quick-card-cta" id="quickInspectorOpenRailBtn">View Strategy &amp; Evidence in Rail</button>
+    `;
+    cardEl.hidden = false;
+    return;
+  }
+
+  cardEl.hidden = true;
+  cardEl.innerHTML = "";
 }
 
 async function selectStartupFromWorkspace(startupId, options = {}) {
   if (!startupId) return;
-  const wasOpen = Boolean(state.sideRailOpen);
+  const shouldOpenRail = options.openRail !== undefined ? Boolean(options.openRail) : Boolean(state.sideRailOpen);
   state.selectedStartupId = startupId;
   state.selectedBridgeId = null;
+  state.selectedAnchorId = null;
   state.hoveredNodeId = null;
   state.activeStartupId = startupId;
-  state.sideRailOpen = true;
-  state.sideRailTab = options.tab || "evidence";
+  state.activeScreeningFlagId = null;
+  if (shouldOpenRail) {
+    state.sideRailOpen = true;
+    state.sideRailTab = options.tab || "evidence";
+  }
   hideMapTooltip();
 
   renderSideEvidenceRail();
-  const railBody = document.querySelector("#sideEvidenceRail .side-rail-body");
-  if (railBody) railBody.scrollTop = 0;
-  renderConstellationMap(getEffectiveBridgeMap(), { fit: !wasOpen });
+  if (state.sideRailOpen) {
+    const railBody = document.querySelector("#sideEvidenceRail .side-rail-body");
+    if (railBody) railBody.scrollTop = 0;
+  }
+  renderConstellationMap(getEffectiveBridgeMap(), { fit: Boolean(shouldOpenRail) && options.fit === true });
 
   await loadStartupBriefData(startupId);
+  renderQuickInspectorCard();
   if (state.sideRailOpen && state.sideRailTab === "evidence") {
     renderRailEvidencePane();
   }
 }
 
-function selectBridgeFromWorkspace(bridgeNodeId) {
+function selectBridgeFromWorkspace(bridgeNodeId, options = {}) {
   if (!bridgeNodeId) return;
-  const wasOpen = Boolean(state.sideRailOpen);
+  const shouldOpenRail = options.openRail !== undefined ? Boolean(options.openRail) : Boolean(state.sideRailOpen);
   state.selectedBridgeId = bridgeNodeId;
   state.selectedStartupId = null;
+  state.selectedAnchorId = null;
   state.hoveredNodeId = null;
-  state.sideRailOpen = true;
-  state.sideRailTab = "evidence";
+  if (shouldOpenRail) {
+    state.sideRailOpen = true;
+    state.sideRailTab = "evidence";
+  }
   hideMapTooltip();
   renderSideEvidenceRail();
-  const railBody = document.querySelector("#sideEvidenceRail .side-rail-body");
-  if (railBody) railBody.scrollTop = 0;
-  renderConstellationMap(getEffectiveBridgeMap(), { fit: !wasOpen });
+  if (state.sideRailOpen) {
+    const railBody = document.querySelector("#sideEvidenceRail .side-rail-body");
+    if (railBody) railBody.scrollTop = 0;
+  }
+  renderConstellationMap(getEffectiveBridgeMap(), { fit: Boolean(shouldOpenRail) && options.fit === true });
+}
+
+function selectAnchorFromWorkspace(anchorNodeId, options = {}) {
+  if (!anchorNodeId) return;
+  const shouldOpenRail = options.openRail !== undefined ? Boolean(options.openRail) : Boolean(state.sideRailOpen);
+  state.selectedAnchorId = anchorNodeId;
+  state.selectedStartupId = null;
+  state.selectedBridgeId = null;
+  state.hoveredNodeId = null;
+  if (shouldOpenRail) {
+    state.sideRailOpen = true;
+    state.sideRailTab = "strategy";
+  }
+  hideMapTooltip();
+  renderSideEvidenceRail();
+  renderConstellationMap(getEffectiveBridgeMap(), { fit: false });
+}
+
+function toggleExpandedContributionGroup(groupKey) {
+  const norm = String(groupKey || "").toLowerCase();
+  if (!norm) return;
+  const nextGroup = state.expandedGroupKey === norm ? null : norm;
+  state.expandedGroupKey = nextGroup;
+  state.selectedStartupId = null;
+  state.selectedBridgeId = null;
+  state.selectedAnchorId = null;
+  state.hoveredNodeId = null;
+  hideMapTooltip();
+  if (typeof renderQuickInspectorCard === "function") {
+    renderQuickInspectorCard();
+  }
+  renderSideEvidenceRail();
+  renderConstellationMap(getEffectiveBridgeMap(), { fit: true });
 }
 
 function clearConstellationSelection() {
-  if (!state.selectedStartupId && !state.selectedBridgeId) return;
+  if (!state.selectedStartupId && !state.selectedBridgeId && !state.selectedAnchorId) return;
   state.selectedStartupId = null;
   state.selectedBridgeId = null;
+  state.selectedAnchorId = null;
   applyPathLaserIsolation();
+  if (typeof renderQuickInspectorCard === "function") {
+    renderQuickInspectorCard();
+  }
   renderConstellationMap(getEffectiveBridgeMap(), { fit: false });
   renderSideEvidenceRail();
 }
 
-function buildBridgePathCardHtml(pathItem) {
+function getAnalystDecisionKey(startupId, fundId = null) {
+  const f = fundId || state.selectedFundId || (state.inputMode === "companies" ? "custom-proxy" : "default");
+  return `${f}::${startupId}`;
+}
+
+function getAnalystDecision(startupId) {
+  if (!startupId) return { decision: "", note: "", updatedAt: null };
+  const entry = state.analystDecisions?.[getAnalystDecisionKey(startupId)];
+  if (!entry || typeof entry !== "object") return { decision: "", note: "", updatedAt: null };
+  return {
+    decision: entry.decision || "",
+    note: entry.note || "",
+    updatedAt: entry.updatedAt || null
+  };
+}
+
+function saveAnalystDecision(startupId, patch = {}) {
+  if (!startupId) return null;
+  const key = getAnalystDecisionKey(startupId);
+  const current = getAnalystDecision(startupId);
+  const next = {
+    decision: patch.decision !== undefined ? patch.decision : current.decision,
+    note: patch.note !== undefined ? patch.note : current.note,
+    updatedAt: new Date().toISOString()
+  };
+  if (!next.decision && !String(next.note || "").trim()) {
+    delete state.analystDecisions[key];
+  } else {
+    state.analystDecisions[key] = next;
+  }
+  try {
+    localStorage.setItem(ANALYST_DECISIONS_KEY, JSON.stringify(state.analystDecisions));
+  } catch {
+    // Ignore storage quota errors
+  }
+  return next;
+}
+
+function formatDecisionTimestamp(iso) {
+  if (!iso) return "Not saved";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "Saved";
+  return `Saved ${d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })}`;
+}
+
+function getDecisionBadgeHtml(decision) {
+  if (!decision) return "";
+  if (decision === "Advance to Partner") return `<span class="micro-pill micro-partner">Partner</span>`;
+  if (decision === "Watch") return `<span class="micro-pill micro-watch">Watch</span>`;
+  if (decision === "Pass") return `<span class="micro-pill micro-pass">Pass</span>`;
+  return "";
+}
+
+function buildMondayMemoMarkdown(candidate, brief, diligence, folders, decisionEntry) {
+  const dp = diligence || brief?.diligencePacket || candidate?.diligencePacket || {};
+  const fl = folders || brief?.evidenceFolders || candidate?.evidenceFolders || {};
+  const fundLabel = getSelectedBenchmarkLabel();
+  const conflict = dp.conflictRisk || { level: "None", reason: "No direct portfolio conflict detected." };
+  const twin = dp.synergisticTwin;
+  const urgency = dp.urgencyTriggers || [];
+  const riskFlags = dp.riskFlags || [];
+  const verifiedFacts = fl?.proofAndGaps?.verifiedFacts || [];
+  const callQs = dp.callQuestions || [];
+  const missingGaps = fl?.proofAndGaps?.missingFromCala || [];
+  const paths = dp.warmIntroPaths || fl?.hiddenBridges?.paths || [];
+  const topPath = paths[0] || null;
+  const topPathHops = (topPath?.hops || []).map((h) => (typeof h === "string" ? h : h?.label || "")).filter(Boolean).join(" -> ");
+  const topSrc = (topPath?.sourceIds || []).length ? ` [${topPath.sourceIds.join(", ")}]` : "";
+  const decStatus = decisionEntry?.decision || "Unreviewed";
+  const decNote = (decisionEntry?.note || "").trim() || "None recorded";
+  const decTime = decisionEntry?.updatedAt ? formatDecisionTimestamp(decisionEntry.updatedAt) : "Not saved";
+
+  const lines = [
+    `# Monday Partner Screening: ${candidate.name}`,
+    `Context: ${candidate.sector || "Tech"} · ${candidate.stage || "Early"} · ${candidate.hqCity || ""}, ${candidate.country || ""} | Benchmark: ${fundLabel}`,
+    `Framing: Evidence-match summary for analyst review only - not an investment recommendation.`,
+    ``,
+    `## Analyst Decision Log`,
+    `- Decision: ${decStatus} (${decTime})`,
+    `- Rationale: ${decNote}`,
+    ``,
+    `## Headline Signal & Why This Monday?`,
+    `- Why Now: ${fl?.observedActivity?.whyNowTrigger || candidate.whyNowTrigger || dp.urgencyStatus || "No immediate timing inflection detected in Cala"}`,
+    ...(urgency.length
+      ? urgency.map((u) => `- [${u.sourceRank || "PRIMARY"}] ${u.label}: ${u.detail}${u.sourceIds?.length ? ` [${u.sourceIds.join(", ")}]` : ""}`)
+      : [`- Timing Status: ${dp.urgencyStatus || "No immediate timing inflection detected in Cala"}`]),
+    ``,
+    `## Shortest Intro Bridge & Reciprocity`,
+    ...(topPath
+      ? [
+          `- Path (${topPath.forwardability || "Warm"}, ${topPath.reciprocityScore ?? "-"} / 100): ${topPathHops}${topSrc}`,
+          `- Reciprocity Context: ${topPath.reciprocityNote || topPath.summary || ""}`
+        ]
+      : [`- No direct non-mega-hub Investor/Alumni bridge indexed in Cala (${fl?.hiddenBridges?.suppressedMegaHubCount ?? 0} mega-hub overlap(s) hidden).`]),
+    ``,
+    `## Portfolio Conflict vs. Synergistic Twin`,
+    `- Conflict Check (${conflict.level}): ${conflict.reason}`,
+    ...(twin ? [`- Synergistic Twin (${twin.companyName}): ${twin.patternSummary}`] : []),
+    ``,
+    `## Risk & Kill-Screen Flags`,
+    ...(riskFlags.length
+      ? riskFlags.map((f) => `- [${String(f.severity || "info").toUpperCase()}] ${f.label}: ${f.detail} (Rule: ${f.rule})`)
+      : [`- No automated kill-screen flags triggered.`]),
+    ``,
+    `## Verified Facts ([sourceIds] Locked)`,
+    ...(verifiedFacts.length
+      ? verifiedFacts.map((v) => `- [${v.sourceRank || "PRIMARY"}] ${v.label}: ${v.detail}${v.sourceIds?.length ? ` [${v.sourceIds.join(", ")}]` : ""}`)
+      : [`- No verified statutory or dated round facts indexed yet.`]),
+    ``,
+    `## Questions for Founder Call #1 (From "Not Found in Cala" Gaps)`,
+    ...(callQs.length
+      ? callQs.map((q, i) => `${i + 1}. [${q.category}] ${q.question} (Gap: ${q.basedOnGap} | Verified Anchor: ${q.verifiedAnchor})`)
+      : missingGaps.map((g, i) => `${i + 1}. ${g.field}: ${g.status} (${g.reason})`))
+  ];
+
+  return cleanUiCopy(lines.join("\n"));
+}
+
+async function copyMondayMemoForStartup(startupId) {
+  const candidate = state.DisplayedShortlist.find((c) => c.id === startupId)
+    || state.allKnownItems.get(startupId);
+  if (!candidate) return;
+  const cacheKey = `${candidate.id}:${state.selectedFundId}`;
+  const brief = state.briefCache.get(cacheKey) || (state.activeBrief?.id === candidate.id ? state.activeBrief : null);
+  const folders = {
+    ...(candidate.evidenceFolders || {}),
+    ...(brief?.evidenceFolders || {})
+  };
+  const diligence = brief?.diligencePacket || candidate.diligencePacket || null;
+  const decisionEntry = getAnalystDecision(candidate.id);
+  const md = buildMondayMemoMarkdown(candidate, brief, diligence, folders, decisionEntry);
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(md);
+    }
+  } catch {
+    // Non-fatal in non-clipboard environments
+  }
+  const btn = document.getElementById("railCopyMondayMemoBtn");
+  if (btn) {
+    btn.textContent = "Copied Memo!";
+    window.setTimeout(() => {
+      if (btn.isConnected) btn.textContent = "Copy Monday Memo";
+    }, 1800);
+  }
+  showUiToast(`Copied Monday Markdown memo for ${candidate.name}`);
+}
+
+function buildFormulaToggleHtml(formulaKey, summaryText, formulaData, metaLine = "") {
+  const isOpen = state.expandedFormulas?.has(formulaKey);
+  const formulaStr = typeof formulaData === "string" ? formulaData : (formulaData?.formula || "");
+  const inputsStr = typeof formulaData === "object" && formulaData ? (formulaData.inputs || "") : "";
+  const meaningStr = typeof formulaData === "object" && formulaData ? (formulaData.plainMeaning || "") : "";
+
+  return `
+    <div class="formula-inline-row">
+      <span style="font-size:10.5px; color:var(--muted);">${summaryText}</span>
+      <button
+        type="button"
+        class="formula-toggle-btn"
+        data-toggle-formula="${escapeHtml(formulaKey)}"
+        aria-expanded="${isOpen ? "true" : "false"}"
+      >${isOpen ? "Hide Formula" : "View Formula"}</button>
+    </div>
+    ${isOpen
+      ? `<div class="formula-proof-box">
+          ${formulaStr ? `<div class="formula-proof-eq">Formula: ${escapeHtml(cleanUiCopy(formulaStr))}</div>` : ""}
+          ${inputsStr ? `<div class="formula-proof-inputs">Inputs: ${escapeHtml(cleanUiCopy(inputsStr))}</div>` : ""}
+          ${meaningStr ? `<div class="formula-proof-meaning">${escapeHtml(cleanUiCopy(meaningStr))}</div>` : ""}
+          ${metaLine ? `<div class="formula-proof-meaning" style="margin-top:3px;">${escapeHtml(cleanUiCopy(metaLine))}</div>` : ""}
+        </div>`
+      : ""}
+  `;
+}
+
+function buildBridgePathCardHtml(pathItem, pathIdx = 0) {
   const famMeta = BRIDGE_FAMILY_VISUAL_META[pathItem.bridgeFamily] || BRIDGE_FAMILY_VISUAL_META.feeder;
   const hopsHtml = (pathItem.hops || [])
-    .map((h) => `<span class="ev-hop-node">${escapeHtml(h.label)}</span>`)
+    .map((h) => {
+      const label = typeof h === "string" ? h : (h?.label || "");
+      return label ? `<span class="ev-hop-node">${escapeHtml(cleanUiCopy(label))}</span>` : "";
+    })
+    .filter(Boolean)
     .join(`<span class="ev-hop-arrow">-&gt;</span>`);
   const srcList = (pathItem.sourceIds || [])
     .map((sid) => resolveSourceRecord(sid))
     .filter(Boolean);
   const srcBadgeText = srcList.map((s) => s.title || s.id).slice(0, 2).join(" · ");
+  const whyText = pathItem.whyMatters || pathItem.whyLookDelta || "";
+  const reciprocityText = pathItem.reciprocityNote || "";
+  const isHighForward = pathItem.forwardability === "High";
+  const hopBadge = pathItem.hopKind === "2hop_syndicate"
+    ? `<span class="micro-pill micro-primary">2-Hop</span>`
+    : "";
+  const familyPillClass = pathItem.bridgeFamily === "portfolio_twin"
+    ? "micro-pill micro-twin"
+    : "micro-pill micro-press";
+
+  const liftMeta = `${pathItem.lift != null ? `${pathItem.lift}x lift` : "Twin analogue"}${pathItem.totalDeals != null ? ` · ${pathItem.totalDeals} indexed deals` : ""}${pathItem.date ? ` · ${escapeHtml(pathItem.date)}` : ""}${srcBadgeText ? ` · ${escapeHtml(srcBadgeText)}` : ""}`;
+  const formulaPayload = pathItem.formulaBreakdown || {
+    formula: "rarity = lift * 10 + sourceRankBonus",
+    inputs: liftMeta,
+    plainMeaning: "Ranks non-obvious bridges weighted by source trust."
+  };
+  const proofMeta = `Source IDs: ${(pathItem.sourceIds || []).join(", ") || "indexed Cala graph"}${pathItem.date ? ` · Date: ${pathItem.date}` : ""}`;
 
   return `
     <div class="ev-bridge-item">
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
-        <strong style="font-size:12.5px; color:var(--text-strong);">${escapeHtml(pathItem.bridgeEntityName || "Bridge Path")}</strong>
-        <div style="display:flex; gap:4px; align-items:center;">
-          <span class="micro-pill micro-press">${escapeHtml(famMeta.shortLabel)}</span>
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:6px; flex-wrap:wrap;">
+        <strong style="font-size:12px; color:var(--text-strong);">${escapeHtml(pathItem.bridgeEntityName || "Bridge Path")}</strong>
+        <div style="display:flex; gap:4px; align-items:center; flex-wrap:nowrap;">
+          ${hopBadge}
+          <span class="${familyPillClass}">${escapeHtml(famMeta.shortLabel)}</span>
           ${getSourceRankBadgeHtml(pathItem.topSourceRank)}
           ${pathItem.isMegaHub ? `<span class="micro-pill micro-megahub">Mega-hub</span>` : ""}
         </div>
       </div>
       ${hopsHtml ? `<div class="ev-hops-strip">${hopsHtml}</div>` : ""}
-      <div style="font-size:12px; color:var(--text); line-height:1.42;">${escapeHtml(cleanUiCopy(pathItem.summary || ""))}</div>
-      <div style="margin-top:5px; font-size:11px; color:var(--muted);">
-        ${pathItem.lift != null ? `${pathItem.lift}x lift` : "Direct path"}${pathItem.totalDeals != null ? ` · ${pathItem.totalDeals} indexed deals` : ""}${pathItem.date ? ` · ${escapeHtml(pathItem.date)}` : ""}${srcBadgeText ? ` · ${escapeHtml(srcBadgeText)}` : ""}
-      </div>
+      <div style="font-size:11.5px; color:var(--text); line-height:1.4;">${escapeHtml(cleanUiCopy(pathItem.summary || ""))}</div>
+      ${whyText ? `<div class="ev-why-matters"><strong>Why this matters:</strong> ${escapeHtml(cleanUiCopy(whyText))}</div>` : ""}
+      ${reciprocityText ? `<div class="reciprocity-bar ${isHighForward ? "is-high" : ""}"><strong>${escapeHtml(cleanUiCopy(pathItem.forwardability || "Intro"))} (${pathItem.reciprocityScore ?? "-"}/100):</strong> ${escapeHtml(cleanUiCopy(reciprocityText))}</div>` : ""}
+      ${buildFormulaToggleHtml(`bridge-${pathIdx}`, liftMeta, formulaPayload, proofMeta)}
     </div>
   `;
+}
+
+function renderRelaxSuggestionChipsHtml() {
+  const suggestions = state.lastRefineResponse?.relaxSuggestions || [];
+  if (!suggestions.length) return "";
+  return `
+    <div class="empty-relax-suggestions">
+      ${suggestions
+        .map(
+          (s) =>
+            `<button type="button" class="relax-pill-btn" data-relax-filter="${escapeHtml(s.filter)}" data-relax-value="${escapeHtml(String(s.value ?? ""))}">${escapeHtml(cleanUiCopy(s.label))}</button>`
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+async function applyRelaxSuggestion(filterName, rawValue) {
+  const val = rawValue === "true" ? true : rawValue === "false" ? false : rawValue === "" ? "" : rawValue;
+  if (filterName === "reset") {
+    await resetSearchAndFilters();
+    return;
+  }
+  if (filterName === "contributionGroup") {
+    state.contributionGroup = "all";
+  } else if (filterName === "bridgeFamily") {
+    state.bridgeFamily = "all";
+  } else if (filterName === "hideMegaHubs") {
+    state.hideMegaHubs = false;
+  } else if (filterName === "slush2026Only") {
+    state.onlySlush2026 = false;
+  } else if (filterName === "filingOnly") {
+    state.filingOnly = false;
+  } else if (filterName === "untappedOnly") {
+    state.untappedOnly = false;
+    const el = document.getElementById("filterUntappedOnly");
+    if (el) el.checked = false;
+  } else if (filterName === "raisingSoonOnly") {
+    const el = document.getElementById("filterRaisingSoon");
+    if (el) el.checked = false;
+  } else if (filterName === "region") {
+    const el = document.getElementById("filterRegion");
+    if (el) el.value = "all";
+  } else if (filterName === "stageFilter") {
+    const el = document.getElementById("filterStage");
+    if (el) el.value = "all";
+    state.targetStage = "all";
+  } else if (filterName === "excludeSector") {
+    const el = document.getElementById("filterExcludeSector");
+    if (el) el.value = "";
+  } else if (
+    ["feederOnly", "alumniOnly", "highVelocityOnly", "maxEmployees", "minHeadcountGrowthPct"].includes(filterName)
+  ) {
+    const qInput = document.getElementById("aiSearchInput");
+    if (qInput && qInput.value.trim()) {
+      qInput.value = "";
+    }
+  }
+  syncConstellationControls();
+  await executeSearchRefinement(undefined, {
+    keepSelection: false,
+    keepRailOpen: state.sideRailOpen,
+    fit: true,
+    explicitOverrides: { [filterName]: val }
+  });
+}
+
+async function expandLiveCalaLinksForStartup(startupId, startupName) {
+  if (!startupId || state.railExpandCalaLoading) return;
+  const targetName = startupName || state.allKnownItems.get(startupId)?.name || startupId;
+  state.railExpandCalaLoading = true;
+  state.railExpandCalaResult = {
+    startupId,
+    message: `Querying Live Cala graph for additional links around ${targetName}...`
+  };
+  renderRailEvidencePane();
+
+  try {
+    const res = await fetchJson("/api/cala-discover", {
+      method: "POST",
+      body: JSON.stringify({
+        mode: "query",
+        fundId: state.selectedFundId,
+        companyIds: state.selectedCompanyIds,
+        queryText: targetName,
+        bridgeFamily: state.bridgeFamily || "all",
+        contributionGroup: state.contributionGroup || "all",
+        hideMegaHubs: state.hideMegaHubs !== false,
+        entityScope: document.getElementById("filterEntityScope")?.value || "startups"
+      })
+    });
+    const prevCount = state.DisplayedShortlist.length;
+    if (Array.isArray(res.shortlist) && res.shortlist.length) {
+      const mergedById = new Map(state.DisplayedShortlist.map((c) => [c.id, c]));
+      for (const item of res.shortlist) {
+        mergedById.set(item.id, item);
+      }
+      registerKnownItems(res.shortlist);
+      const updatedTarget = res.shortlist.find((c) => c.id === startupId);
+      if (updatedTarget) {
+        state.DisplayedShortlist = state.DisplayedShortlist.map((c) => (c.id === startupId ? updatedTarget : c));
+        if (!state.DisplayedShortlist.some((c) => c.id === startupId)) {
+          state.DisplayedShortlist.unshift(updatedTarget);
+        }
+      }
+    }
+    if (res.bridgeMap && res.discoveredCount > 0) {
+      await executeSearchRefinement(undefined, {
+        keepSelection: true,
+        keepRailOpen: true,
+        fit: false
+      });
+    }
+    const newBridgesCount =
+      (state.allKnownItems.get(startupId)?.evidenceFolders?.hiddenBridges?.paths || []).length;
+    state.railExpandCalaResult = {
+      startupId,
+      message:
+        res.discoveredCount > 0 || res.enrichedCount > 0
+          ? `Live Cala synced +${res.discoveredCount || 0} entities / +${res.enrichedCount || 0} links (${newBridgesCount} visible paths for ${targetName}).`
+          : `Live Cala checked for ${targetName} (${newBridgesCount} indexed path(s) shown; no unindexed live records added).`
+    };
+    if (res.calaBudget) {
+      updateTelemetryMasthead(res.calaBudget);
+    }
+  } catch (err) {
+    state.railExpandCalaResult = {
+      startupId,
+      message: `Live Cala link check: ${err.message}`
+    };
+  } finally {
+    state.railExpandCalaLoading = false;
+    renderRailEvidencePane();
+  }
 }
 
 function renderRailMatchesPane() {
@@ -2255,10 +5053,12 @@ function renderRailMatchesPane() {
   }
 
   if (!visibleList.length) {
+    const relaxHtml = renderRelaxSuggestionChipsHtml();
     listEl.innerHTML = `
       <div class="ev-folder-card" style="text-align:center;">
-        <p style="margin:0 0 10px; color:var(--muted); font-size:12.5px;">No startups match the active filter settings.</p>
-        <button type="button" class="btn sm" id="railEmptyResetBtn">Reset filters</button>
+        <p style="margin:0 0 10px; color:var(--muted); font-size:12px;">No startups match the active filter settings.</p>
+        ${relaxHtml}
+        <button type="button" class="btn sm" id="railEmptyResetBtn">Reset all filters</button>
       </div>
     `;
     return;
@@ -2269,13 +5069,23 @@ function renderRailMatchesPane() {
       const isSelected = state.selectedStartupId === item.id;
       const rank = item.dataConfidence?.topSourceRank || item.evidenceFolders?.proofAndGaps?.topSourceRank || "AGGREGATOR";
       const topPath = item.evidenceFolders?.hiddenBridges?.paths?.[0];
-      const reason = topPath?.summary
+      const reason = topPath?.whyLookDelta
+        || topPath?.summary
         || item.coInvestorPath?.summary
         || item.whyNowTrigger
         || item.matchReason
         || "Matched across Cala bridge graph";
-      const isSlush = Boolean(getStartupCalaFieldProfile(item)?.slush2026?.attending);
-      const gapsCount = (item.evidenceFolders?.proofAndGaps?.missingFromCala || []).length;
+      const isSlush = Boolean(item.attendingSlush2026 || getStartupCalaFieldProfile(item)?.slush2026?.attending);
+      const decisionEntry = getAnalystDecision(item.id);
+      const conflictLevel = item.diligencePacket?.conflictRisk?.level || "None";
+      const conflictPill = conflictLevel === "High" || conflictLevel === "Watch"
+        ? `<span class="micro-pill micro-watch">Conflict: ${escapeHtml(conflictLevel)}</span>`
+        : "";
+      const insightBadge = topPath?.hopKind === "2hop_syndicate" && topPath.intermediaryInvestor
+        ? `<span class="micro-pill micro-primary">2-Hop: ${escapeHtml(topPath.intermediaryInvestor)}</span>`
+        : topPath?.bridgeFamily === "portfolio_twin" && topPath.twinCompanyName
+          ? `<span class="micro-pill micro-twin">Twin: ${escapeHtml(topPath.twinCompanyName)}</span>`
+          : "";
 
       return `
         <button
@@ -2290,10 +5100,12 @@ function renderRailMatchesPane() {
           <div class="rail-match-meta">${escapeHtml(item.sector)} · ${escapeHtml(item.stage)} · ${escapeHtml(item.hqCity || "")}, ${escapeHtml(item.country)}</div>
           <div class="rail-match-reason">${escapeHtml(cleanUiCopy(reason))}</div>
           <div class="rail-match-badges">
+            ${getDecisionBadgeHtml(decisionEntry.decision)}
             ${getSourceRankBadgeHtml(rank)}
-            ${item.headcountGrowthPct >= 25 ? `<span class="micro-pill micro-velocity">+${item.headcountGrowthPct}% hiring</span>` : ""}
+            ${conflictPill}
+            ${insightBadge}
+            ${item.headcountGrowthPct >= 30 ? `<span class="micro-pill micro-velocity">+${item.headcountGrowthPct}% team</span>` : ""}
             ${isSlush ? `<span class="micro-pill micro-primary">Slush 2026</span>` : ""}
-            ${gapsCount > 0 ? `<span class="micro-pill micro-gap">${gapsCount} Cala gaps</span>` : ""}
           </div>
         </button>
       `;
@@ -2343,9 +5155,19 @@ function renderRailEvidencePane() {
           ${getSourceRankBadgeHtml(bNode.topSourceRank)}
         </div>
         <div style="font-size:14px; font-weight:800; color:var(--text-strong); margin-bottom:4px;">${escapeHtml(bNode.label)}</div>
-        <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">
+        <div style="font-size:12px; color:var(--muted); margin-bottom:6px;">
           Family: ${escapeHtml(famMeta.label)}${bNode.lift != null ? ` · Lift ${bNode.lift}x` : ""}${bNode.totalDeals != null ? ` · ${bNode.totalDeals} indexed deals` : ""}${bNode.isMegaHub ? " · Flagged as mega-hub" : " · Non-mega-hub bridge"}
         </div>
+        ${buildFormulaToggleHtml(
+          "bridge-node",
+          bNode.lift != null ? `${bNode.lift}x bridge lift` : famMeta.label,
+          bNode.formulaBreakdown || {
+            formula: "rarity = lift * 10 + sourceRankBonus",
+            inputs: bNode.whyMatters || famMeta.label,
+            plainMeaning: "Deterministic Cala bridge strength calculation."
+          },
+          `Sources: ${(bNode.sourceIds || []).join(", ") || "Cala Graph"}${bNode.date ? ` · Date: ${bNode.date}` : ""}`
+        )}
       </div>
       <div class="ev-folder-card">
         <div class="ev-folder-head">
@@ -2398,7 +5220,7 @@ function renderRailEvidencePane() {
     : "";
 
   const pathsHtml = bridgePaths.length
-    ? bridgePaths.map((p) => buildBridgePathCardHtml(p)).join("")
+    ? bridgePaths.map((p, idx) => buildBridgePathCardHtml(p, idx)).join("")
     : `<div style="font-size:12px; color:var(--muted);">${suppressedCount > 0 ? "Only mega-hub bridges exist under current settings." : "Not found in Cala under current bridge family filter."}</div>`;
 
   // Folder 2: Observed Activity & Timing
@@ -2481,22 +5303,206 @@ function renderRailEvidencePane() {
     `
     : "";
 
+  const expandStatusHtml =
+    state.railExpandCalaResult && state.railExpandCalaResult.startupId === candidate.id
+      ? `<div class="triage-note-banner" style="margin-bottom:7px;">${escapeHtml(cleanUiCopy(state.railExpandCalaResult.message))}</div>`
+      : "";
+
+  const diligence = brief?.diligencePacket || candidate.diligencePacket || null;
+  const conflict = diligence?.conflictRisk || { level: "None", reason: "No direct portfolio conflict detected across indexed records." };
+  const twin = diligence?.synergisticTwin || null;
+  const riskFlags = diligence?.riskFlags || [];
+  const urgencyTriggers = diligence?.urgencyTriggers || [];
+  const callQuestions = diligence?.callQuestions || [];
+  const decisionEntry = getAnalystDecision(candidate.id);
+
+  const flagEntries = [
+    ...urgencyTriggers.map((u, idx) => ({
+      id: `urg-${u.kind || idx}`,
+      chipClass: "is-urgency",
+      label: u.label,
+      detail: u.detail,
+      rule: `Timing signal (${u.sourceRank || "PRIMARY"}${u.date ? ` · ${u.date}` : ""})`
+    })),
+    ...riskFlags.map((f) => ({
+      id: `risk-${f.id}`,
+      chipClass: f.severity === "warning" ? "is-warning" : "is-info",
+      label: f.label,
+      detail: f.detail,
+      rule: `Deterministic rule: ${f.rule}`
+    }))
+  ];
+  const selectedFlag = flagEntries.find((f) => f.id === state.activeScreeningFlagId) || null;
+  const screeningFlagsHtml = flagEntries.length
+    ? `
+      <div class="screening-flags-strip">
+        ${flagEntries
+          .map(
+            (f) => `<button type="button" class="flag-chip-btn ${f.chipClass} ${selectedFlag?.id === f.id ? "is-selected" : ""}" data-toggle-flag-rule="${escapeHtml(f.id)}" title="${escapeHtml(cleanUiCopy(f.detail))}">${escapeHtml(cleanUiCopy(f.label))}</button>`
+          )
+          .join("")}
+      </div>
+      ${selectedFlag
+        ? `<div class="flag-detail-callout">
+            <div>${escapeHtml(cleanUiCopy(selectedFlag.detail))}</div>
+            <span class="flag-detail-rule">${escapeHtml(cleanUiCopy(selectedFlag.rule))}</span>
+          </div>`
+        : ""}
+    `
+    : `<div class="screening-flags-strip"><span class="flag-chip-btn is-info">${escapeHtml(cleanUiCopy(diligence?.urgencyStatus || "No immediate timing inflection detected in Cala"))}</span></div>`;
+
+  const conflictIsWarn = conflict.level === "High" || conflict.level === "Watch";
+  const conflictBadgeLabel = conflictIsWarn
+    ? `Conflict ${conflict.level}: ${conflict.companyName || "Portfolio overlap"}`
+    : "No direct portfolio conflict detected";
+
+  const decisionBarHtml = `
+    <div class="rail-decision-card" data-startup-id="${escapeHtml(candidate.id)}">
+      <div class="rail-decision-head">
+        <div>
+          <div class="rail-decision-title">Monday Decision Log</div>
+          <div class="rail-decision-time" id="railDecisionTimestamp">${escapeHtml(formatDecisionTimestamp(decisionEntry.updatedAt))}</div>
+        </div>
+        <button type="button" class="btn xs" id="railCopyMondayMemoBtn" data-startup-id="${escapeHtml(candidate.id)}" title="Copy citation-locked Monday Markdown 1-pager">Copy Monday Memo</button>
+      </div>
+      <div class="rail-decision-pills" role="group" aria-label="Monday partner decision">
+        ${["Advance to Partner", "Watch", "Pass"]
+          .map(
+            (status) => `
+              <button
+                type="button"
+                class="decision-pill-btn ${decisionEntry.decision === status ? "is-active" : ""}"
+                data-decision-status="${escapeHtml(status)}"
+                data-startup-id="${escapeHtml(candidate.id)}"
+              >${escapeHtml(status)}</button>
+            `
+          )
+          .join("")}
+      </div>
+      <div class="rail-decision-note-row">
+        <input
+          type="text"
+          class="rail-decision-note-input"
+          id="railDecisionNoteInput"
+          data-startup-id="${escapeHtml(candidate.id)}"
+          value="${escapeHtml(decisionEntry.note || "")}"
+          placeholder="1-line analyst rationale (saved locally)..."
+          aria-label="1-line Monday decision rationale"
+        />
+      </div>
+    </div>
+  `;
+
+  const timingStatusText = cleanUiCopy(diligence?.urgencyStatus || "No immediate timing inflection detected in Cala");
+  const timingFormulaPayload = {
+    formula: "|monthsSinceRound - benchmarkMedianGap| vs. follow-on cadence window",
+    inputs: diligence?.timingFormula || "Not calculated: no dated prior round",
+    plainMeaning: "Benchmarks months since last financing against the fund's revealed median follow-on cadence."
+  };
+  const roundSourceIds = (candidate.roundHistory || brief?.rounds || []).flatMap((r) => (r.sources || []).map((s) => s.id)).slice(0, 3);
+  const timingMetaLine = `Prior round: ${candidate.lastRoundDate || "None indexed"}${roundSourceIds.length ? ` · Sources: ${roundSourceIds.join(", ")}` : ""}`;
+
+  const partnerScreeningHtml = `
+    <div class="ev-screening-card">
+      <div class="ev-folder-head">
+        <h4 class="ev-folder-title">Partner Screening &amp; Call #1</h4>
+        <span class="micro-pill micro-primary">${callQuestions.length} Qs</span>
+      </div>
+      <div class="screening-conflict-row">
+        <span class="conflict-pill ${conflictIsWarn ? "is-warning" : "is-clear"}">${escapeHtml(cleanUiCopy(conflictBadgeLabel))}</span>
+        <div class="screening-subtext">${escapeHtml(cleanUiCopy(conflict.reason || ""))}</div>
+        ${twin ? `<div class="screening-twin-box"><strong>Synergistic Twin (${escapeHtml(twin.companyName)}):</strong> ${escapeHtml(cleanUiCopy(twin.patternSummary || ""))}</div>` : ""}
+      </div>
+      <div style="margin-bottom:6px;">
+        ${buildFormulaToggleHtml("timing", `Round Timing: ${timingStatusText}`, timingFormulaPayload, timingMetaLine)}
+      </div>
+      ${screeningFlagsHtml}
+      ${callQuestions.length
+        ? `<ol class="call-questions-list">
+            ${callQuestions
+              .map(
+                (q, idx) => `
+                  <li class="call-q-item">
+                    <div class="call-q-meta">
+                      <span>Q${idx + 1} · ${escapeHtml(q.category)}</span>
+                      <span class="call-q-anchor">${escapeHtml(cleanUiCopy(q.verifiedAnchor || ""))}</span>
+                    </div>
+                    <div>${escapeHtml(cleanUiCopy(q.question))}</div>
+                  </li>
+                `
+              )
+              .join("")}
+          </ol>`
+        : ""}
+    </div>
+  `;
+
+  const matchIdx = Math.max(0, state.DisplayedShortlist.findIndex((c) => c.id === candidate.id));
+  const matchRankLabel = matchIdx >= 0 && state.DisplayedShortlist[matchIdx] ? `#${matchIdx + 1}` : "Profile";
+  const matchSignalTier = candidate.signalTier || brief?.signalTier || "Contextual Match";
+  const matchOrderFormulaText = candidate.matchOrderFormula || brief?.matchOrderFormula || "Computed from verified Cala sector, stage, syndicate, momentum, geography, and timing records.";
+  const sb = candidate.scoreBreakdown || brief?.matchContext?.scoreBreakdown || null;
+  const matchMaxEq = sb
+    ? `Sector (${sb.sector?.max ?? 25}) + Stage (${sb.stage?.max ?? 25}) + Syndicate (${sb.syndicate?.max ?? 20}) + Momentum (${sb.momentum?.max ?? 15}) + Geography (${sb.geography?.max ?? 10}) + Timing/Filing (${sb.arbitrageBonus?.max ?? 5})`
+    : "Sector (25) + Stage (25) + Syndicate (20) + Momentum (15) + Geography (10) + Timing/Filing (5)";
+  const matchFormulaPayload = {
+    formula: matchMaxEq,
+    inputs: matchOrderFormulaText,
+    plainMeaning: "Evidence-match scan tier for partner triage only - never an investment verdict."
+  };
+  const matchSourceIds = (candidate.roundHistory || []).flatMap((r) => (r.sources || []).map((s) => s.id)).slice(0, 4);
+  const velSeries = candidate.employeeCountSeries || brief?.employeeCountSeries || [];
+  const velDateSpan = velSeries.length >= 2
+    ? `${velSeries[0].date} -> ${velSeries[velSeries.length - 1].date}`
+    : velSeries.length === 1
+      ? `${velSeries[0].date} (1 observation)`
+      : "No dated observations";
+  const velSourceIds = velSeries.map((pt) => pt.sourceId).filter(Boolean).slice(0, 3);
+  const velocityFormulaPayload = {
+    formula: "(currentEmployees - baselineEmployees) / baselineEmployees",
+    inputs: obsFolder.velocityFormula || "Not calculated: <2 dated Cala observations",
+    plainMeaning: "Measures post-round hiring velocity purely from dated Cala employee observations."
+  };
+  const velocityMetaLine = `Observations: ${velDateSpan}${velSourceIds.length ? ` · Sources: ${velSourceIds.join(", ")}` : ""}`;
+
   container.innerHTML = `
-    <div class="triage-note-banner">${escapeHtml(triageNote)}</div>
+    <div class="deterministic-disclaimer-note">Deterministic analysis of Cala facts (0 AI guessing). Analyst decides conviction &amp; weighting.</div>
+    <div class="ev-folder-card" style="margin-bottom:8px;">
+      ${buildFormulaToggleHtml(
+        "match-order",
+        `Match Order: <strong style="color:var(--text-strong);">${escapeHtml(matchRankLabel)} · ${escapeHtml(matchSignalTier)}</strong> (${candidate.suitabilityScore ?? 0}/99)`,
+        matchFormulaPayload,
+        `Top proof: ${candidate.dataConfidence?.topSourceRank || "AGGREGATOR"}${matchSourceIds.length ? ` · Sources: ${matchSourceIds.join(", ")}` : ""}`
+      )}
+    </div>
     <div class="ev-action-row">
       <button type="button" class="btn sm primary" id="railDraftCitedBriefBtn" data-startup-id="${escapeHtml(candidate.id)}">
-        ${state.railNarrationLoading ? "Drafting..." : "Draft Cited Brief"}
+        ${state.railNarrationLoading ? "Drafting..." : "Draft Brief"}
       </button>
-      <button type="button" class="btn sm" id="railOpenFullBriefBtn" data-startup-id="${escapeHtml(candidate.id)}">Open Full Brief</button>
-      <button type="button" class="btn sm" id="railVerifyLiveBtn" data-startup-id="${escapeHtml(candidate.id)}">Verify live</button>
+      <button type="button" class="btn sm" id="railOpenFullBriefBtn" data-startup-id="${escapeHtml(candidate.id)}">Full Brief</button>
+      <button type="button" class="btn sm" id="railVerifyLiveBtn" data-startup-id="${escapeHtml(candidate.id)}">Verify Live</button>
     </div>
+    ${decisionBarHtml}
     ${narratedHtml}
+    ${partnerScreeningHtml}
 
     <div class="ev-folder-card">
       <div class="ev-folder-head">
         <h4 class="ev-folder-title">1. Hidden Bridges &amp; Warm Paths</h4>
-        <span class="micro-pill micro-primary">${bridgePaths.length} visible</span>
+        <div class="ev-folder-actions">
+          <button
+            type="button"
+            class="btn xs"
+            id="railExpandCalaBtn"
+            title="Query Live Cala graph for additional bridge links"
+            data-startup-id="${escapeHtml(candidate.id)}"
+            data-startup-name="${escapeHtml(candidate.name)}"
+            ${state.railExpandCalaLoading ? "disabled" : ""}
+          >${state.railExpandCalaLoading ? "Expanding..." : "Expand Live Links"}</button>
+          <span class="micro-pill micro-primary">${bridgePaths.length}</span>
+        </div>
       </div>
+      ${expandStatusHtml}
       ${suppressedBarHtml}
       ${pathsHtml}
     </div>
@@ -2506,7 +5512,10 @@ function renderRailEvidencePane() {
         <h4 class="ev-folder-title">2. Observed Activity &amp; Timing</h4>
         <span class="micro-pill micro-velocity">${activityItems.length} dated</span>
       </div>
-      ${timingSummaryParts.length ? `<div style="font-size:11.5px; color:var(--text); margin-bottom:8px;">${escapeHtml(cleanUiCopy(timingSummaryParts.join(" · ")))}</div>` : ""}
+      ${timingSummaryParts.length ? `<div style="font-size:11.5px; color:var(--text); margin-bottom:4px;">${escapeHtml(cleanUiCopy(timingSummaryParts.join(" · ")))}</div>` : ""}
+      <div style="margin-bottom:8px;">
+        ${buildFormulaToggleHtml("velocity", "Hiring Velocity Math", velocityFormulaPayload, velocityMetaLine)}
+      </div>
       ${activityHtml}
     </div>
 
@@ -2521,6 +5530,7 @@ function renderRailEvidencePane() {
       ${factsHtml}
       ${gapsHtml ? `<div style="margin-top:10px; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; color:var(--fam-event);">Explicit Cala Gaps</div>${gapsHtml}` : ""}
     </div>
+    <div class="deterministic-disclaimer-note" style="margin-top:8px; margin-bottom:0;">Deterministic analysis of Cala facts (0 AI guessing). Analyst decides conviction &amp; weighting.</div>
   `;
 }
 
@@ -2610,9 +5620,25 @@ function renderSideEvidenceRail() {
   if (collapsedCountEl) collapsedCountEl.textContent = String(visibleList.length);
   if (collapsedFilingEl) collapsedFilingEl.textContent = `${filingCount} FILING`;
 
-  if (collapsedBtn) collapsedBtn.hidden = Boolean(state.sideRailOpen);
-  if (railEl) railEl.hidden = !state.sideRailOpen;
+  if (collapsedBtn) {
+    const hasQuickSelection = Boolean(state.selectedStartupId || state.selectedBridgeId || state.selectedAnchorId);
+    collapsedBtn.hidden = Boolean(state.sideRailOpen) || hasQuickSelection;
+  }
+  if (railEl) {
+    railEl.hidden = !state.sideRailOpen;
+    if (state.sideRailOpen && state.sideRailWidth) {
+      railEl.style.width = `${state.sideRailWidth}px`;
+    } else if (railEl.style.width && !state.sideRailWidth) {
+      railEl.style.width = "";
+    }
+  }
   document.body.classList.toggle("has-rail-open", Boolean(state.sideRailOpen));
+  if (state.sideRailOpen) {
+    getActiveRailOffset();
+  }
+  if (typeof renderQuickInspectorCard === "function") {
+    renderQuickInspectorCard();
+  }
 
   // Update header context
   const kickerEl = document.getElementById("railContextKicker");
@@ -2622,7 +5648,15 @@ function renderSideEvidenceRail() {
   const prevBtn = document.getElementById("railPrevBtn");
   const nextBtn = document.getElementById("railNextBtn");
 
-  if (state.selectedBridgeId && !state.selectedStartupId) {
+  if (state.selectedAnchorId && !state.selectedStartupId && !state.selectedBridgeId) {
+    const aNode = (getEffectiveBridgeMap()?.nodes || []).find((n) => n.id === state.selectedAnchorId);
+    if (kickerEl) kickerEl.textContent = aNode?.entityType === "startup" ? "PINNED STARTUP ANCHOR" : "PINNED FUND ANCHOR";
+    if (titleEl) titleEl.textContent = aNode?.label || getSelectedBenchmarkLabel();
+    if (subEl) subEl.textContent = cleanUiCopy(aNode?.subtitle || "Strategy Benchmark Anchor");
+    if (saveBtn) saveBtn.hidden = true;
+    if (prevBtn) prevBtn.disabled = true;
+    if (nextBtn) nextBtn.disabled = true;
+  } else if (state.selectedBridgeId && !state.selectedStartupId) {
     const bNode = (getEffectiveBridgeMap()?.nodes || []).find((n) => n.id === state.selectedBridgeId);
     const famLabel = BRIDGE_FAMILY_VISUAL_META[bNode?.bridgeFamily]?.label || "Bridge Entity";
     if (kickerEl) kickerEl.textContent = "BRIDGE HUB";
@@ -2998,62 +6032,125 @@ async function executeSearchRefinement(customQuery, options = {}) {
   updateSearchInputChrome();
 
   const parsed = parseNaturalLanguageSearchQuery(queryText);
+  const ov = options.explicitOverrides || {};
 
-  const stageFilter =
-    document.getElementById("filterStage")?.value !== "all"
-      ? document.getElementById("filterStage")?.value
-      : parsed.stageFilter || state.targetStage || "all";
-  const region =
-    document.getElementById("filterRegion")?.value !== "all"
-      ? document.getElementById("filterRegion")?.value
-      : parsed.region || "all";
-  const excludeSector = document.getElementById("filterExcludeSector")?.value || "";
-  const raisingSoonOnly = Boolean(document.getElementById("filterRaisingSoon")?.checked) || parsed.raisingSoonOnly;
+  const stageFilter = ov.stageFilter !== undefined
+    ? ov.stageFilter
+    : (document.getElementById("filterStage")?.value !== "all"
+        ? document.getElementById("filterStage")?.value
+        : parsed.stageFilter || state.targetStage || "all");
+  const region = ov.region !== undefined
+    ? ov.region
+    : (document.getElementById("filterRegion")?.value !== "all"
+        ? document.getElementById("filterRegion")?.value
+        : parsed.region || "all");
+  const excludeSector = ov.excludeSector !== undefined
+    ? ov.excludeSector
+    : (document.getElementById("filterExcludeSector")?.value || "");
+  const raisingSoonOnly = ov.raisingSoonOnly !== undefined
+    ? Boolean(ov.raisingSoonOnly)
+    : Boolean(document.getElementById("filterRaisingSoon")?.checked) || parsed.raisingSoonOnly;
   const entityScope = document.getElementById("filterEntityScope")?.value || "startups";
-  const untappedOnly = Boolean(document.getElementById("filterUntappedOnly")?.checked) || Boolean(state.untappedOnly) || parsed.untappedOnly;
-  const filingOnly = Boolean(state.filingOnly) || parsed.filingOnly;
-  const slush2026Only = Boolean(state.onlySlush2026) || parsed.slush2026Only;
+  const untappedOnly = ov.untappedOnly !== undefined
+    ? Boolean(ov.untappedOnly)
+    : Boolean(document.getElementById("filterUntappedOnly")?.checked) || Boolean(state.untappedOnly) || parsed.untappedOnly;
+  const filingOnly = ov.filingOnly !== undefined
+    ? Boolean(ov.filingOnly)
+    : Boolean(state.filingOnly) || parsed.filingOnly;
+  const slush2026Only = ov.slush2026Only !== undefined
+    ? Boolean(ov.slush2026Only)
+    : Boolean(state.onlySlush2026) || parsed.slush2026Only;
   const hideMegaHubs = state.hideMegaHubs !== false;
   const bridgeFamily = state.bridgeFamily && state.bridgeFamily !== "all" ? state.bridgeFamily : "all";
+  const contributionGroup = state.contributionGroup && state.contributionGroup !== "all" ? state.contributionGroup : "all";
+  const feederOnlyFlag = ov.feederOnly !== undefined ? Boolean(ov.feederOnly) : parsed.feederOnly;
+  const alumniOnlyFlag = ov.alumniOnly !== undefined ? Boolean(ov.alumniOnly) : parsed.alumniOnly;
+  const highVelocityFlag = ov.highVelocityOnly !== undefined ? Boolean(ov.highVelocityOnly) : parsed.highVelocityOnly;
+  const maxEmpVal = ov.maxEmployees !== undefined ? ov.maxEmployees : parsed.maxEmployees;
   const filterCount = countActiveRefineFilters();
 
-  const hasActiveFilter = Boolean(queryText.trim()) || filterCount > 0 || bridgeFamily !== "all" || !hideMegaHubs;
+  const hasActiveFilter = Boolean(queryText.trim()) || filterCount > 0 || bridgeFamily !== "all" || contributionGroup !== "all" || !hideMegaHubs;
 
   const resetBtn = document.getElementById("aiSearchResetBtn");
   if (resetBtn) {
     resetBtn.hidden = !Boolean(queryText.trim());
   }
 
-  const res = await fetchJson("/api/refine", {
-    method: "POST",
-    body: JSON.stringify({
-      mode: state.inputMode,
-      fundId: state.selectedFundId,
-      companyIds: state.selectedCompanyIds,
-      rankingMode: mapScoringModeToApi(state.scoringMode),
-      statedThesisOverride: state.statedThesisOverride || undefined,
-      seenCompanyNames: getSeenCompanyNamesList(),
-      entityScope,
-      queryText,
-      stageFilter,
-      region,
-      excludeSector: excludeSector || "none",
-      raisingSoonOnly,
-      untappedOnly,
-      highVelocityOnly: parsed.highVelocityOnly,
-      feederOnly: parsed.feederOnly,
-      filingOnly,
-      alumniOnly: parsed.alumniOnly,
-      sectors: parsed.sectors,
-      countries: parsed.countries,
-      maxEmployees: parsed.maxEmployees,
-      slush2026Only,
-      preferWarm: parsed.preferWarm,
-      hideMegaHubs,
-      bridgeFamily,
-      discoverLive: false
-    })
-  });
+  const trimmedQuery = queryText.trim();
+  const isWhyNotQuery = /^\s*why not\s+/i.test(trimmedQuery);
+  const shouldDiscoverLive =
+    Boolean(trimmedQuery) &&
+    !isWhyNotQuery &&
+    (options.forceLive === true ||
+      state.lastLiveDiscoveredQuery.toLowerCase() !== trimmedQuery.toLowerCase());
+
+  const submitBtnEl = document.getElementById("aiSearchSubmitBtn");
+  const prevSubmitText = submitBtnEl?.textContent || "Explore Map";
+  if (shouldDiscoverLive) {
+    state.liveCalaSearchLoading = true;
+    if (submitBtnEl) {
+      submitBtnEl.disabled = true;
+      submitBtnEl.textContent = "Searching Cala...";
+    }
+    if (state.workspaceMode === "hero" || state.activeTab !== "search") {
+      state.activeTab = "search";
+      document.querySelectorAll(".workspace-panel").forEach((panel) => {
+        panel.hidden = panel.id !== "panel-search";
+      });
+      enterMapWorkspace({ fit: false });
+    }
+    updateAiSynthesisBanner({ loadingMessage: "Searching Live Cala knowledge graph..." });
+  }
+
+  let res;
+  try {
+    res = await fetchJson("/api/refine", {
+      method: "POST",
+      body: JSON.stringify({
+        mode: state.inputMode,
+        fundId: state.selectedFundId,
+        companyIds: state.selectedCompanyIds,
+        rankingMode: mapScoringModeToApi(state.scoringMode),
+        statedThesisOverride: state.statedThesisOverride || undefined,
+        seenCompanyNames: getSeenCompanyNamesList(),
+        entityScope,
+        queryText,
+        stageFilter,
+        region,
+        excludeSector: excludeSector || "none",
+        raisingSoonOnly,
+        untappedOnly,
+        highVelocityOnly: highVelocityFlag,
+        feederOnly: feederOnlyFlag,
+        filingOnly,
+        alumniOnly: alumniOnlyFlag,
+        sectors: parsed.sectors,
+        countries: parsed.countries,
+        maxEmployees: maxEmpVal,
+        slush2026Only,
+        preferWarm: parsed.preferWarm,
+        hideMegaHubs,
+        bridgeFamily,
+        contributionGroup,
+        discoverLive: shouldDiscoverLive
+      })
+    });
+  } finally {
+    if (shouldDiscoverLive) {
+      state.liveCalaSearchLoading = false;
+      if (submitBtnEl) {
+        submitBtnEl.disabled = false;
+        submitBtnEl.textContent = prevSubmitText;
+      }
+    }
+  }
+
+  if (shouldDiscoverLive) {
+    state.lastLiveDiscoveredQuery = trimmedQuery;
+    if (options.forceLive && res.liveDiscovery) {
+      showUiToast(`Live Cala refreshed (${res.liveDiscovery.hydratedEntityCount || 0} entities hydrated)`);
+    }
+  }
 
   if (res.calaBudget) {
     updateTelemetryMasthead(res.calaBudget);
@@ -3063,6 +6160,9 @@ async function executeSearchRefinement(customQuery, options = {}) {
   state.DisplayedShortlist = shortlist;
   state.bridgeMap = res.bridgeMap || null;
   registerKnownItems(state.DisplayedShortlist);
+  if (typeof seedPrimaryPinnedEntity === "function") {
+    seedPrimaryPinnedEntity({ bridgeMap: res.bridgeMap, shortlist });
+  }
 
   // Build compact criteria tags for Side Rail Matches header
   const tags = [...parsed.constraintTags];
@@ -3080,6 +6180,9 @@ async function executeSearchRefinement(customQuery, options = {}) {
   if (expKw.length > 0) {
     tags.push(`Keywords: ${expKw.slice(0, 3).join(", ")}`);
   }
+  if (contributionGroup !== "all") {
+    tags.push(`Lens: ${CONTRIBUTION_VISUAL_META[contributionGroup]?.label || contributionGroup}`);
+  }
   if (bridgeFamily !== "all") {
     tags.push(`Bridge: ${BRIDGE_FAMILY_VISUAL_META[bridgeFamily]?.shortLabel || bridgeFamily}`);
   }
@@ -3094,6 +6197,7 @@ async function executeSearchRefinement(customQuery, options = {}) {
   if (!options.keepSelection) {
     state.selectedStartupId = null;
     state.selectedBridgeId = null;
+    state.selectedAnchorId = null;
     if (!options.keepRailOpen) {
       state.sideRailOpen = false;
     }
@@ -3110,13 +6214,18 @@ async function executeSearchRefinement(customQuery, options = {}) {
     enterMapWorkspace({ fit: false });
   }
 
+  const liveBadge =
+    res.liveDiscovery?.hydratedEntityCount > 0 || res.liveDiscoveredCount > 0
+      ? ` · Live Cala: ${res.liveDiscovery?.hydratedEntityCount || 0} hydrated (${res.liveDiscoveredCount || 0} new)`
+      : "";
   const synthesisText = hasActiveFilter && queryText.trim()
-    ? (parsed.isNaturalLanguage
+    ? `${parsed.isNaturalLanguage
         ? buildAiCopilotSynthesis(queryText, parsed, state.DisplayedShortlist, res)
-        : escapeHtml(cleanUiCopy(res.explanation || `Showing ${state.DisplayedShortlist.length} Cala-verified startups matching "${queryText}".`)))
+        : escapeHtml(cleanUiCopy(res.explanation || `Showing ${state.DisplayedShortlist.length} Cala-verified startups matching "${queryText}".`))}${liveBadge}`
     : null;
 
   syncConstellationControls();
+  renderExploredEntitiesBox();
   renderStartupGrid(state.DisplayedShortlist);
   updateAiSynthesisBanner(synthesisText ? { synthesis: synthesisText } : null);
   renderConstellationMap(getEffectiveBridgeMap(), { fit: options.fit !== false });
@@ -3125,16 +6234,24 @@ async function executeSearchRefinement(customQuery, options = {}) {
 async function resetSearchAndFilters() {
   const inputEl = document.getElementById("aiSearchInput");
   if (inputEl) inputEl.value = "";
+  state.lastLiveDiscoveredQuery = "";
+  state.liveCalaSearchLoading = false;
   state.targetStage = "all";
   state.onlyCallList = false;
   state.onlySlush2026 = false;
   state.hideMegaHubs = true;
   state.bridgeFamily = "all";
+  state.contributionGroup = "all";
   state.filingOnly = false;
   state.untappedOnly = false;
   state.selectedStartupId = null;
   state.selectedBridgeId = null;
+  state.selectedAnchorId = null;
+  state.expandedGroupKey = null;
   state.sideRailOpen = false;
+  if (state.pinnedEntities.length > 1) {
+    state.pinnedEntities = state.pinnedEntities.slice(0, 1);
+  }
   const stageSel = document.getElementById("targetStageSelect");
   if (stageSel) stageSel.value = "all";
   const filterEntityScopeEl = document.getElementById("filterEntityScope");
@@ -5522,11 +8639,8 @@ function bindEvents() {
 
   document.getElementById("toggleFiltersBtn")?.addEventListener("click", () => {
     const strip = document.getElementById("collapsibleFilterStrip");
-    const btn = document.getElementById("toggleFiltersBtn");
-    if (!strip || !btn) return;
-    const nextHidden = !strip.hidden;
-    strip.hidden = nextHidden;
-    btn.setAttribute("aria-expanded", nextHidden ? "false" : "true");
+    const currentlyShown = state.filtersPanelOpen || (strip && !strip.hidden);
+    setFiltersPanelOpen(!currentlyShown, { includeAdvanced: !currentlyShown });
   });
 
   document.querySelectorAll("[data-quick-role]").forEach((btn) => {
@@ -6089,6 +9203,11 @@ function bindEvents() {
   document.getElementById("searchLiveCalaBtn")?.addEventListener("click", () => {
     runSearchLiveCalaLookup();
   });
+  document.getElementById("aiSynthesisBanner")?.addEventListener("click", (e) => {
+    if (e.target.closest("#refreshLiveCalaBtn")) {
+      executeSearchRefinement(undefined, { forceLive: true, fit: true });
+    }
+  });
   document.getElementById("thesisVerifyFundBtn")?.addEventListener("click", () => {
     verifyThesisFundInLiveCala({ silent: false });
   });
@@ -6109,28 +9228,169 @@ function bindEvents() {
   });
   document.getElementById("heroFiltersQuickBtn")?.addEventListener("click", () => {
     enterMapWorkspace({ fit: true });
-    const strip = document.getElementById("collapsibleFilterStrip");
-    const btn = document.getElementById("toggleFiltersBtn");
-    if (strip) strip.hidden = false;
-    if (btn) btn.setAttribute("aria-expanded", "true");
+    setFiltersPanelOpen(true, { includeAdvanced: true });
   });
   document.getElementById("workspaceThesisBtn")?.addEventListener("click", () => {
     switchPrimaryTab("thesis");
+  });
+
+  // Cala Studio top-left Explored Entities Box & Compare Entity Autocomplete
+  document.getElementById("exploredFiltersToggleBtn")?.addEventListener("click", () => {
+    setFiltersPanelOpen(!state.filtersPanelOpen, { includeAdvanced: false });
+  });
+  document.getElementById("mapFiltersToggleBtn")?.addEventListener("click", () => {
+    setFiltersPanelOpen(!state.filtersPanelOpen, { includeAdvanced: false });
+  });
+  document.getElementById("clearExploredEntitiesBtn")?.addEventListener("click", () => {
+    clearComparePins();
+  });
+  document.getElementById("pinnedEntitiesList")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-unpin-key]");
+    if (!btn) return;
+    unpinEntityFromCompare(btn.dataset.unpinKey);
+  });
+
+  const compareInputEl = document.getElementById("compareEntityInput");
+  const compareSuggestEl = document.getElementById("compareEntitySuggest");
+  if (compareInputEl && compareSuggestEl) {
+    const renderCompareSuggestions = (items) => {
+      const pinnedSet = new Set(state.pinnedEntities.map((p) => p.key));
+      const available = (items || []).filter((it) => !pinnedSet.has(`${it.entityType}:${it.id}`)).slice(0, 8);
+      state.compareSuggestItems = available;
+      if (!available.length) {
+        compareSuggestEl.innerHTML = `<div class="compare-suggest-meta" style="padding:6px 8px;">No matching funds or startups found.</div>`;
+        compareSuggestEl.hidden = false;
+        return;
+      }
+      compareSuggestEl.innerHTML = available
+        .map((it, idx) => `
+          <button type="button" class="compare-suggest-btn" data-compare-idx="${idx}">
+            <span class="compare-suggest-main">
+              <span class="compare-suggest-name">${escapeHtml(it.name)}</span>
+              <span class="compare-suggest-meta">${escapeHtml(cleanUiCopy(it.meta || ""))}</span>
+            </span>
+            <span class="compare-suggest-type ${it.entityType === "fund" ? "is-fund" : "is-startup"}">${it.entityType === "fund" ? "Fund" : "Startup"}</span>
+          </button>
+        `)
+        .join("");
+      compareSuggestEl.hidden = false;
+    };
+
+    const runCompareLookup = async (rawQ) => {
+      const q = String(rawQ || "").trim();
+      if (!q) {
+        const fundDefaults = (state.bootstrap?.funds || []).slice(0, 4).map((f) => ({
+          entityType: "fund",
+          id: f.id,
+          name: f.name,
+          meta: [f.hqCity, f.country].filter(Boolean).join(", ") || "Benchmark Fund"
+        }));
+        const compDefaults = (state.DisplayedShortlist || []).slice(0, 4).map((c) => ({
+          entityType: "startup",
+          id: c.id,
+          name: c.name,
+          meta: [c.sector, c.stage, c.country].filter(Boolean).join(" · ")
+        }));
+        renderCompareSuggestions([...fundDefaults, ...compDefaults]);
+        return;
+      }
+      try {
+        const data = await fetchJson(`/api/search?q=${encodeURIComponent(q)}`);
+        const items = [
+          ...(data.funds || []).slice(0, 5).map((f) => ({
+            entityType: "fund",
+            id: f.id,
+            name: f.name,
+            meta: [f.hqCity, f.country].filter(Boolean).join(", ") || "VC Fund"
+          })),
+          ...(data.companies || []).slice(0, 5).map((c) => ({
+            entityType: "startup",
+            id: c.id,
+            name: c.name,
+            meta: [c.sector, c.country].filter(Boolean).join(" · ") || "Startup"
+          }))
+        ];
+        renderCompareSuggestions(items);
+      } catch {
+        compareSuggestEl.hidden = true;
+      }
+    };
+
+    compareInputEl.addEventListener("focus", () => {
+      runCompareLookup(compareInputEl.value);
+    });
+    compareInputEl.addEventListener("input", () => {
+      clearTimeout(state.compareSearchTimer);
+      state.compareSearchTimer = setTimeout(() => runCompareLookup(compareInputEl.value), 140);
+    });
+    compareInputEl.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        compareSuggestEl.hidden = true;
+        compareInputEl.blur();
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const first = state.compareSuggestItems[0];
+        if (first) {
+          compareSuggestEl.hidden = true;
+          compareInputEl.value = "";
+          pinEntityForCompare(first);
+        }
+      }
+    });
+    compareSuggestEl.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-compare-idx]");
+      if (!btn) return;
+      const item = state.compareSuggestItems[Number(btn.dataset.compareIdx)];
+      compareSuggestEl.hidden = true;
+      compareInputEl.value = "";
+      if (item) pinEntityForCompare(item);
+    });
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest(".compare-entity-wrap")) {
+        compareSuggestEl.hidden = true;
+      }
+    });
+  }
+
+  // Bottom-right Quick Inspector Card actions -> Open Full Evidence & Call Questions Rail
+  document.getElementById("mapQuickInspectorCard")?.addEventListener("click", async (e) => {
+    if (e.target.closest("#quickInspectorCloseBtn")) {
+      clearConstellationSelection();
+      return;
+    }
+    if (e.target.closest("#quickInspectorOpenRailBtn")) {
+      state.sideRailOpen = true;
+      state.sideRailTab = state.selectedAnchorId && !state.selectedStartupId && !state.selectedBridgeId ? "strategy" : "evidence";
+      renderSideEvidenceRail();
+      fitConstellationToViewport();
+      if (state.selectedStartupId && (!state.activeBrief || state.activeBrief.id !== state.selectedStartupId)) {
+        await loadStartupBriefData(state.selectedStartupId);
+        renderRailEvidencePane();
+      }
+    }
   });
 
   // Constellation Filter Ribbon controls
   document.getElementById("toggleHideMegaHubsBtn")?.addEventListener("click", async () => {
     state.hideMegaHubs = !(state.hideMegaHubs !== false);
     syncConstellationControls();
-    await executeSearchRefinement(undefined, { keepSelection: true, keepRailOpen: state.sideRailOpen, fit: true });
+    await executeSearchRefinement(undefined, { keepSelection: true, keepRailOpen: state.sideRailOpen, fit: false });
+    if (state.pinnedEntities.length > 1) {
+      await refreshExtraPinnedEntities();
+      renderConstellationMap(getEffectiveBridgeMap(), { fit: false });
+    }
   });
 
   document.getElementById("bridgeFamilySwitcher")?.addEventListener("click", async (e) => {
-    const btn = e.target.closest("[data-bridge-family]");
+    const btn = e.target.closest("[data-contribution-group]");
     if (!btn) return;
-    state.bridgeFamily = btn.dataset.bridgeFamily || "all";
+    state.contributionGroup = btn.dataset.contributionGroup || "all";
     syncConstellationControls();
-    await executeSearchRefinement(undefined, { keepSelection: false, fit: true });
+    await executeSearchRefinement(undefined, { keepSelection: false, fit: false });
+    if (state.pinnedEntities.length > 1) {
+      await refreshExtraPinnedEntities();
+      renderConstellationMap(getEffectiveBridgeMap(), { fit: true });
+    }
   });
 
   document.getElementById("chipFilingOnlyBtn")?.addEventListener("click", async () => {
@@ -6161,6 +9421,7 @@ function bindEvents() {
     await executeSearchRefinement(undefined, { keepSelection: true, fit: true });
   });
   document.getElementById("emptyShowAllBridgesBtn")?.addEventListener("click", async () => {
+    state.contributionGroup = "all";
     state.bridgeFamily = "all";
     syncConstellationControls();
     await executeSearchRefinement(undefined, { keepSelection: false, fit: true });
@@ -6184,7 +9445,7 @@ function bindEvents() {
 
     bridgeCanvasEl.addEventListener("wheel", (e) => {
       if (state.workspaceMode !== "map") return;
-      if (e.target.closest("#sideEvidenceRail, .panel-overlay, .config-modal, .filter-strip, .live-cala-intel-card, .call-list-compare-card")) {
+      if (e.target.closest("#sideEvidenceRail, #exploredEntitiesBox, #mapQuickInspectorCard, #mapMinimalHud, #mapTopCenterBar, #mapViewAllMatchesPill, .map-legend-popover, .map-vertical-controls, .panel-overlay, .config-modal, .filter-strip, .live-cala-intel-card, .call-list-compare-card")) {
         return;
       }
       e.preventDefault();
@@ -6217,7 +9478,7 @@ function bindEvents() {
 
     bridgeCanvasEl.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
-      if (e.target.closest("button, .map-zoom-controls, .map-bottom-left-overlay, .constellation-empty-state")) {
+      if (e.target.closest("button, input, a, #exploredEntitiesBox, #mapQuickInspectorCard, #sideEvidenceRail, #mapMinimalHud, #mapTopCenterBar, #mapViewAllMatchesPill, .map-legend-popover, .map-zoom-controls, .map-bottom-left-overlay, .constellation-empty-state")) {
         return;
       }
       panDragState = {
@@ -6257,6 +9518,39 @@ function bindEvents() {
     bridgeCanvasEl.addEventListener("pointercancel", endCanvasPan);
   }
 
+  const buildMathFirstBridgeOrEdgeTooltip = ({
+    groupHeader,
+    entityName,
+    topSourceRank,
+    rarityScore,
+    famLabel,
+    lift,
+    totalDeals,
+    formulaBreakdown,
+    fallbackWhy,
+    hintText = ""
+  }) => {
+    const rankStr = String(topSourceRank || "AGGREGATOR").toUpperCase();
+    const ptsStr = Number.isFinite(Number(rarityScore)) ? `${Number(rarityScore).toFixed(1)} pts` : "Signal";
+    const liftStr = lift != null ? `${lift}x lift` : null;
+    const dealsStr = totalDeals != null ? `${totalDeals} deals` : null;
+    const subParts = [famLabel, liftStr, dealsStr ? `(${dealsStr})` : null].filter(Boolean);
+    const equation = formulaBreakdown?.formula
+      || (lift != null ? `rarity = ${lift}x lift * 10 + sourceRankBonus (${rankStr})` : `rarity = signalWeight + sourceRankBonus (${rankStr})`);
+    const inputs = formulaBreakdown?.inputs
+      || [entityName, liftStr, dealsStr, `${rankStr} proof`, fallbackWhy].filter(Boolean).join("; ");
+    const plainRole = formulaBreakdown?.plainMeaning || fallbackWhy || "Connects benchmark evidence to target shortlist.";
+
+    return `
+      <div class="tip-head"><strong>${escapeHtml(groupHeader)} · ${escapeHtml(entityName)}</strong>${getSourceRankBadgeHtml(rankStr)}<span class="micro-pill micro-primary">${escapeHtml(ptsStr)}</span></div>
+      ${subParts.length ? `<div class="tip-sub">${escapeHtml(subParts.join(" · "))}</div>` : ""}
+      <div class="tip-row"><strong>Equation:</strong><div class="tip-math">${escapeHtml(cleanUiCopy(equation))}</div></div>
+      <div class="tip-row"><strong>Inputs:</strong><div class="tip-math">${escapeHtml(cleanUiCopy(inputs))}</div></div>
+      <div class="tip-role">${escapeHtml(cleanUiCopy(plainRole))}</div>
+      ${hintText ? `<div class="tip-hint">${escapeHtml(hintText)}</div>` : ""}
+    `;
+  };
+
   // Constellation node & edge interactions
   const nodesLayerEl = document.getElementById("constellationNodesLayer");
   if (nodesLayerEl) {
@@ -6271,19 +9565,135 @@ function bindEvents() {
       const node = state.mapLayoutNodes?.nodeById?.get(nodeId);
       if (!node) return;
       if (node.kind === "anchor") {
-        showMapTooltip(e.clientX, e.clientY, `<strong>${escapeHtml(node.label)}</strong><div>Origin Strategy Anchor · Click to clear selection</div>`);
+        showMapTooltip(
+          e.clientX,
+          e.clientY,
+          `<div class="tip-head"><strong>${escapeHtml(node.label)}</strong><span class="micro-pill micro-primary">Anchor</span></div><div class="tip-sub">Origin Strategy Anchor</div><div class="tip-hint">Click to clear isolated path or reconfigure benchmark.</div>`
+        );
+      } else if (node.kind === "group_hub") {
+        const cg = String(node.groupKey || getNodeContributionGroup(node) || "access").toLowerCase();
+        const cgMeta = CONTRIBUTION_VISUAL_META[cg] || CONTRIBUTION_VISUAL_META.access;
+        const isExpanded = state.expandedGroupKey === cg;
+        const sigPts = Number(node.significanceScore || 0).toFixed(1);
+        const weightStr = Number(node.visualWeight || 1).toFixed(2);
+        const hubStartups = node.startupCount ?? 0;
+        const sigFormula = node.significanceFormula || "topSignalRarity + mean(top3Bridges) + min(4.5, FILING_count * 1.5)";
+        const sigInputs = node.significanceInputs
+          || `Top: ${Number(node.topRarity || 0).toFixed(1)} + Top3 avg: ${Number(node.top3MeanRarity || 0).toFixed(1)} + ${node.filingCount || 0} FILING (+${Number(node.filingBonus || 0).toFixed(1)})`;
+        const contributors = Array.isArray(node.topContributors) ? node.topContributors : [];
+        const contribHtml = contributors.length
+          ? contributors
+              .slice(0, 3)
+              .map((c) => {
+                const metric = c.lift != null ? `${Number(c.lift).toFixed(2)}x lift` : `${Number(c.rarityScore || 0).toFixed(1)} pts`;
+                return `${escapeHtml(c.label)}: ${metric} (${escapeHtml(c.topSourceRank || "AGG")})`;
+              })
+              .join(" · ")
+          : "No verified bridges under active filter";
+        const sigInputsWithCount = String(sigInputs).includes("startup")
+          ? sigInputs
+          : `${sigInputs} | ${hubStartups} ${hubStartups === 1 ? "startup" : "startups"} connected`;
+        showMapTooltip(
+          e.clientX,
+          e.clientY,
+          `
+            <div class="tip-head"><strong>${escapeHtml(cgMeta.headerLabel)} · Contribution Weight: ${sigPts} pts</strong><span class="micro-pill micro-primary">${weightStr}x sector</span></div>
+            <div class="tip-row"><strong>Formula:</strong><div class="tip-math">${escapeHtml(sigFormula)}</div></div>
+            <div class="tip-row"><strong>Exact Inputs:</strong><div class="tip-math">${escapeHtml(sigInputsWithCount)}</div></div>
+            <div class="tip-row"><strong>Top Contributors:</strong><div class="tip-math">${contribHtml}</div></div>
+            <div class="tip-hint">${isExpanded ? "Click hub or Back pill to return to 4 Groups overview." : "Click hub to expand bridges"}</div>
+          `
+        );
       } else if (node.kind === "bridge") {
+        const cg = getNodeContributionGroup(node);
+        const cgMeta = CONTRIBUTION_VISUAL_META[cg] || CONTRIBUTION_VISUAL_META.access;
         const famLabel = BRIDGE_FAMILY_VISUAL_META[node.bridgeFamily]?.label || node.bridgeFamily;
         showMapTooltip(
           e.clientX,
           e.clientY,
-          `<strong>${escapeHtml(node.label)}</strong><div>${escapeHtml(famLabel)} · ${node.lift != null ? `${node.lift}x lift` : "Direct bridge"}${node.totalDeals != null ? ` (${node.totalDeals} deals)` : ""} · ${escapeHtml(node.topSourceRank || "AGGREGATOR")}</div><div style="color:var(--muted);margin-top:2px;">Click to isolate connected startups</div>`
+          buildMathFirstBridgeOrEdgeTooltip({
+            groupHeader: cgMeta.headerLabel,
+            entityName: node.label,
+            topSourceRank: node.topSourceRank,
+            rarityScore: node.rarityScore,
+            famLabel,
+            lift: node.lift,
+            totalDeals: node.totalDeals,
+            formulaBreakdown: node.formulaBreakdown,
+            fallbackWhy: node.whyMatters,
+            hintText: "Click node to isolate connected target startups."
+          })
         );
       } else if (node.kind === "startup") {
+        const fullItem = state.DisplayedShortlist.find((c) => c.id === node.id) || state.allKnownItems.get(node.id);
+        const cg = getNodeContributionGroup(node);
+        const cgMeta = CONTRIBUTION_VISUAL_META[cg] || CONTRIBUTION_VISUAL_META.access;
+        const topPath = fullItem?.evidenceFolders?.hiddenBridges?.paths?.[0];
+        const evMap = state.mapLayoutNodes?.startupGroupEvidence?.get?.(node.id) || {};
+        const primaryEv = evMap[cg] || Object.values(evMap)[0] || null;
+
+        let matchOrderFormula = node.matchOrderFormula || fullItem?.matchOrderFormula || null;
+        if (!matchOrderFormula && fullItem?.scoreBreakdown) {
+          const sb = fullItem.scoreBreakdown;
+          const entries = [
+            ["Sector", sb.sector?.earned ?? 0, sb.sector?.max ?? 25],
+            ["Stage", sb.stage?.earned ?? 0, sb.stage?.max ?? 25],
+            ["Syndicate", sb.syndicate?.earned ?? 0, sb.syndicate?.max ?? 20],
+            ["Momentum", sb.momentum?.earned ?? 0, sb.momentum?.max ?? 15],
+            ["Geo", sb.geography?.earned ?? 0, sb.geography?.max ?? 10],
+            ["Timing/Filing", sb.arbitrageBonus?.earned ?? 0, sb.arbitrageBonus?.max ?? 5]
+          ];
+          const met = entries.filter(([, eVal]) => eVal > 0).length;
+          matchOrderFormula = `Criteria ${met}/${entries.length} | Rank Score: ${fullItem.suitabilityScore ?? node.suitabilityScore ?? 0}/99 = ${entries.map(([k, v, m]) => `${k}(${v}/${m})`).join(" + ")}`;
+        }
+        if (!matchOrderFormula) {
+          matchOrderFormula = fullItem?.suitabilityScore != null || node.suitabilityScore != null
+            ? `Rank Score: ${fullItem?.suitabilityScore ?? node.suitabilityScore}/99 (computed from verified Cala criteria)`
+            : "Computed from verified Cala sector, bridge, and timing records";
+        }
+
+        const bridgeFb =
+          node.bestBridgeFormula ||
+          primaryEv?.bestEdge?.formulaBreakdown ||
+          primaryEv?.bestBridge?.formulaBreakdown ||
+          topPath?.formulaBreakdown ||
+          null;
+        const bridgeEq =
+          bridgeFb?.formula ||
+          (primaryEv?.bestBridge?.lift != null
+            ? `lift * 10 + sourceRankBonus = ${Number(primaryEv.topRarity || 0).toFixed(1)} pts`
+            : "sharedDeals / sqrt(totalDeals) + sourceRankBonus");
+        const bridgeInputs =
+          bridgeFb?.inputs ||
+          node.bestBridgeSummary ||
+          topPath?.summary ||
+          "No non-mega bridge under active filter";
+
+        const velMath = node.velocityFormula || fullItem?.evidenceFolders?.observedActivity?.velocityFormula || "Not calculated: <2 dated Cala observations";
+        const timeMath = node.timingFormula || fullItem?.diligencePacket?.timingFormula || "Not calculated: no dated prior round";
+        const conflict = node.conflictRisk || fullItem?.diligencePacket?.conflictRisk || { level: "None" };
+        const conflictLine = conflict.level && conflict.level !== "None"
+          ? `<span class="tip-warn">Conflict: ${escapeHtml(conflict.level)} (${escapeHtml(cleanUiCopy(conflict.companyName || conflict.reason || ""))})</span>`
+          : "Conflict: None";
+        const missingGaps = node.missingGapCount ?? (fullItem?.evidenceFolders?.proofAndGaps?.missingFromCala || []).length ?? 0;
+        const tierLabel = node.signalTier || fullItem?.signalTier || "Contextual Match";
+        const rankNum = node.triageRank || (state.DisplayedShortlist.findIndex((c) => c.id === node.id) + 1) || "";
+
         showMapTooltip(
           e.clientX,
           e.clientY,
-          `<strong>${escapeHtml(node.label)}</strong><div>${escapeHtml(node.sector || "")} · ${escapeHtml(node.stage || "")} · ${escapeHtml(node.country || "")}</div><div>Top rank: ${escapeHtml(node.topSourceRank || "AGGREGATOR")} · ${node.missingGapCount || 0} missing field(s) in Cala</div><div style="color:var(--muted);margin-top:2px;">Click to inspect 3 Evidence Folders</div>`
+          `
+            <div class="tip-head"><strong>${rankNum ? `#${rankNum} ` : ""}${escapeHtml(node.label)} · Primary: ${escapeHtml(cgMeta.headerLabel)}</strong><span class="micro-pill micro-primary">${escapeHtml(tierLabel)}</span></div>
+            <div class="tip-sub">${escapeHtml(node.sector || "")} · ${escapeHtml(node.stage || "")} · ${escapeHtml(node.country || "")} · ${escapeHtml(node.topSourceRank || "AGGREGATOR")} proof</div>
+            <div class="tip-row"><strong>Match Order Formula:</strong><div class="tip-math">${escapeHtml(cleanUiCopy(matchOrderFormula))}</div></div>
+            <div class="tip-row"><strong>Primary Bridge Math:</strong><div class="tip-math">${escapeHtml(cleanUiCopy(bridgeEq))}</div><div class="tip-math">${escapeHtml(cleanUiCopy(bridgeInputs))}</div></div>
+            <div class="tip-row">
+              <div><strong>Velocity:</strong> <span class="tip-math">${escapeHtml(cleanUiCopy(velMath))}</span></div>
+              <div style="margin-top:2px;"><strong>Timing:</strong> <span class="tip-math">${escapeHtml(cleanUiCopy(timeMath))}</span></div>
+            </div>
+            <div class="tip-row">${conflictLine} · ${missingGaps} fields Not found in Cala</div>
+            <div class="tip-hint">Click orb to inspect full formulas &amp; Call #1 questions.</div>
+          `
         );
       }
     });
@@ -6312,14 +9722,21 @@ function bindEvents() {
       e.stopPropagation();
       const kind = nodeEl.dataset.nodeKind;
       if (kind === "startup") {
-        selectStartupFromWorkspace(nodeEl.dataset.startupId, { tab: "evidence" });
+        selectStartupFromWorkspace(nodeEl.dataset.startupId, { openRail: state.sideRailOpen, tab: "evidence" });
+      } else if (kind === "group_hub") {
+        const nodeObj = state.mapLayoutNodes?.nodeById?.get(nodeEl.dataset.nodeId);
+        const gk = nodeEl.dataset.groupKey || nodeObj?.groupKey;
+        if (gk) {
+          toggleExpandedContributionGroup(gk);
+        }
       } else if (kind === "bridge") {
-        selectBridgeFromWorkspace(nodeEl.dataset.bridgeId);
+        selectBridgeFromWorkspace(nodeEl.dataset.bridgeId, { openRail: state.sideRailOpen });
       } else if (kind === "anchor") {
-        if (state.selectedStartupId || state.selectedBridgeId) {
+        const anchorId = nodeEl.dataset.nodeId;
+        if (state.selectedAnchorId === anchorId) {
           clearConstellationSelection();
         } else {
-          enterOnboarding(1);
+          selectAnchorFromWorkspace(anchorId, { openRail: state.sideRailOpen });
         }
       }
     });
@@ -6329,25 +9746,68 @@ function bindEvents() {
   if (constellationSvgEl) {
     constellationSvgEl.addEventListener("mouseover", (e) => {
       const hit = e.target.closest(".edge-hit-target");
-      if (!hit) return;
-      const edgeId = hit.getAttribute("data-edge-id");
-      const effMap = getEffectiveBridgeMap();
-      const edge = (effMap?.edges || []).find((ed) => ed.id === edgeId);
-      if (!edge) return;
-      const focusNodeId = hit.getAttribute("data-edge-to");
-      if (focusNodeId && state.hoveredNodeId !== focusNodeId) {
-        state.hoveredNodeId = focusNodeId;
-        applyPathLaserIsolation();
+      if (hit) {
+        const edgeId = hit.getAttribute("data-edge-id");
+        const effMap = getEffectiveBridgeMap();
+        const edge = (state.mapLayoutNodes?.displayEdges || []).find((ed) => ed.id === edgeId)
+          || (effMap?.edges || []).find((ed) => ed.id === edgeId);
+        if (!edge) return;
+        const focusNodeId = hit.getAttribute("data-edge-to");
+        if (focusNodeId && state.hoveredNodeId !== focusNodeId) {
+          state.hoveredNodeId = focusNodeId;
+          applyPathLaserIsolation();
+        }
+        const cg = getNodeContributionGroup(edge);
+        const cgMeta = CONTRIBUTION_VISUAL_META[cg] || CONTRIBUTION_VISUAL_META.access;
+        const famLabel = BRIDGE_FAMILY_VISUAL_META[edge.bridgeFamily]?.shortLabel || edge.bridgeFamily || "Bridge";
+        const fromNode = state.mapLayoutNodes?.nodeById?.get(edge.from);
+        const toNode = state.mapLayoutNodes?.nodeById?.get(edge.to);
+        const entityName =
+          edge.bridgeEntityName ||
+          (fromNode?.kind === "bridge" ? fromNode.label : toNode?.kind === "bridge" ? toNode.label : edge.label || `${fromNode?.label || ""} -> ${toNode?.label || ""}`);
+        showMapTooltip(
+          e.clientX,
+          e.clientY,
+          buildMathFirstBridgeOrEdgeTooltip({
+            groupHeader: cgMeta.headerLabel,
+            entityName,
+            topSourceRank: edge.topSourceRank,
+            rarityScore: edge.rarityScore,
+            famLabel,
+            lift: edge.lift ?? fromNode?.lift ?? toNode?.lift ?? null,
+            totalDeals: edge.totalDeals ?? fromNode?.totalDeals ?? toNode?.totalDeals ?? null,
+            formulaBreakdown: edge.formulaBreakdown || fromNode?.formulaBreakdown || toNode?.formulaBreakdown || null,
+            fallbackWhy: edge.whyMatters || edge.label || ""
+          })
+        );
+        return;
       }
-      showMapTooltip(
-        e.clientX,
-        e.clientY,
-        `<strong>${escapeHtml(BRIDGE_FAMILY_VISUAL_META[edge.bridgeFamily]?.label || "Bridge Edge")}</strong> · ${escapeHtml(edge.topSourceRank || "AGGREGATOR")}<div>${escapeHtml(cleanUiCopy(edge.label || ""))}</div>`
-      );
+      const peerHit = e.target.closest(".peer-edge-hit-target");
+      if (peerHit) {
+        const peerEdgeId = peerHit.getAttribute("data-peer-edge-id");
+        const effMap = getEffectiveBridgeMap();
+        const peerEdge = (effMap?.peerEdges || []).find((pe) => pe.id === peerEdgeId);
+        if (!peerEdge) return;
+        const focusNodeId = peerHit.getAttribute("data-edge-to") || peerHit.getAttribute("data-edge-from");
+        if (focusNodeId && state.hoveredNodeId !== focusNodeId) {
+          state.hoveredNodeId = focusNodeId;
+          applyPathLaserIsolation();
+        }
+        const kindLabel = peerEdge.kind === "shared_alumni"
+          ? "Shared Alumni Lineage"
+          : peerEdge.kind === "shared_investor"
+            ? "Shared Syndicate / Investor"
+            : "Peer Network Link";
+        showMapTooltip(
+          e.clientX,
+          e.clientY,
+          `<strong>${escapeHtml(kindLabel)}</strong><div>${escapeHtml(cleanUiCopy(peerEdge.label || ""))}</div>`
+        );
+      }
     });
 
     constellationSvgEl.addEventListener("mouseout", (e) => {
-      const hit = e.target.closest(".edge-hit-target");
+      const hit = e.target.closest(".edge-hit-target, .peer-edge-hit-target");
       if (!hit) return;
       state.hoveredNodeId = null;
       applyPathLaserIsolation();
@@ -6356,16 +9816,77 @@ function bindEvents() {
 
     constellationSvgEl.addEventListener("click", (e) => {
       const hit = e.target.closest(".edge-hit-target");
-      if (!hit) return;
-      const toId = hit.getAttribute("data-edge-to");
-      const node = state.mapLayoutNodes?.nodeById?.get(toId);
-      if (node?.kind === "startup") {
-        selectStartupFromWorkspace(toId, { tab: "evidence" });
-      } else if (node?.kind === "bridge") {
-        selectBridgeFromWorkspace(toId);
+      if (hit) {
+        const toId = hit.getAttribute("data-edge-to");
+        const node = state.mapLayoutNodes?.nodeById?.get(toId);
+        if (node?.kind === "startup") {
+          selectStartupFromWorkspace(toId, { tab: "evidence" });
+        } else if (node?.kind === "bridge") {
+          selectBridgeFromWorkspace(toId);
+        } else if (node?.kind === "group_hub" && node.groupKey) {
+          toggleExpandedContributionGroup(node.groupKey);
+        }
+        return;
+      }
+      const peerHit = e.target.closest(".peer-edge-hit-target");
+      if (peerHit) {
+        const toId = peerHit.getAttribute("data-edge-to") || peerHit.getAttribute("data-edge-from");
+        const node = state.mapLayoutNodes?.nodeById?.get(toId);
+        if (node?.kind === "startup") {
+          selectStartupFromWorkspace(toId, { tab: "evidence" });
+        }
       }
     });
   }
+
+  document.getElementById("dismissStartGuideBtn")?.addEventListener("click", () => {
+    state.startGuideDismissed = true;
+    syncConstellationControls();
+  });
+
+  document.getElementById("toggleCompareBoxBtn")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    state.compareBoxOpen = !state.compareBoxOpen;
+    renderExploredEntitiesBox();
+  });
+
+  document.getElementById("mapLegendToggleBtn")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setLegendPopoverOpen(!state.legendPopoverOpen);
+  });
+
+  document.getElementById("mapLegendCloseBtn")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setLegendPopoverOpen(false);
+  });
+
+  document.addEventListener("click", (e) => {
+    if (state.legendPopoverOpen && !e.target.closest("#mapMinimalHud")) {
+      setLegendPopoverOpen(false);
+    }
+  });
+
+  document.getElementById("mapDrilldownBackBtn")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (state.expandedGroupKey) {
+      toggleExpandedContributionGroup(state.expandedGroupKey);
+    }
+  });
+
+  document.getElementById("mapViewAllMatchesPill")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    state.sideRailOpen = true;
+    state.sideRailTab = "matches";
+    renderSideEvidenceRail();
+    renderConstellationMap(getEffectiveBridgeMap(), { fit: true });
+  });
+
+  document.getElementById("emptyRelaxSuggestions")?.addEventListener("click", (e) => {
+    const relaxBtn = e.target.closest("[data-relax-filter]");
+    if (relaxBtn) {
+      applyRelaxSuggestion(relaxBtn.dataset.relaxFilter, relaxBtn.dataset.relaxValue);
+    }
+  });
 
   // Collapsible Right-Side Information / Evidence Rail events
   document.getElementById("sideEvidenceRail")?.addEventListener("mouseenter", () => {
@@ -6373,6 +9894,43 @@ function bindEvents() {
     applyPathLaserIsolation();
     hideMapTooltip();
   });
+
+  const sideRailResizeHandleEl = document.getElementById("sideRailResizeHandle");
+  const sideRailEl = document.getElementById("sideEvidenceRail");
+  if (sideRailResizeHandleEl && sideRailEl) {
+    sideRailResizeHandleEl.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 && e.pointerType === "mouse") return;
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startWidth = sideRailEl.getBoundingClientRect().width || state.sideRailWidth || 356;
+      const maxAllowed = Math.min(500, Math.max(320, window.innerWidth - 28));
+      sideRailResizeHandleEl.classList.add("is-dragging");
+      try {
+        sideRailResizeHandleEl.setPointerCapture(e.pointerId);
+      } catch {}
+
+      const onMove = (ev) => {
+        const delta = startX - ev.clientX;
+        const clamped = Math.round(Math.max(290, Math.min(maxAllowed, startWidth + delta)));
+        state.sideRailWidth = clamped;
+        sideRailEl.style.width = `${clamped}px`;
+        document.documentElement.style.setProperty("--rail-width", `${clamped}px`);
+        applyMapViewportTransform();
+      };
+
+      const onEnd = () => {
+        sideRailResizeHandleEl.classList.remove("is-dragging");
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onEnd);
+        window.removeEventListener("pointercancel", onEnd);
+      };
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onEnd);
+      window.addEventListener("pointercancel", onEnd);
+    });
+  }
 
   document.getElementById("sideRailCollapsedTab")?.addEventListener("click", () => {
     state.sideRailOpen = true;
@@ -6419,6 +9977,11 @@ function bindEvents() {
   });
 
   document.getElementById("railMatchesList")?.addEventListener("click", (e) => {
+    const relaxBtn = e.target.closest("[data-relax-filter]");
+    if (relaxBtn) {
+      applyRelaxSuggestion(relaxBtn.dataset.relaxFilter, relaxBtn.dataset.relaxValue);
+      return;
+    }
     const resetBtn = e.target.closest("#railEmptyResetBtn");
     if (resetBtn) {
       resetSearchAndFilters();
@@ -6430,10 +9993,61 @@ function bindEvents() {
     }
   });
 
+  document.getElementById("railEvidenceContent")?.addEventListener("input", (e) => {
+    const noteInput = e.target.closest("#railDecisionNoteInput");
+    if (!noteInput) return;
+    const saved = saveAnalystDecision(noteInput.dataset.startupId, { note: noteInput.value });
+    const tsEl = document.getElementById("railDecisionTimestamp");
+    if (tsEl && saved) tsEl.textContent = formatDecisionTimestamp(saved.updatedAt);
+  });
+
   document.getElementById("railEvidenceContent")?.addEventListener("click", async (e) => {
+    const decisionBtn = e.target.closest("[data-decision-status]");
+    if (decisionBtn) {
+      const sId = decisionBtn.dataset.startupId;
+      const clicked = decisionBtn.dataset.decisionStatus;
+      const cur = getAnalystDecision(sId).decision;
+      const nextStatus = cur === clicked ? "" : clicked;
+      saveAnalystDecision(sId, { decision: nextStatus });
+      renderRailEvidencePane();
+      renderRailMatchesPane();
+      showUiToast(nextStatus ? `Logged Monday status: ${nextStatus}` : "Cleared Monday decision tag");
+      return;
+    }
+    const memoBtn = e.target.closest("#railCopyMondayMemoBtn");
+    if (memoBtn) {
+      await copyMondayMemoForStartup(memoBtn.dataset.startupId);
+      return;
+    }
+    const formulaBtn = e.target.closest("[data-toggle-formula]");
+    if (formulaBtn) {
+      const fKey = formulaBtn.dataset.toggleFormula;
+      const railBody = document.querySelector("#sideEvidenceRail .side-rail-body");
+      const prevScroll = railBody ? railBody.scrollTop : 0;
+      if (state.expandedFormulas.has(fKey)) {
+        state.expandedFormulas.delete(fKey);
+      } else {
+        state.expandedFormulas.add(fKey);
+      }
+      renderRailEvidencePane();
+      if (railBody) railBody.scrollTop = prevScroll;
+      return;
+    }
+    const flagBtn = e.target.closest("[data-toggle-flag-rule]");
+    if (flagBtn) {
+      const fId = flagBtn.dataset.toggleFlagRule;
+      state.activeScreeningFlagId = state.activeScreeningFlagId === fId ? null : fId;
+      renderRailEvidencePane();
+      return;
+    }
     const jumpBtn = e.target.closest("[data-rail-select-startup]");
     if (jumpBtn) {
       selectStartupFromWorkspace(jumpBtn.dataset.railSelectStartup, { tab: "evidence" });
+      return;
+    }
+    const expandBtn = e.target.closest("#railExpandCalaBtn");
+    if (expandBtn) {
+      await expandLiveCalaLinksForStartup(expandBtn.dataset.startupId);
       return;
     }
     if (e.target.closest("#railRevealMegaHubsBtn")) {
@@ -6571,6 +10185,7 @@ async function init() {
 
   syncScoringModeButtons();
   syncNetworkSourceButtons();
+  setFiltersPanelOpen(false, { includeAdvanced: false });
   syncConstellationControls();
   updateTelemetryMasthead(bootstrap.coverageStats?.calaBudget);
   renderFundQuickPicks();

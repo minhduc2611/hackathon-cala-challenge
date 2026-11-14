@@ -230,11 +230,53 @@ test('POST /api/analyze, POST /api/refine (hideMegaHubs/bridgeFamily), and GET /
     const analyzeData = await analyzeRes.json();
     assert.ok(analyzeData.bridgeMap);
     assert.ok(analyzeData.bridgeMap.stats.renderedStartups <= 12);
-    assert.equal(analyzeData.bridgeMap.clusters.length, 4);
+    assert.equal(analyzeData.bridgeMap.clusters.length, 5);
+    assert.ok(Array.isArray(analyzeData.bridgeMap.peerEdges));
+    const apiNodeIds = new Set(analyzeData.bridgeMap.nodes.map((n) => n.id));
+    for (const pe of analyzeData.bridgeMap.peerEdges) {
+      assert.ok(apiNodeIds.has(pe.from));
+      assert.ok(apiNodeIds.has(pe.to));
+    }
     assert.ok(analyzeData.shortlist[0].evidenceFolders);
     assert.ok(analyzeData.shortlist[0].evidenceFolders.hiddenBridges);
     assert.ok(analyzeData.shortlist[0].evidenceFolders.observedActivity);
     assert.ok(analyzeData.shortlist[0].evidenceFolders.proofAndGaps);
+    assert.ok(analyzeData.shortlist[0].diligencePacket);
+    assert.ok(analyzeData.shortlist[0].diligencePacket.conflictRisk);
+    assert.ok(Array.isArray(analyzeData.shortlist[0].diligencePacket.callQuestions));
+
+    const refineTwinRes = await fetch(`${baseUrl}/api/refine`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'fund',
+        fundId: 'lifeline-ventures',
+        bridgeFamily: 'portfolio_twin',
+        hideMegaHubs: true
+      })
+    });
+    assert.equal(refineTwinRes.status, 200);
+    const refineTwinData = await refineTwinRes.json();
+    assert.equal(refineTwinData.appliedFilters.bridgeFamily, 'portfolio_twin');
+    assert.ok(refineTwinData.shortlist.length >= 1);
+    assert.ok(refineTwinData.bridgeMap.clusters.find((c) => c.bridgeFamily === 'portfolio_twin').nodeCount >= 1);
+
+    const refineStrictEmptyRes = await fetch(`${baseUrl}/api/refine`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'fund',
+        fundId: 'lifeline-ventures',
+        slush2026Only: true,
+        bridgeFamily: 'portfolio_twin',
+        hideMegaHubs: true
+      })
+    });
+    assert.equal(refineStrictEmptyRes.status, 200);
+    const refineStrictEmptyData = await refineStrictEmptyRes.json();
+    assert.equal(refineStrictEmptyData.shortlist.length, 0);
+    assert.equal(refineStrictEmptyData.usedSoftFallback, false);
+    assert.ok(Array.isArray(refineStrictEmptyData.relaxSuggestions) && refineStrictEmptyData.relaxSuggestions.length >= 1);
 
     const refineAlumniRes = await fetch(`${baseUrl}/api/refine`, {
       method: 'POST',
@@ -254,6 +296,21 @@ test('POST /api/analyze, POST /api/refine (hideMegaHubs/bridgeFamily), and GET /
     assert.ok(refineAlumniData.bridgeMap);
     assert.ok(refineAlumniData.bridgeMap.clusters.find((c) => c.bridgeFamily === 'alumni_spinout').nodeCount >= 1);
 
+    const calaDiscoverRes = await fetch(`${baseUrl}/api/cala-discover`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'fund',
+        fundId: 'lifeline-ventures',
+        queryText: 'Pleo',
+        hideMegaHubs: true
+      })
+    });
+    assert.equal(calaDiscoverRes.status, 200);
+    const calaDiscoverData = await calaDiscoverRes.json();
+    assert.ok(calaDiscoverData.bridgeMap);
+    assert.ok(Array.isArray(calaDiscoverData.relaxSuggestions));
+
     const refineRevealRes = await fetch(`${baseUrl}/api/refine`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -268,14 +325,332 @@ test('POST /api/analyze, POST /api/refine (hideMegaHubs/bridgeFamily), and GET /
     assert.equal(refineRevealData.appliedFilters.hideMegaHubs, false);
     assert.equal(refineRevealData.bridgeMap.stats.hideMegaHubsApplied, false);
     assert.equal(refineRevealData.bridgeMap.stats.suppressedMegaHubCount, 0);
+    assert.equal(refineRevealData.bridgeMap.contributionClusters.length, 4);
+    assert.equal(refineRevealData.bridgeMap.clusters.length, 5);
+
+    const refineTimingRes = await fetch(`${baseUrl}/api/refine`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'fund',
+        fundId: 'lifeline-ventures',
+        contributionGroup: 'timing',
+        hideMegaHubs: true
+      })
+    });
+    assert.equal(refineTimingRes.status, 200);
+    const refineTimingData = await refineTimingRes.json();
+    assert.equal(refineTimingData.appliedFilters.contributionGroup, 'timing');
+    assert.ok(refineTimingData.shortlist.length >= 1);
+    assert.ok(refineTimingData.bridgeMap.nodes.filter((n) => n.kind === 'bridge').every((n) => n.contributionGroup === 'timing'));
+
+    const refineCautionRes = await fetch(`${baseUrl}/api/refine`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'fund',
+        fundId: 'lifeline-ventures',
+        contributionGroup: 'caution',
+        hideMegaHubs: false
+      })
+    });
+    assert.equal(refineCautionRes.status, 200);
+    const refineCautionData = await refineCautionRes.json();
+    assert.equal(refineCautionData.appliedFilters.contributionGroup, 'caution');
+    assert.ok(refineCautionData.shortlist.length >= 1);
 
     const briefRes = await fetch(`${baseUrl}/api/brief?startupId=voltgrid&fundId=lifeline-ventures`);
     assert.equal(briefRes.status, 200);
     const briefData = await briefRes.json();
     assert.ok(briefData.evidenceFolders);
     assert.ok(briefData.evidenceFolders.hiddenBridges.paths.some((p) => p.bridgeFamily === 'alumni_spinout'));
+    assert.ok(briefData.evidenceFolders.hiddenBridges.paths.every((p) => p.formulaBreakdown && p.formulaBreakdown.inputs));
+    assert.ok(typeof briefData.evidenceFolders.observedActivity.velocityFormula === 'string');
+    assert.ok(briefData.diligencePacket);
+    assert.ok(typeof briefData.diligencePacket.timingFormula === 'string');
+    assert.ok(typeof briefData.signalTier === 'string');
+    assert.ok(briefData.diligencePacket.callQuestions.length >= 3);
     assert.ok(Array.isArray(briefData.notFoundInCala) && briefData.notFoundInCala.length >= 4);
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('POST /api/refine with discoverLive queries Company+Organization+Person, expands Person bridges, unpacks nested numerical observations, and degrades gracefully offline', async () => {
+  const searchCalls = [];
+  const introspectCalls = [];
+  const retrieveBodies = [];
+  const ksCalls = [];
+
+  const mockPersonId = 'mock-person-sara-1';
+  const mockDirectCoId = 'mock-co-kinetix-1';
+  const mockKsCoId = 'mock-co-quantgrid-2';
+  const mockAngelCoId = 'mock-co-solarflow-3';
+
+  const mockEntities = {
+    [mockPersonId]: {
+      id: mockPersonId,
+      name: 'Sara Lindqvist',
+      entity_type: 'Person',
+      description: 'Founder and angel backer across Nordic deeptech startups.',
+      relationships: {
+        outgoing: {
+          WORKS_AT: [
+            {
+              id: 'mock-org-prev-0',
+              name: 'Spotify AB',
+              entity_type: 'Company',
+              properties: { role: 'VP Engineering', valid_since: '2018-01-01', valid_until: '2022-06-01' }
+            }
+          ],
+          FOUNDED: [
+            {
+              id: mockDirectCoId,
+              name: 'Kinetix Robotics Oy',
+              entity_type: 'Company',
+              properties: { valid_since: '2023-02-01' }
+            }
+          ],
+          INVESTED_IN: [
+            {
+              id: mockAngelCoId,
+              name: 'SolarFlow AB',
+              entity_type: 'Company',
+              properties: { role: 'Angel Investor', valid_since: '2024-09-01' }
+            }
+          ]
+        },
+        incoming: {}
+      }
+    },
+    [mockDirectCoId]: {
+      id: mockDirectCoId,
+      name: 'Kinetix Robotics Oy',
+      entity_type: 'Company',
+      description: 'Industrial autonomous assembly robotics founded in 2023 in Helsinki, Finland.',
+      properties: {
+        website: { value: 'https://kinetix.fi' }
+      },
+      relationships: {
+        outgoing: {
+          OPERATES_IN_INDUSTRY: [{ id: 'ind-1', name: 'Robotics & Automation' }],
+          PARTICIPATES_IN_FUNDING_ROUND: [
+            { id: 'rnd-mock-1', name: 'Pre-Seed Round', properties: { role: 'ISSUER' } }
+          ]
+        },
+        incoming: {
+          FOUNDED: [{ id: mockPersonId, name: 'Sara Lindqvist', properties: { valid_since: '2023-02-01' } }]
+        }
+      },
+      numerical_observations: [
+        {
+          type: 'ObservableProperty',
+          id: 'obs-emp-1',
+          name: 'AverageNumberEmployeesDuringPeriod',
+          properties: { unit: 'Count' },
+          data: [
+            {
+              time: '2023-12-31T00:00:00Z',
+              value: 9,
+              origin: { name: 'Finnish Trade Register PRH', source: 'PRH', url: 'https://prh.fi/kinetix', published_time: '2024-02-15T00:00:00Z' }
+            },
+            {
+              time: '2025-12-31T00:00:00Z',
+              value: 24,
+              origin: { name: 'Finnish Trade Register PRH', source: 'PRH', url: 'https://prh.fi/kinetix-2025', published_time: '2026-02-15T00:00:00Z' }
+            }
+          ]
+        },
+        {
+          type: 'FinancialMetric',
+          id: 'obs-cash-1',
+          name: 'CashBankOnHand',
+          properties: { unit: 'EUR' },
+          data: [
+            {
+              time: '2025-12-31T00:00:00Z',
+              value: 1850000,
+              origin: { name: 'Finnish Trade Register PRH Filing', source: 'FILING', url: 'https://prh.fi/kinetix-bs', published_time: '2026-03-01T00:00:00Z' }
+            }
+          ]
+        }
+      ]
+    },
+    [mockKsCoId]: {
+      id: mockKsCoId,
+      name: 'QuantGrid Labs Oy',
+      entity_type: 'Company',
+      description: 'Grid control optimization platform founded in 2024 in Espoo, Finland.',
+      relationships: { outgoing: {}, incoming: {} },
+      numerical_observations: []
+    },
+    [mockAngelCoId]: {
+      id: mockAngelCoId,
+      name: 'SolarFlow AB',
+      entity_type: 'Company',
+      description: 'Grid storage software founded in 2024 in Stockholm, Sweden.',
+      relationships: { outgoing: {}, incoming: {} },
+      numerical_observations: []
+    }
+  };
+
+  const mockCalaClient = {
+    getBudgetStatus: () => ({ liveCallsUsed: searchCalls.length + ksCalls.length, liveCallsRemaining: 240, maxLiveCalls: 250, hasApiKey: true }),
+    async calaEntitySearch(query, limit, entityTypes) {
+      searchCalls.push({ query, limit, entityTypes });
+      return {
+        fromCache: false,
+        data: {
+          entities: [
+            { id: mockPersonId, name: 'Sara Lindqvist', entity_type: 'Person', description: 'Founder and angel backer.' },
+            { id: mockDirectCoId, name: 'Kinetix Robotics Oy', entity_type: 'Company', description: 'Robotics in Helsinki.' }
+          ]
+        }
+      };
+    },
+    async calaKnowledgeSearch(query, opts) {
+      ksCalls.push({ query, opts });
+      return {
+        fromCache: false,
+        data: {
+          answer: 'Sara Lindqvist founded Kinetix Robotics Oy and angel-backed SolarFlow AB.',
+          entities: [
+            { id: mockKsCoId, name: 'QuantGrid Labs Oy', entity_type: 'Company', description: 'Grid platform in Espoo.' },
+            { id: mockPersonId, name: 'Sara Lindqvist', entity_type: 'Person', description: 'Founder.' }
+          ]
+        }
+      };
+    },
+    async calaIntrospect(id) {
+      introspectCalls.push(id);
+      if (id === mockDirectCoId) {
+        return {
+          fromCache: false,
+          data: {
+            properties: ['name', 'description', 'website'],
+            relationships: { outgoing: ['OPERATES_IN_INDUSTRY', 'PARTICIPATES_IN_FUNDING_ROUND'], incoming: ['FOUNDED'] },
+            numerical_observations: {
+              ObservableProperty: [{ id: 'obs-emp-1', name: 'AverageNumberEmployeesDuringPeriod' }],
+              FinancialMetric: [{ id: 'obs-cash-1', name: 'CashBankOnHand' }]
+            }
+          }
+        };
+      }
+      if (id === mockPersonId) {
+        return {
+          fromCache: false,
+          data: {
+            properties: ['name', 'description'],
+            relationships: { outgoing: ['WORKS_AT', 'FOUNDED', 'INVESTED_IN'], incoming: [] },
+            numerical_observations: {}
+          }
+        };
+      }
+      return {
+        fromCache: false,
+        data: { properties: ['name', 'description'], relationships: { outgoing: [], incoming: [] }, numerical_observations: {} }
+      };
+    },
+    async calaRetrieveEntity(id, body) {
+      retrieveBodies.push({ id, body });
+      return { fromCache: false, data: mockEntities[id] || { id, name: 'Unknown', entity_type: 'Company' } };
+    }
+  };
+
+  const tmpDirOnline = fs.mkdtempSync(path.join(os.tmpdir(), 'rte-api-live-cala-'));
+  const serverOnline = createAppServer({
+    calaClient: mockCalaClient,
+    registryClient: createRegistryClient({ cachePath: path.join(tmpDirOnline, 'reg.json') })
+  });
+  await new Promise((resolve) => serverOnline.listen(0, '127.0.0.1', resolve));
+  const onlineUrl = `http://127.0.0.1:${serverOnline.address().port}`;
+
+  const tmpDirOffline = fs.mkdtempSync(path.join(os.tmpdir(), 'rte-api-offline-'));
+  const serverOffline = createAppServer({
+    calaClient: createCalaClient({ apiKey: '', cacheFile: path.join(tmpDirOffline, 'cala-empty.json') }),
+    registryClient: createRegistryClient({ cachePath: path.join(tmpDirOffline, 'reg.json') })
+  });
+  await new Promise((resolve) => serverOffline.listen(0, '127.0.0.1', resolve));
+  const offlineUrl = `http://127.0.0.1:${serverOffline.address().port}`;
+
+  try {
+    const refineRes = await fetch(`${onlineUrl}/api/refine`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'fund',
+        fundId: 'lifeline-ventures',
+        queryText: 'Sara Lindqvist',
+        discoverLive: true,
+        discoverRegistries: false
+      })
+    });
+    assert.equal(refineRes.status, 200);
+    const data = await refineRes.json();
+
+    assert.equal(searchCalls.length, 1);
+    assert.deepEqual(searchCalls[0].entityTypes, ['Company', 'Organization', 'Person']);
+    assert.ok(searchCalls[0].limit >= 12);
+    assert.equal(ksCalls.length, 1);
+
+    // Must combine BOTH directHits AND KS hits (QuantGrid Labs Oy) without skipping KS deep hydration
+    assert.ok(introspectCalls.includes(mockDirectCoId));
+    assert.ok(introspectCalls.includes(mockKsCoId));
+    assert.ok(introspectCalls.includes(mockPersonId));
+    assert.ok(introspectCalls.includes(mockAngelCoId));
+
+    // Verify numerical_observations object was mapped to { ObservableProperty: [...ids], FinancialMetric: [...ids] }
+    const directRetrieve = retrieveBodies.find((r) => r.id === mockDirectCoId);
+    assert.deepEqual(directRetrieve.body.numerical_observations, {
+      ObservableProperty: ['obs-emp-1'],
+      FinancialMetric: ['obs-cash-1']
+    });
+
+    // Connected companies Kinetix Robotics Oy + SolarFlow AB appear for Person search Sara Lindqvist
+    const names = data.shortlist.map((c) => c.name);
+    assert.ok(names.includes('Kinetix Robotics Oy'), `Expected Kinetix in shortlist, got: ${names.join(', ')}`);
+    assert.ok(names.includes('SolarFlow AB'), `Expected SolarFlow AB in shortlist, got: ${names.join(', ')}`);
+
+    // Kinetix unpacks real nested series & financialMetrics and keeps null round date/amount honest
+    const kinetix = data.shortlist.find((c) => c.name === 'Kinetix Robotics Oy');
+    assert.equal(kinetix.employeeCountSeries.length, 2);
+    assert.equal(kinetix.employeeCount, 24);
+    assert.ok(kinetix.financialMetrics.some((m) => m.metric === 'CashBankOnHand' && m.value === 1850000));
+    assert.equal(kinetix.lastRoundDate, null);
+    assert.equal(kinetix.lastRoundAmountEurM, null);
+    assert.ok(
+      kinetix.evidenceFolders.hiddenBridges.paths.some((p) => /Spotify|Sara Lindqvist/i.test(p.bridgeEntityName)),
+      'Expected Person/Alumni bridge in Kinetix paths'
+    );
+
+    const solar = data.shortlist.find((c) => c.name === 'SolarFlow AB');
+    assert.ok(
+      solar.evidenceFolders.hiddenBridges.paths.some((p) => p.bridgeEntityName === 'Sara Lindqvist'),
+      'Expected Sara Lindqvist Person bridge on angel-backed SolarFlow AB'
+    );
+
+    // Offline graceful degradation when CALA_API_KEY is unset and discoverLive: true
+    const offlineRes = await fetch(`${offlineUrl}/api/refine`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'fund',
+        fundId: 'lifeline-ventures',
+        queryText: 'Helsinki',
+        discoverLive: true,
+        discoverRegistries: false
+      })
+    });
+    assert.equal(offlineRes.status, 200);
+    const offlineData = await offlineRes.json();
+    assert.ok(Array.isArray(offlineData.shortlist));
+    assert.equal(offlineData.liveDiscoveredCount, 0);
+  } finally {
+    for (const calaId of [mockDirectCoId, mockKsCoId, mockAngelCoId]) {
+      const idx = COMPANIES.findIndex((c) => c.calaEntityId === calaId);
+      if (idx !== -1) COMPANIES.splice(idx, 1);
+    }
+    await new Promise((resolve) => serverOnline.close(resolve));
+    await new Promise((resolve) => serverOffline.close(resolve));
   }
 });

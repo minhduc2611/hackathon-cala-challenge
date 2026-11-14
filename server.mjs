@@ -148,7 +148,9 @@ function summarizeLiveCalaEntity(entityData) {
     ...(incoming.FOUNDED || []).map((p) => ({ id: p.id, name: p.name, relation: 'FOUNDED', role: 'Founder', validSince: p.properties?.valid_since || null })),
     ...(incoming.IS_CEO_OF || []).map((p) => ({ id: p.id, name: p.name, relation: 'IS_CEO_OF', role: 'CEO', validSince: p.properties?.valid_since || null, validUntil: p.properties?.valid_until || null })),
     ...(incoming.IS_CTO_OF || []).map((p) => ({ id: p.id, name: p.name, relation: 'IS_CTO_OF', role: 'CTO', validSince: p.properties?.valid_since || null, validUntil: p.properties?.valid_until || null })),
-    ...(incoming.IS_BOARD_MEMBER_OF || []).map((p) => ({ id: p.id, name: p.name, relation: 'IS_BOARD_MEMBER_OF', role: 'Board Member', validSince: p.properties?.valid_since || null }))
+    ...(incoming.IS_BOARD_MEMBER_OF || []).map((p) => ({ id: p.id, name: p.name, relation: 'IS_BOARD_MEMBER_OF', role: 'Board Member', validSince: p.properties?.valid_since || null })),
+    ...(incoming.IS_CONTROL_PERSON_OF || []).map((p) => ({ id: p.id, name: p.name, relation: 'IS_CONTROL_PERSON_OF', role: 'Control Person', validSince: p.properties?.valid_since || null })),
+    ...(incoming.IS_BENEFICIARY_OWNER_OF || []).map((p) => ({ id: p.id, name: p.name, relation: 'IS_BENEFICIARY_OWNER_OF', role: 'Beneficial Owner', validSince: p.properties?.valid_since || null }))
   ];
 
   const worksAt = (incoming.WORKS_AT || []).map((p) => ({
@@ -199,6 +201,7 @@ function getCachedAnalysis(payload) {
   const entityScope = payload.entityScope === 'all' ? 'all' : 'startups';
   const hideMegaHubs = payload.hideMegaHubs !== undefined ? Boolean(payload.hideMegaHubs) : true;
   const bridgeFamily = String(payload.bridgeFamily || 'all').trim().toLowerCase() || 'all';
+  const contributionGroup = String(payload.contributionGroup || 'all').trim().toLowerCase() || 'all';
   const includeCompanyNames = Array.isArray(payload.includeCompanyNames)
     ? [...payload.includeCompanyNames].sort()
     : [];
@@ -212,7 +215,8 @@ function getCachedAnalysis(payload) {
     entityScope,
     includeCompanyNames,
     hideMegaHubs,
-    bridgeFamily
+    bridgeFamily,
+    contributionGroup
   });
 
   if (analysisCache.has(key)) {
@@ -231,7 +235,8 @@ function getCachedAnalysis(payload) {
       entityScope,
       includeCompanyNames,
       hideMegaHubs,
-      bridgeFamily
+      bridgeFamily,
+      contributionGroup
     }
   );
   if (analysisCache.size > 60) {
@@ -356,8 +361,19 @@ async function retrieveEntityWithIntrospection(calaClient, entityId, incomingEve
     properties: introRes.data?.properties || ['name', 'description'],
     relationships: { outgoing: outgoingMap, incoming: incomingMap }
   };
-  if (Array.isArray(introRes.data?.numerical_observations) && introRes.data.numerical_observations.length > 0) {
-    retrieveBody.numerical_observations = introRes.data.numerical_observations;
+  const rawNumObs = introRes.data?.numerical_observations;
+  if (Array.isArray(rawNumObs) && rawNumObs.length > 0) {
+    retrieveBody.numerical_observations = rawNumObs;
+  } else if (rawNumObs && typeof rawNumObs === 'object') {
+    const mappedNumObs = {};
+    for (const [obsType, entries] of Object.entries(rawNumObs)) {
+      if (!Array.isArray(entries) || entries.length === 0) continue;
+      const ids = entries.map((entry) => (typeof entry === 'string' ? entry : entry?.id)).filter(Boolean);
+      if (ids.length > 0) mappedNumObs[obsType] = ids;
+    }
+    if (Object.keys(mappedNumObs).length > 0) {
+      retrieveBody.numerical_observations = mappedNumObs;
+    }
   }
   const entityRes = await calaClient.calaRetrieveEntity(entityId, retrieveBody);
   return { introRes, entityRes };
@@ -365,29 +381,133 @@ async function retrieveEntityWithIntrospection(calaClient, entityId, incomingEve
 
 function extractCleanCalaSearchQuery(rawQuery) {
   const cleaned = String(rawQuery || '')
+    .replace(/^(company|investor|person|founder|similar to):\s*/i, '')
     .replace(/\b(find|show|give|list|recommend|which|what|who|startups?|companies?|raising|soon|in|under|below|employees|staff|people|headcount|fast|growth|velocity|feeder|syndicate|filing|signal|alumni|founder|only|warm|warmest|intro|bridge|slush|2026)\b/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   return cleaned.length >= 2 ? cleaned : String(rawQuery || '').trim();
 }
 
+const PERSON_CONNECTED_REL_LABELS = {
+  FOUNDED: 'Founder',
+  IS_CEO_OF: 'Chief Executive Officer',
+  IS_CTO_OF: 'Chief Technology Officer',
+  IS_CFO_OF: 'Chief Financial Officer',
+  IS_COO_OF: 'Chief Operating Officer',
+  IS_VICEPRESIDENT_OF: 'Vice President',
+  IS_BOARD_MEMBER_OF: 'Board Member',
+  WORKS_AT: 'Executive / Operator',
+  INVESTED_IN: 'Angel / Individual Investor',
+  INVESTOR: 'Angel / Individual Investor',
+  PARTICIPATES_IN_FUNDING_ROUND: 'Round Participant',
+  IS_CONTROL_PERSON_OF: 'Control Person',
+  IS_BENEFICIARY_OWNER_OF: 'Beneficial Owner',
+  IS_MEMBER_OF: 'Member / Advisor'
+};
+
 async function deepHydrateCalaEntities(calaClient, entityIds = [], context = {}) {
   let discoveredCount = 0;
   let enrichedCount = 0;
-  for (const id of entityIds) {
-    if (!id) continue;
-    try {
-      const { entityRes } = await retrieveEntityWithIntrospection(calaClient, id);
-      if (entityRes?.data) {
-        const deepIng = ingestLiveCalaEntities([entityRes.data], context);
-        discoveredCount += deepIng.ingestedCount;
-        enrichedCount += deepIng.enrichedCount;
-      }
-    } catch {
-      // Best-effort deep hydration
+  const hydratedEntities = [];
+  const companies = [];
+  const seen = new Set();
+  const maxEntities = Math.max(1, Number(context.maxEntities ?? 8));
+  const queue = (entityIds || [])
+    .filter((id) => {
+      if (!id || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    })
+    .slice(0, maxEntities);
+
+  const batchSize = 4;
+  for (let i = 0; i < queue.length; i += batchSize) {
+    const batch = queue.slice(i, i + batchSize);
+    const settled = await Promise.allSettled(
+      batch.map((id) => retrieveEntityWithIntrospection(calaClient, id, context.incomingEventLimit ?? 20))
+    );
+    for (const outcome of settled) {
+      if (outcome.status !== 'fulfilled') continue;
+      const entityData = outcome.value?.entityRes?.data;
+      if (!entityData) continue;
+      hydratedEntities.push(entityData);
+      const entityContext = typeof context.resolveEntityContext === 'function'
+        ? { ...context, ...context.resolveEntityContext(entityData) }
+        : context;
+      const deepIng = ingestLiveCalaEntities([entityData], entityContext);
+      discoveredCount += deepIng.ingestedCount;
+      enrichedCount += deepIng.enrichedCount;
+      companies.push(...(deepIng.companies || []));
     }
   }
-  return { discoveredCount, enrichedCount };
+  return { discoveredCount, enrichedCount, hydratedEntities, companies };
+}
+
+function collectConnectedTargetsFromPerson(personEntity) {
+  const outRels = personEntity?.relationships?.outgoing || {};
+  const inRels = personEntity?.relationships?.incoming || {};
+  const personName = String(personEntity?.name || '').trim();
+  const rolesByCompanyId = new Map();
+  const investorNamesByCompanyId = new Map();
+  const connectedTargets = [];
+
+  const priorWork = [...(outRels.WORKS_AT || []), ...(inRels.WORKS_AT || [])].find(
+    (t) => t?.name && (t?.properties?.valid_until || t?.properties?.end_date)
+  );
+  const studiedAt = (outRels.STUDIED_AT || []).find((t) => t?.name);
+  const fallbackPriorName = priorWork?.name || studiedAt?.name || null;
+  const fallbackPriorRole = priorWork
+    ? priorWork.properties?.role || 'Operator'
+    : studiedAt
+      ? 'Alumni'
+      : null;
+  const fallbackPriorUntil = priorWork?.properties?.valid_until || priorWork?.properties?.end_date || null;
+
+  const isTargetCompanyOrOrg = (t) =>
+    t?.id &&
+    t?.name &&
+    (!t.entity_type || t.entity_type === 'Company' || t.entity_type === 'Organization');
+
+  for (const relName of Object.keys(PERSON_CONNECTED_REL_LABELS)) {
+    const edges = [...(outRels[relName] || []), ...(inRels[relName] || [])];
+    for (const target of edges) {
+      if (!isTargetCompanyOrOrg(target)) continue;
+      const tId = String(target.id);
+      if (!connectedTargets.some((x) => x.id === tId)) {
+        connectedTargets.push(target);
+      }
+      const isLeadershipOrFounder = ['FOUNDED', 'IS_CEO_OF', 'IS_CTO_OF'].includes(relName);
+      const distinctPrior =
+        isLeadershipOrFounder &&
+        fallbackPriorName &&
+        normalizeEntityCoreName(fallbackPriorName) !== normalizeEntityCoreName(target.name)
+          ? fallbackPriorName
+          : null;
+      const roleEntry = {
+        relation: relName,
+        name: personName,
+        role: target.properties?.role || PERSON_CONNECTED_REL_LABELS[relName] || 'Principal',
+        validSince: target.properties?.valid_since || target.properties?.start_date || null,
+        validUntil: target.properties?.valid_until || target.properties?.end_date || null,
+        priorCompany: target.properties?.prior_company || distinctPrior,
+        priorRole: target.properties?.prior_role || (distinctPrior ? fallbackPriorRole : null),
+        priorValidUntil: target.properties?.prior_valid_until || (distinctPrior ? fallbackPriorUntil : null),
+        isMatchedPersonBridge: true,
+        sourceRank: relName === 'IS_CONTROL_PERSON_OF' || relName === 'IS_BENEFICIARY_OWNER_OF' ? 'FILING' : 'PRIMARY'
+      };
+      const prevList = rolesByCompanyId.get(tId) || [];
+      prevList.push(roleEntry);
+      rolesByCompanyId.set(tId, prevList);
+
+      if (relName === 'INVESTED_IN' || relName === 'INVESTOR') {
+        const invList = investorNamesByCompanyId.get(tId) || [];
+        if (personName && !invList.includes(personName)) invList.push(personName);
+        investorNamesByCompanyId.set(tId, invList);
+      }
+    }
+  }
+
+  return { connectedTargets, rolesByCompanyId, investorNamesByCompanyId };
 }
 
 async function discoverStartupsFromCala(calaClient, { queryText = '', mode = 'ecosystem' } = {}) {
@@ -395,6 +515,11 @@ async function discoverStartupsFromCala(calaClient, { queryText = '', mode = 'ec
   let enrichedCount = 0;
   let knowledgeAnswer = null;
   const cleanQ = String(queryText || '').trim();
+  const hydratedById = new Map();
+  const linkedCompanyNames = new Set();
+  const matchedCompanyNames = new Set();
+  const matchedPersons = [];
+  const matchedOrganizations = [];
 
   if (mode === 'ecosystem' || /slush/i.test(cleanQ)) {
     try {
@@ -405,69 +530,217 @@ async function discoverStartupsFromCala(calaClient, { queryText = '', mode = 'ec
       const attendees = (eventRes.data?.relationships?.incoming?.PARTICIPATES_IN_EVENT || [])
         .filter((e) => !e.entity_type || e.entity_type === 'Company')
         .slice(0, 60);
-      const ing = ingestLiveCalaEntities(attendees, { slush2026: true });
+      const ing = ingestLiveCalaEntities(attendees, { slush2026: true, allowUnfundedLive: true });
       discoveredCount += ing.ingestedCount;
       enrichedCount += ing.enrichedCount;
 
       const deep = await deepHydrateCalaEntities(
         calaClient,
-        ing.companies.slice(0, 3).map((c) => c.calaEntityId),
-        { slush2026: true }
+        ing.companies.slice(0, 8).map((c) => c.calaEntityId),
+        { slush2026: true, allowUnfundedLive: true, maxEntities: 8 }
       );
       discoveredCount += deep.discoveredCount;
       enrichedCount += deep.enrichedCount;
+      for (const h of deep.hydratedEntities) hydratedById.set(h.id, h);
     } catch {
       // Non-fatal in offline/budget-restricted runs
     }
   }
 
   if (cleanQ) {
-    const searchTerm = extractCleanCalaSearchQuery(cleanQ);
+    const searchTerm = extractCleanCalaSearchQuery(cleanQ) || cleanQ;
+    const isGenericEventWord = /^(slush|2026)$/i.test(searchTerm);
     let directHits = [];
-    if (searchTerm.length >= 2 && !/^(slush|2026)$/i.test(searchTerm)) {
-      try {
-        const searchRes = await calaClient.calaEntitySearch(searchTerm, 10, ['Company']);
-        directHits = searchRes.data?.entities || [];
-        const ing = ingestLiveCalaEntities(directHits);
-        discoveredCount += ing.ingestedCount;
-        enrichedCount += ing.enrichedCount;
+    let ksEntities = [];
 
-        const deep = await deepHydrateCalaEntities(
-          calaClient,
-          directHits.filter((e) => !e.entity_type || e.entity_type === 'Company').slice(0, 2).map((e) => e.id)
-        );
-        discoveredCount += deep.discoveredCount;
-        enrichedCount += deep.enrichedCount;
-      } catch {
-        // Non-fatal in offline/test environments
+    const entitySearchPromise =
+      searchTerm.length >= 2 && !isGenericEventWord
+        ? calaClient.calaEntitySearch(searchTerm, 15, ['Company', 'Organization', 'Person'])
+        : Promise.resolve(null);
+    const ksSearchPromise =
+      cleanQ.length >= 3 && !isGenericEventWord && typeof calaClient.calaKnowledgeSearch === 'function'
+        ? calaClient.calaKnowledgeSearch(cleanQ, { explainability: true, returnEntities: true })
+        : Promise.resolve(null);
+
+    const [entitySearchOutcome, ksSearchOutcome] = await Promise.allSettled([entitySearchPromise, ksSearchPromise]);
+    if (entitySearchOutcome.status === 'fulfilled' && entitySearchOutcome.value?.data?.entities) {
+      directHits = entitySearchOutcome.value.data.entities;
+    }
+    if (ksSearchOutcome.status === 'fulfilled' && ksSearchOutcome.value?.data) {
+      knowledgeAnswer = ksSearchOutcome.value.data;
+      ksEntities = Array.isArray(knowledgeAnswer?.entities) ? knowledgeAnswer.entities : [];
+    }
+
+    // Combine unique entities from both directHits and knowledgeAnswer.entities, prioritizing strong query matches
+    const combinedById = new Map();
+    for (const hit of [...directHits, ...ksEntities]) {
+      if (!hit?.id || !hit?.name) continue;
+      if (!combinedById.has(hit.id)) {
+        combinedById.set(hit.id, hit);
+      } else {
+        const prev = combinedById.get(hit.id);
+        combinedById.set(hit.id, { ...hit, ...prev, description: prev.description || hit.description });
+      }
+    }
+    const allMatched = [...combinedById.values()].sort((a, b) => {
+      const aStrong = isStrongEntityNameMatch(searchTerm, a.name) || isStrongEntityNameMatch(cleanQ, a.name) ? 1 : 0;
+      const bStrong = isStrongEntityNameMatch(searchTerm, b.name) || isStrongEntityNameMatch(cleanQ, b.name) ? 1 : 0;
+      return bStrong - aStrong;
+    });
+
+    const companyOrgHits = allMatched.filter((e) => !e.entity_type || e.entity_type === 'Company' || e.entity_type === 'Organization');
+    const personHits = allMatched.filter((e) => e.entity_type === 'Person');
+
+    if (companyOrgHits.length > 0) {
+      for (const hit of companyOrgHits) {
+        const strongMatch = isStrongEntityNameMatch(searchTerm, hit.name) || isStrongEntityNameMatch(cleanQ, hit.name);
+        if (strongMatch && (!hit.entity_type || hit.entity_type === 'Company')) {
+          matchedCompanyNames.add(hit.name);
+        }
+        const preIng = ingestLiveCalaEntities([hit], {
+          allowOrganizations: true,
+          allowGeneralCompanies: strongMatch,
+          allowUnfundedLive: true
+        });
+        discoveredCount += preIng.ingestedCount;
+        enrichedCount += preIng.enrichedCount;
+      }
+
+      // Deep hydrate combined top 8 unique Company/Organization IDs across directHits + knowledgeAnswer.entities
+      const topCompanyOrgIds = companyOrgHits.slice(0, 8).map((e) => e.id);
+      const deep = await deepHydrateCalaEntities(calaClient, topCompanyOrgIds, {
+        maxEntities: 8,
+        allowOrganizations: true,
+        allowUnfundedLive: true,
+        resolveEntityContext: (entityData) => ({
+          allowGeneralCompanies:
+            isStrongEntityNameMatch(searchTerm, entityData.name) || isStrongEntityNameMatch(cleanQ, entityData.name)
+        })
+      });
+      discoveredCount += deep.discoveredCount;
+      enrichedCount += deep.enrichedCount;
+      for (const h of deep.hydratedEntities) hydratedById.set(h.id, h);
+      for (const co of deep.companies) {
+        if (isStrongEntityNameMatch(searchTerm, co.name) || isStrongEntityNameMatch(cleanQ, co.name)) {
+          matchedCompanyNames.add(co.name);
+        }
+      }
+
+      // Expand matched Organizations (e.g. VC funds, accelerators, research institutes) via INVESTED_IN portfolio startups
+      const hydratedOrgs = deep.hydratedEntities.filter((e) => e.entity_type === 'Organization');
+      for (const org of hydratedOrgs.slice(0, 3)) {
+        matchedOrganizations.push(org.name);
+        const outInv = org.relationships?.outgoing?.INVESTED_IN || [];
+        const inInv = org.relationships?.incoming?.INVESTED_IN || [];
+        const invTargets = [...outInv, ...inInv]
+          .filter((t) => t?.id && t?.name && (!t.entity_type || t.entity_type === 'Company' || t.entity_type === 'Organization'));
+        if (invTargets.length === 0) continue;
+
+        const targetIdsToHydrate = [];
+        for (const t of invTargets.slice(0, 5)) {
+          linkedCompanyNames.add(t.name);
+          if (hydratedById.has(t.id)) {
+            const reIng = ingestLiveCalaEntities([hydratedById.get(t.id)], {
+              investorName: org.name,
+              allowOrganizations: true,
+              allowGeneralCompanies: true,
+              allowUnfundedLive: true
+            });
+            discoveredCount += reIng.ingestedCount;
+            enrichedCount += reIng.enrichedCount;
+          } else {
+            targetIdsToHydrate.push(t.id);
+          }
+        }
+        if (targetIdsToHydrate.length > 0) {
+          const orgDeep = await deepHydrateCalaEntities(calaClient, targetIdsToHydrate, {
+            maxEntities: 5,
+            investorName: org.name,
+            allowOrganizations: true,
+            allowGeneralCompanies: true,
+            allowUnfundedLive: true
+          });
+          discoveredCount += orgDeep.discoveredCount;
+          enrichedCount += orgDeep.enrichedCount;
+          for (const h of orgDeep.hydratedEntities) hydratedById.set(h.id, h);
+          for (const co of orgDeep.companies) linkedCompanyNames.add(co.name);
+        }
       }
     }
 
-    if (cleanQ.split(/\s+/).length >= 2) {
-      try {
-        const ksRes = await calaClient.calaKnowledgeSearch(cleanQ, {
-          explainability: true,
-          returnEntities: true
-        });
-        knowledgeAnswer = ksRes.data || null;
-        const ksEntities = Array.isArray(knowledgeAnswer?.entities) ? knowledgeAnswer.entities : [];
-        if (ksEntities.length > 0) {
-          const ksIng = ingestLiveCalaEntities(ksEntities, { allowOrganizations: true });
-          discoveredCount += ksIng.ingestedCount;
-          enrichedCount += ksIng.enrichedCount;
+    // Expand Person / Founder / Angel entities into their full role history & connected Companies/Organizations
+    if (personHits.length > 0) {
+      const personToHydrate = personHits.slice(0, 3);
+      const personSettled = await Promise.allSettled(
+        personToHydrate.map((p) => retrieveEntityWithIntrospection(calaClient, p.id))
+      );
 
-          if (directHits.length === 0) {
-            const ksCompanyIds = ksEntities
-              .filter((e) => e.entity_type === 'Company' || e.entity_type === 'Organization')
-              .slice(0, 2)
-              .map((e) => e.id);
-            const deep = await deepHydrateCalaEntities(calaClient, ksCompanyIds, { allowOrganizations: true });
-            discoveredCount += deep.discoveredCount;
-            enrichedCount += deep.enrichedCount;
+      const mergedRolesByCompanyId = new Map();
+      const mergedInvestorNamesByCompanyId = new Map();
+      const unhydratedPersonCompanyIds = [];
+      const alreadyHydratedTargets = [];
+
+      for (const outcome of personSettled) {
+        if (outcome.status !== 'fulfilled') continue;
+        const personData = outcome.value?.entityRes?.data;
+        if (!personData?.id) continue;
+        hydratedById.set(personData.id, personData);
+        matchedPersons.push(personData.name);
+
+        const { connectedTargets, rolesByCompanyId, investorNamesByCompanyId } = collectConnectedTargetsFromPerson(personData);
+        for (const [compId, roles] of rolesByCompanyId.entries()) {
+          const existingList = mergedRolesByCompanyId.get(compId) || [];
+          existingList.push(...roles);
+          mergedRolesByCompanyId.set(compId, existingList);
+        }
+        for (const [compId, invNames] of investorNamesByCompanyId.entries()) {
+          const existingInv = mergedInvestorNamesByCompanyId.get(compId) || [];
+          for (const invName of invNames) {
+            if (!existingInv.includes(invName)) existingInv.push(invName);
+          }
+          mergedInvestorNamesByCompanyId.set(compId, existingInv);
+        }
+
+        for (const target of connectedTargets.slice(0, 5)) {
+          linkedCompanyNames.add(target.name);
+          if (hydratedById.has(target.id)) {
+            alreadyHydratedTargets.push(hydratedById.get(target.id));
+          } else if (!unhydratedPersonCompanyIds.includes(target.id)) {
+            unhydratedPersonCompanyIds.push(target.id);
           }
         }
-      } catch {
-        // Non-fatal knowledge search escalation
+      }
+
+      if (alreadyHydratedTargets.length > 0) {
+        const reIng = ingestLiveCalaEntities(alreadyHydratedTargets, {
+          allowOrganizations: true,
+          allowGeneralCompanies: true,
+          allowUnfundedLive: true,
+          personRolesByCompanyId: mergedRolesByCompanyId,
+          personInvestorNamesByCompanyId: mergedInvestorNamesByCompanyId
+        });
+        discoveredCount += reIng.ingestedCount;
+        enrichedCount += reIng.enrichedCount;
+        for (const co of reIng.companies) linkedCompanyNames.add(co.name);
+      }
+
+      if (unhydratedPersonCompanyIds.length > 0) {
+        const personCompDeep = await deepHydrateCalaEntities(
+          calaClient,
+          unhydratedPersonCompanyIds.slice(0, 6),
+          {
+            maxEntities: 6,
+            allowOrganizations: true,
+            allowGeneralCompanies: true,
+            allowUnfundedLive: true,
+            personRolesByCompanyId: mergedRolesByCompanyId,
+            personInvestorNamesByCompanyId: mergedInvestorNamesByCompanyId
+          }
+        );
+        discoveredCount += personCompDeep.discoveredCount;
+        enrichedCount += personCompDeep.enrichedCount;
+        for (const h of personCompDeep.hydratedEntities) hydratedById.set(h.id, h);
+        for (const co of personCompDeep.companies) linkedCompanyNames.add(co.name);
       }
     }
   }
@@ -476,7 +749,16 @@ async function discoverStartupsFromCala(calaClient, { queryText = '', mode = 'ec
     analysisCache.clear();
   }
 
-  return { discoveredCount, enrichedCount, knowledgeAnswer };
+  return {
+    discoveredCount,
+    enrichedCount,
+    knowledgeAnswer,
+    linkedCompanyNames: [...linkedCompanyNames],
+    matchedCompanyNames: [...matchedCompanyNames],
+    matchedPersons: [...new Set(matchedPersons)],
+    matchedOrganizations: [...new Set(matchedOrganizations)],
+    hydratedEntityCount: hydratedById.size
+  };
 }
 
 export function createAppServer(options = {}) {
@@ -653,8 +935,14 @@ export function createAppServer(options = {}) {
           fundId: body.fundId,
           mode: body.mode || 'ecosystem'
         });
+        if (discovery.discoveredCount > 0 || discovery.enrichedCount > 0) {
+          analysisCache.clear();
+        }
         const analysis = getCachedAnalysis(body);
         const { allRanked, ...publicPayload } = analysis;
+        const hideMegaHubs = body.hideMegaHubs !== undefined ? Boolean(body.hideMegaHubs) : true;
+        const bridgeFamily = body.bridgeFamily || 'all';
+        const contributionGroup = body.contributionGroup || 'all';
         const refined = body.queryText
           ? refineShortlist(analysis.thesis, allRanked, {
               region: body.region,
@@ -666,6 +954,10 @@ export function createAppServer(options = {}) {
               feederOnly: body.feederOnly,
               filingOnly: body.filingOnly,
               alumniOnly: body.alumniOnly,
+              bridgeFamily,
+              contributionGroup,
+              hideMegaHubs,
+              entityScope: body.entityScope,
               sectors: body.sectors,
               countries: body.countries,
               maxEmployees: body.maxEmployees,
@@ -678,6 +970,8 @@ export function createAppServer(options = {}) {
         sendJson(res, 200, {
           ...publicPayload,
           shortlist: refined ? refined.shortlist : publicPayload.shortlist,
+          bridgeMap: refined ? refined.bridgeMap : publicPayload.bridgeMap,
+          relaxSuggestions: refined ? refined.relaxSuggestions : [],
           discoveredCount: discovery.discoveredCount,
           enrichedCount: discovery.enrichedCount,
           knowledgeAnswer: discovery.knowledgeAnswer,
@@ -716,9 +1010,10 @@ export function createAppServer(options = {}) {
         const body = await readJsonBody(req);
         let liveDiscoveredCount = 0;
         let knowledgeAnswer = null;
+        let discovery = null;
         if (body.discoverLive === true && body.queryText && !/^\s*why not\s+/i.test(String(body.queryText))) {
           try {
-            const discovery = await discoverStartupsFromCala(calaClient, {
+            discovery = await discoverStartupsFromCala(calaClient, {
               queryText: body.queryText,
               fundId: body.fundId,
               mode: 'query'
@@ -747,6 +1042,10 @@ export function createAppServer(options = {}) {
             !/\b(slush|raising|untapped|founders|startups?|seed|series|nordics|dach|fintech|deeptech|healthtech|climate|saas)\b/i.test(fallbackTerm)
           ) {
             effectiveCompanyQuery = fallbackTerm;
+          } else if (discovery?.matchedPersons?.length > 0) {
+            effectiveCompanyQuery = discovery.matchedPersons[0];
+          } else if (discovery?.matchedOrganizations?.length > 0 && discovery?.linkedCompanyNames?.length > 0) {
+            effectiveCompanyQuery = discovery.matchedOrganizations[0];
           }
         }
         const effectiveCountries =
@@ -755,6 +1054,13 @@ export function createAppServer(options = {}) {
             : cf.countryHint
               ? [cf.countryHint]
               : undefined;
+        const liveIncludeCompanyNames = [
+          ...new Set([
+            ...(effectiveCompanyQuery ? [effectiveCompanyQuery] : []),
+            ...(discovery?.matchedCompanyNames || []),
+            ...(discovery?.linkedCompanyNames || [])
+          ])
+        ];
 
         const refinementPayload = {
           entityScope: effectiveEntityScope,
@@ -773,11 +1079,13 @@ export function createAppServer(options = {}) {
           filingOnly: body.filingOnly,
           hideMegaHubs: body.hideMegaHubs !== undefined ? Boolean(body.hideMegaHubs) : true,
           bridgeFamily: body.bridgeFamily || 'all',
+          contributionGroup: body.contributionGroup || 'all',
           alumniOnly: Boolean(body.alumniOnly || body.requireAlumniFounder || cf.requireAlumniFounder),
           requireAlumniFounder: Boolean(body.requireAlumniFounder || body.alumniOnly || cf.requireAlumniFounder),
           minHeadcountGrowthPct: body.minHeadcountGrowthPct ?? cf.minHeadcountGrowthPct,
           investorQuery: body.investorQuery || cf.investorQuery,
           companyQuery: effectiveCompanyQuery,
+          linkedCompanyNames: discovery?.linkedCompanyNames || [],
           whyNotCompany: body.whyNotCompany || cf.whyNotCompany,
           expandedKeywords:
             Array.isArray(cf.expandedKeywords) && cf.expandedKeywords.length
@@ -800,7 +1108,7 @@ export function createAppServer(options = {}) {
         let analysis = getCachedAnalysis({
           ...body,
           entityScope: effectiveEntityScope,
-          includeCompanyNames: effectiveCompanyQuery ? [effectiveCompanyQuery] : []
+          includeCompanyNames: liveIncludeCompanyNames
         });
         let refined = refineShortlist(analysis.thesis, analysis.allRanked, refinementPayload);
 
@@ -809,10 +1117,12 @@ export function createAppServer(options = {}) {
         const exactMatchesCount = refined.usedSoftFallback ? 0 : refined.totalMatches;
         const hasExactCompanyInIndex =
           effectiveCompanyQuery && COMPANIES.some((c) => isStrongEntityNameMatch(effectiveCompanyQuery, c.name));
+        const hasPersonOrLinkedMatch = Boolean(discovery?.linkedCompanyNames?.length > 0 && exactMatchesCount > 0);
         const shouldDiscoverRegistries =
           !isWhyNot &&
           body.discoverRegistries !== false &&
           Boolean(String(body.queryText || '').trim()) &&
+          !hasPersonOrLinkedMatch &&
           (exactMatchesCount === 0 ||
             Boolean(effectiveCompanyQuery && !hasExactCompanyInIndex) ||
             (effectiveEntityScope === 'all' && !hasExactCompanyInIndex));
@@ -835,7 +1145,7 @@ export function createAppServer(options = {}) {
             if (regIng.ingestedCount > 0 || regIng.enrichedCount > 0 || effectiveEntityScope === 'all') {
               analysisCache.clear();
               const includeNames = [
-                ...(effectiveCompanyQuery ? [effectiveCompanyQuery] : []),
+                ...liveIncludeCompanyNames,
                 ...regRes.companies.map((c) => c.name)
               ];
               analysis = getCachedAnalysis({
@@ -864,12 +1174,29 @@ export function createAppServer(options = {}) {
           }
         }
 
+        if (discovery && (discovery.hydratedEntityCount > 0 || discovery.linkedCompanyNames.length > 0)) {
+          refined.aiTrace.unshift(
+            `Live Cala Graph: hydrated ${discovery.hydratedEntityCount} entities across Companies/Orgs/People (${discovery.discoveredCount} new, ${discovery.enrichedCount} enriched${discovery.matchedPersons.length ? `; Person bridges: ${discovery.matchedPersons.join(', ')}` : ''})`
+          );
+        }
+
         sendJson(res, 200, {
           ...refined,
           entityScope: effectiveEntityScope,
           controlPlaneMode: compiled.controlPlaneMode,
           compiledQuery: compiled.filters,
           liveDiscoveredCount,
+          liveDiscovery: discovery
+            ? {
+                discoveredCount: discovery.discoveredCount,
+                enrichedCount: discovery.enrichedCount,
+                hydratedEntityCount: discovery.hydratedEntityCount,
+                matchedPersons: discovery.matchedPersons,
+                matchedOrganizations: discovery.matchedOrganizations,
+                matchedCompanyNames: discovery.matchedCompanyNames,
+                linkedCompanyNames: discovery.linkedCompanyNames
+              }
+            : null,
           knowledgeAnswer,
           registryDiscovery,
           totalCompaniesIndexed: COMPANIES.length,

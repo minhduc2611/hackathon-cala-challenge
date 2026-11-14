@@ -565,8 +565,8 @@
           </div>
         </div>
 
-        <!-- SCREEN 2: FLOATING CONSTELLATION FILTER RIBBON -->
-        <div class="constellation-filter-ribbon" id="constellationFilterRibbon">
+        <!-- SCREEN 2: FLOATING CONSTELLATION FILTER RIBBON (TOGGLED BY FILTERS) -->
+        <div class="constellation-filter-ribbon" id="constellationFilterRibbon" hidden>
           <button
             type="button"
             class="ribbon-toggle-btn is-active"
@@ -579,30 +579,30 @@
             <span class="ribbon-count-pill num-tabular" id="megaHubCounterPill">0 hidden</span>
           </button>
 
-          <div class="bridge-family-segmented" id="bridgeFamilySwitcher" role="radiogroup" aria-label="Bridge family filter">
-            <button type="button" class="fam-seg-btn is-active" data-bridge-family="all">All</button>
-            <button type="button" class="fam-seg-btn" data-bridge-family="feeder">
-              <span class="fam-dot fam-dot-feeder" aria-hidden="true"></span>Feeders
+          <div class="bridge-family-segmented" id="bridgeFamilySwitcher" role="radiogroup" aria-label="Decision contribution lens filter">
+            <button type="button" class="fam-seg-btn is-active" data-contribution-group="all" title="Show all verified bridges and catalysts across Access, Lineage, Timing, and Caution">All Lenses <span class="fam-count num-tabular" data-contrib-count="all"></span></button>
+            <button type="button" class="fam-seg-btn" data-contribution-group="access" title="Warm Access: upstream feeders, focused co-investors, and 2-hop warm syndicate routes">
+              <span class="fam-dot fam-dot-feeder" aria-hidden="true"></span>Warm Access <span class="fam-count num-tabular" data-contrib-count="access"></span>
             </button>
-            <button type="button" class="fam-seg-btn" data-bridge-family="co_investor">
-              <span class="fam-dot fam-dot-coinv" aria-hidden="true"></span>Co-Investors
+            <button type="button" class="fam-seg-btn" data-contribution-group="lineage" title="Team Lineage: scaleup alumni spinouts, operator networks, and portfolio twins">
+              <span class="fam-dot fam-dot-alumni" aria-hidden="true"></span>Team Lineage <span class="fam-count num-tabular" data-contrib-count="lineage"></span>
             </button>
-            <button type="button" class="fam-seg-btn" data-bridge-family="alumni_spinout">
-              <span class="fam-dot fam-dot-alumni" aria-hidden="true"></span>Spinouts
+            <button type="button" class="fam-seg-btn" data-contribution-group="timing" title="Why Now: pre-press filings, hiring surges, .ai domain shifts, and Slush 2026 events">
+              <span class="fam-dot fam-dot-event" aria-hidden="true"></span>Why Now <span class="fam-count num-tabular" data-contrib-count="timing"></span>
             </button>
-            <button type="button" class="fam-seg-btn" data-bridge-family="event">
-              <span class="fam-dot fam-dot-event" aria-hidden="true"></span>Events
+            <button type="button" class="fam-seg-btn" data-contribution-group="caution" title="Caution / Conflicts: portfolio competition overlaps, revealed mega-hubs, and press-only flags">
+              <span class="fam-dot fam-dot-twin" aria-hidden="true"></span>Caution / Conflicts <span class="fam-count num-tabular" data-contrib-count="caution"></span>
             </button>
           </div>
 
           <div class="ribbon-chips-right">
-            <button type="button" class="ribbon-chip-btn" id="chipFilingOnlyBtn" aria-pressed="false">
+            <button type="button" class="ribbon-chip-btn" id="chipFilingOnlyBtn" aria-pressed="false" title="Show only targets backed by statutory government/regulatory filings">
               FILING only
             </button>
-            <button type="button" class="ribbon-chip-btn" id="chipSlushOnlyBtn" aria-pressed="false">
+            <button type="button" class="ribbon-chip-btn" id="chipSlushOnlyBtn" aria-pressed="false" title="Filter strictly to verified Slush 2026 participant startups">
               Slush 2026
             </button>
-            <button type="button" class="ribbon-chip-btn" id="chipUntappedOnlyBtn" aria-pressed="false">
+            <button type="button" class="ribbon-chip-btn" id="chipUntappedOnlyBtn" aria-pressed="false" title="Highlight startups without competing institutional VC lead investors">
               Untapped
             </button>
             <button type="button" class="ribbon-chip-btn" id="filterCallListBtn" aria-pressed="false">
@@ -735,12 +735,70 @@
             <svg
               id="constellationSvg"
               class="constellation-svg"
-              viewBox="0 0 1680 1040"
-              width="1680"
-              height="1040"
+              viewBox="0 0 1960 1400"
+              width="1960"
+              height="1400"
               aria-hidden="true"
             ></svg>
             <div id="constellationNodesLayer" class="constellation-nodes-layer"></div>
+          </div>
+
+          <!-- Top-left Slim Explored Entity Pill (Compare drawer collapsed by default) -->
+          <aside class="explored-entities-box" id="exploredEntitiesBox" aria-label="Pinned entities and comparison controls">
+            <div class="explored-compact-bar">
+              <div class="pinned-entities-list" id="pinnedEntitiesList"></div>
+              <span class="explored-mode-pill" id="exploreModeBadge">360° Polar</span>
+              <button
+                type="button"
+                class="explored-compare-toggle-btn"
+                id="toggleCompareBoxBtn"
+                aria-expanded="false"
+                aria-controls="exploredCompareDrawer"
+                title="Compare up to 4 funds or startups on the constellation"
+              >
+                + Compare
+              </button>
+              <button
+                type="button"
+                class="explored-filters-btn"
+                id="exploredFiltersToggleBtn"
+                aria-expanded="false"
+                aria-controls="constellationFilterRibbon"
+                title="Filter bridges and contribution signals"
+              >
+                <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+                  <path d="M2 4h12M4.5 8h7M7 12h2" stroke-linecap="round"/>
+                </svg>
+                <span class="explored-filters-badge num-tabular" id="exploredFiltersBadge" hidden>0</span>
+              </button>
+            </div>
+
+            <div class="explored-compare-drawer" id="exploredCompareDrawer" hidden>
+              <div class="compare-entity-wrap">
+                <input
+                  type="text"
+                  id="compareEntityInput"
+                  class="compare-entity-input"
+                  placeholder="+ Compare entity (fund or startup)"
+                  autocomplete="off"
+                  aria-label="Compare another fund or startup on the constellation"
+                />
+                <div id="compareEntitySuggest" class="compare-entity-suggest" hidden></div>
+              </div>
+              <div class="explored-box-footer">
+                <span class="explored-hint-copy">Up to 4 entities</span>
+                <button type="button" class="explored-clear-btn" id="clearExploredEntitiesBtn" title="Reset comparison to primary anchor">Clear</button>
+              </div>
+            </div>
+          </aside>
+
+          <!-- Top-center Drill-Down Return Pill & Transient Live Status -->
+          <div class="map-top-center-bar" id="mapTopCenterBar">
+            <button type="button" class="map-drilldown-back-btn" id="mapDrilldownBackBtn" hidden>
+              <span>&larr; Back to 4 Groups</span>
+              <span class="drilldown-group-chip" id="mapDrilldownGroupBadge">LINEAGE</span>
+            </button>
+            <div class="map-live-status-pill" id="mapLiveStatusPill" hidden aria-live="polite"></div>
           </div>
 
           <div id="constellationEmptyState" class="constellation-empty-state" hidden>
@@ -749,6 +807,7 @@
             <p id="constellationEmptyDesc">
               Active mega-hub suppression or bridge family filters excluded all connecting paths for this shortlist.
             </p>
+            <div id="emptyRelaxSuggestions" class="empty-relax-suggestions" hidden></div>
             <div class="empty-actions">
               <button type="button" class="btn primary sm" id="emptyRevealMegaHubsBtn">Reveal mega-hubs</button>
               <button type="button" class="btn sm" id="emptyShowAllBridgesBtn" hidden>Show all bridges</button>
@@ -756,33 +815,79 @@
             </div>
           </div>
 
-          <!-- Top-right zoom controls -->
-          <div class="map-zoom-controls" id="mapZoomToolbar" aria-label="Map zoom controls">
-            <button type="button" class="zoom-icon-btn" id="mapZoomOutBtn" aria-label="Zoom out">-</button>
-            <span class="zoom-readout num-tabular" id="mapZoomReadout">100%</span>
-            <button type="button" class="zoom-icon-btn" id="mapZoomInBtn" aria-label="Zoom in">+</button>
+          <!-- Top-right vertical translucent control rail -->
+          <div class="map-zoom-controls map-vertical-controls" id="mapZoomToolbar" aria-label="Map controls">
+            <button
+              type="button"
+              class="zoom-icon-btn zoom-filter-btn"
+              id="mapFiltersToggleBtn"
+              title="Toggle bridge and strategy filters"
+              aria-label="Toggle filters"
+              aria-expanded="false"
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+                <path d="M2.2 4h11.6M4.4 8h7.2M6.8 12h2.4" stroke-linecap="round"/>
+              </svg>
+            </button>
             <span class="zoom-sep" aria-hidden="true"></span>
-            <button type="button" class="zoom-text-btn" id="mapCenterBtn">Center</button>
-            <button type="button" class="zoom-text-btn" id="mapFitViewBtn">Fit View</button>
+            <button type="button" class="zoom-icon-btn" id="mapZoomInBtn" aria-label="Zoom in" title="Zoom in">+</button>
+            <span class="zoom-readout num-tabular" id="mapZoomReadout">100%</span>
+            <button type="button" class="zoom-icon-btn" id="mapZoomOutBtn" aria-label="Zoom out" title="Zoom out">-</button>
+            <span class="zoom-sep" aria-hidden="true"></span>
+            <button type="button" class="zoom-text-btn" id="mapFitViewBtn" title="Fit constellation to viewport">Fit</button>
+            <button type="button" class="zoom-text-btn" id="mapCenterBtn" title="Center orbital constellation">Ctr</button>
           </div>
 
-          <!-- Bottom-left translucent AI synthesis banner & legend -->
-          <div class="map-bottom-left-overlay" id="mapBottomLeftOverlay">
-            <div class="map-synthesis-banner" id="aiSynthesisBanner" aria-live="polite">
-              Ready: select a prompt or inspect nodes in the constellation.
+          <!-- Bottom-center pill to inspect all ranked startups when Overview is capped at Top 8 -->
+          <button type="button" class="map-view-all-pill" id="mapViewAllMatchesPill" hidden></button>
+
+          <!-- Bottom-left Single Minimal HUD Pill (Key · ?) with closed-by-default Legend Popover -->
+          <div class="map-bottom-left-overlay map-minimal-hud" id="mapMinimalHud">
+            <div class="map-legend-popover" id="mapLegendPopover" role="dialog" aria-label="Constellation key and controls" hidden>
+              <div class="legend-pop-header">
+                <span class="legend-pop-title">Constellation Key</span>
+                <button type="button" class="legend-pop-close" id="mapLegendCloseBtn" aria-label="Close key">x</button>
+              </div>
+              <div class="legend-pop-grid">
+                <span class="leg-item"><span class="fam-dot fam-dot-feeder"></span> Access (Intros &amp; Syndicate)</span>
+                <span class="leg-item"><span class="fam-dot fam-dot-alumni"></span> Lineage (Alumni &amp; Twins)</span>
+                <span class="leg-item"><span class="fam-dot fam-dot-event"></span> Timing (Filings &amp; Velocity)</span>
+                <span class="leg-item"><span class="fam-dot fam-dot-twin"></span> Caution (Conflicts &amp; Gaps)</span>
+              </div>
+              <div class="legend-pop-strokes">
+                <span class="leg-item"><span class="leg-line leg-line-solid"></span> FILING / PRIMARY</span>
+                <span class="leg-item"><span class="leg-line leg-line-dashed"></span> PRESS / AGG</span>
+                <span class="leg-item"><span class="leg-line leg-line-peer"></span> Hover multi-factor</span>
+              </div>
+              <div class="legend-pop-controls">
+                Click a Group Hub to expand its bridges &middot; Hover any startup for cross-factor links &amp; formulas &middot; Scroll/trackpad pans &middot; Zoom &ge;100% reveals all names
+              </div>
+              <div class="legend-pop-status" id="aiSynthesisBanner" aria-live="polite" hidden></div>
             </div>
-            <div class="map-legend-strip" id="mapLegendStrip">
-              <span class="leg-item"><span class="leg-line leg-line-solid"></span> FILING / PRIMARY</span>
-              <span class="leg-item"><span class="leg-line leg-line-dashed"></span> PRESS / AGG</span>
-              <span class="leg-sep">&middot;</span>
-              <span class="leg-item"><span class="fam-dot fam-dot-feeder"></span> Feeder</span>
-              <span class="leg-item"><span class="fam-dot fam-dot-coinv"></span> Co-Investor</span>
-              <span class="leg-item"><span class="fam-dot fam-dot-alumni"></span> Spinout</span>
-              <span class="leg-item"><span class="fam-dot fam-dot-event"></span> Event</span>
-              <span class="leg-sep">&middot;</span>
-              <span class="leg-item leg-hint">Drag or 2-finger swipe to pan &middot; Pinch or +/- to zoom</span>
-            </div>
+            <button
+              type="button"
+              class="map-key-toggle-pill"
+              id="mapLegendToggleBtn"
+              aria-expanded="false"
+              aria-controls="mapLegendPopover"
+            >
+              <span class="key-pill-dots" aria-hidden="true">
+                <span class="fam-dot fam-dot-feeder"></span>
+                <span class="fam-dot fam-dot-alumni"></span>
+                <span class="fam-dot fam-dot-event"></span>
+                <span class="fam-dot fam-dot-twin"></span>
+              </span>
+              <span>Key &middot; ?</span>
+            </button>
           </div>
+
+          <!-- Bottom-right Quick-Facts Inspector Card (shown on orb select when Evidence Rail is collapsed) -->
+          <aside
+            id="mapQuickInspectorCard"
+            class="map-quick-inspector-card"
+            aria-label="Selected entity quick facts"
+            hidden
+          ></aside>
 
           <!-- Floating hover tooltip -->
           <div id="mapHoverTooltip" class="map-hover-tooltip" hidden></div>
@@ -809,21 +914,31 @@
           aria-label="Evidence and matches panel"
           hidden
         >
+          <div
+            id="sideRailResizeHandle"
+            class="side-rail-resize-handle"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Drag to resize panel width"
+            tabindex="0"
+          ></div>
           <header class="side-rail-header">
-            <div class="side-rail-title-block">
+            <div class="side-rail-top-row">
               <div class="side-rail-kicker" id="railContextKicker">ANALYST TRIAGE &middot; CONSTELLATION</div>
+              <div class="side-rail-actions">
+                <button type="button" class="stepper-btn sm" id="railPrevBtn" title="Previous startup">&larr;</button>
+                <button type="button" class="stepper-btn sm" id="railNextBtn" title="Next startup">&rarr;</button>
+                <button type="button" class="rail-icon-btn" id="railSaveCallBtn" title="Bookmark to Call List" aria-pressed="false">
+                  <svg class="ui-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M4 2.5h8v11l-4-2.5L4 13.5v-11z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+                  </svg>
+                </button>
+                <button type="button" class="btn sm" id="sideRailCollapseBtn">Collapse</button>
+              </div>
+            </div>
+            <div class="side-rail-title-block">
               <h2 class="side-rail-title" id="railContextTitle">Matches &amp; Evidence</h2>
               <p class="side-rail-sub" id="railContextSub">Click a startup or bridge node to inspect citations.</p>
-            </div>
-            <div class="side-rail-actions">
-              <button type="button" class="stepper-btn sm" id="railPrevBtn" title="Previous startup">&larr;</button>
-              <button type="button" class="stepper-btn sm" id="railNextBtn" title="Next startup">&rarr;</button>
-              <button type="button" class="rail-icon-btn" id="railSaveCallBtn" title="Bookmark to Call List" aria-pressed="false">
-                <svg class="ui-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                  <path d="M4 2.5h8v11l-4-2.5L4 13.5v-11z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
-                </svg>
-              </button>
-              <button type="button" class="btn sm" id="sideRailCollapseBtn">Collapse</button>
             </div>
           </header>
 
