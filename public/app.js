@@ -369,12 +369,24 @@ function renderConfigReviewSummary() {
 
 /* ---------------- ANALYSIS & AI SEARCH EXECUTION ---------------- */
 
+function getBudgetNumbers(budget) {
+  const max = budget?.maxLiveCalls ?? 8;
+  const used = budget?.liveCallsUsed ?? 0;
+  const remaining = Math.max(0, max - used);
+  const cached = budget?.cachedEntries ?? 0;
+  return { remaining, max, cached };
+}
+
 function updateTelemetryLine() {
   const el = document.getElementById('telemetryLine');
   if (!el || !state.bootstrap) return;
   const stats = state.bootstrap.coverageStats;
   const budget = state.calaBudget || stats.calaBudget;
-  const remaining = budget ? `${budget.remainingCalls}/${budget.maxLiveCalls} live credits left` : 'Local cache active';
+  let remaining = 'Local cache active';
+  if (budget) {
+    const { remaining: rem, max, cached } = getBudgetNumbers(budget);
+    remaining = `${rem}/${max} live credits left (${cached} cached)`;
+  }
   const roleName = state.role === 'investor' ? 'Partner view' : 'Analyst view';
   el.textContent = `${stats.companiesIndexed + stats.fundsIndexed} Cala entities · ${stats.roundsIndexed} rounds · ${roleName} · ${remaining}`;
 }
@@ -1188,7 +1200,8 @@ function updateBudgetReadout() {
     el.textContent = 'Local snapshot active';
     return;
   }
-  el.textContent = `Cala budget: ${b.remainingCalls} / ${b.maxLiveCalls} live calls remaining (${b.cachedResponses || 0} cached)`;
+  const { remaining, max, cached } = getBudgetNumbers(b);
+  el.textContent = `Cala budget: ${remaining} / ${max} live calls remaining (${cached} cached)`;
 }
 
 function formatCalaLiveHtml(res) {
