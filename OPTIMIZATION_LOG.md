@@ -108,3 +108,13 @@
   - Search bar: single-keyword filter -> `AI Search` parsing multi-constraint NL prompts (`"Slush 2026 DeepTech raising soon"`) with cited startup chips and 1-click `Ask Live Cala Knowledge` escalation
 - **Tests:** PASS (`11/11` sandboxed unit tests, `76.2ms`), `node --check` pass, hygiene check `0` hits, Browser Checks verified at `1440x900` & `390x844` (`final_step_991.png`, `0` console/network errors, `8/8` Cala credits preserved)
 - **Decision:** KEEP
+
+### [2026-11-14 12:05] — Exp 9: Curated Non-Technical Modal, White/Lime UI + Non-Blue Charcoal Dark UI & Zero-Emoji Cleanup
+- **Hypothesis:** Stripping API schema/role/UUID jargon from modal & Cala views, condensing the modal to 3 KPI cards and 3 concise accordions with clean single-line header geometry (`scrollTop = 0`), adding a crisp White default palette (`#f6f8f5` / `#ffffff`) with emerald green + lime accents alongside a neutral obsidian charcoal Dark UI (`#0c0d0c` / `#141614`, zero blue cast), and removing all decorative emojis (`⚡`/`★`/`☆`/`✓`) delivers executive readability in both light and dark modes.
+- **Files touched:** `public/index.html`, `public/styles.css`, `public/app.js`
+- **Before -> After:**
+  - Theme options: single dark-navy (`#070b14` / `#38bdf8`) palette -> dual `White` (default, `#ffffff` + `#16a34a` green + `#ecfccb`/`#65a30d` lime) & neutral `Dark` (`rgb(12, 13, 12)` charcoal + `#22c55e` green + `#a3e635` lime) toggled via `#themeToggleBtn` / `#onbThemeToggleBtn` / `#optionsMenuPopover`
+  - Modal content density: 4 KPIs + verbose legal/filing metadata + 4 accordions -> 3 KPIs (`Thesis Fit`, `Latest Round`, `Warm Route`) + concise 1-sentence takeaway + 3 pills + 3 clean collapsed accordions fitting cleanly without initial scroll
+  - Random dingbats / emojis (`⚡`, `★`, `☆`, `✓`): 11 HTML/JS occurrences -> `0` (replaced with inline `13-14px` SVG bookmark icons & clean `.live-dot`)
+- **Tests:** PASS (`11/11` sandboxed unit tests, `81.3ms`), `node --check` pass, hygiene & dingbat checks `0` hits, Browser Checks verified White Grid (`final_step_1004.png`), White Modal (`final_step_1028.png`), Neutral Dark Modal (`final_step_1036.png`), `390x844` mobile zero overflow, `0` console/network errors, `8/8` Cala preserved
+- **Decision:** KEEP

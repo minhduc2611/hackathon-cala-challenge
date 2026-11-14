@@ -267,7 +267,7 @@ function getStartupCalaFieldProfile(candidate) {
     arrStatus:
       candidate.stage === "Series B" || candidate.stage === "Series C"
         ? "Annual recurring revenue band indexed in primary investor disclosures"
-        : "Not found in Cala (early private startup)",
+        : "Not disclosed publicly",
     leadershipRelationships
   };
 }
@@ -436,14 +436,56 @@ const WEIGHT_PROFILES = {
   }
 };
 
+const THEME_STORAGE_KEY = "rte_theme_v1";
+
+function getActiveTheme() {
+  return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+}
+
+function applyTheme(nextTheme) {
+  const theme = nextTheme === "dark" ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", theme);
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
+  } catch (_) {}
+  const nextLabel = theme === "light" ? "Dark" : "White";
+  document.querySelectorAll(".theme-toggle-label").forEach((el) => {
+    el.textContent = nextLabel;
+  });
+  document.querySelectorAll("[data-set-theme]").forEach((btn) => {
+    const active = btn.getAttribute("data-set-theme") === theme;
+    btn.classList.toggle("is-active", active);
+    btn.setAttribute("aria-pressed", String(active));
+  });
+}
+
+function toggleTheme() {
+  applyTheme(getActiveTheme() === "light" ? "dark" : "light");
+}
+
+function bookmarkIconSvg(size = 13) {
+  return `<svg class="ui-icon" width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 2.5h8v11l-4-2.5L4 13.5v-11z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" /></svg>`;
+}
+
+function formatLeadershipTitle(relation) {
+  const map = {
+    IS_CEO_OF: "CEO",
+    FOUNDED: "Founder",
+    IS_BOARD_MEMBER_OF: "Board member",
+    IS_CHAIRPERSON_OF: "Chairperson",
+    IS_CTO_OF: "CTO",
+  };
+  return map[relation] || String(relation || "Leader").replace(/^IS_/, "").replace(/_OF$/, "").replace(/_/g, " ");
+}
+
 const SECTOR_THEMES = {
-  "AI & ML": { bg: "#0f223d", fg: "#60a5fa", border: "#1e3a8a", shape: "grid" },
-  "Climate Tech": { bg: "#062e22", fg: "#34d399", border: "#065f46", shape: "orbit" },
-  DeepTech: { bg: "#1e1b4b", fg: "#a78bfa", border: "#3730a3", shape: "prism" },
-  HealthTech: { bg: "#082f49", fg: "#38bdf8", border: "#0369a1", shape: "cross" },
-  Fintech: { bg: "#3b2106", fg: "#fbbf24", border: "#92400e", shape: "bars" },
-  "B2B SaaS": { bg: "#172554", fg: "#93c5fd", border: "#1d4ed8", shape: "layers" },
-  "Gaming & Consumer": { bg: "#3b0a2a", fg: "#f472b6", border: "#831843", shape: "spark" }
+  "AI & ML": { bg: "#17211a", fg: "#4ade80", border: "#166534", shape: "grid" },
+  "Climate Tech": { bg: "#142219", fg: "#22c55e", border: "#15803d", shape: "orbit" },
+  DeepTech: { bg: "#1c2217", fg: "#a3e635", border: "#4d7c0f", shape: "prism" },
+  HealthTech: { bg: "#15231e", fg: "#34d399", border: "#0f766e", shape: "cross" },
+  Fintech: { bg: "#222017", fg: "#f59e0b", border: "#b45309", shape: "bars" },
+  "B2B SaaS": { bg: "#192119", fg: "#84cc16", border: "#3f6212", shape: "layers" },
+  "Gaming & Consumer": { bg: "#201a1b", fg: "#fb923c", border: "#9a3412", shape: "spark" }
 };
 
 function escapeHtml(value) {
@@ -474,9 +516,9 @@ function getInitials(name) {
 
 function scoreBand(score) {
   const val = Number(score || 0);
-  if (val >= 72) return { cls: "s-hot", lab: "Call now", shortLab: "Call", col: "#34d399" };
-  if (val >= 56) return { cls: "s-warm", lab: "Warm", shortLab: "Warm", col: "#fbbf24" };
-  return { cls: "s-cold", lab: "Track", shortLab: "Track", col: "#94a3b8" };
+  if (val >= 72) return { cls: "s-hot", lab: "Call now", shortLab: "Call", col: "var(--green)" };
+  if (val >= 56) return { cls: "s-warm", lab: "Warm", shortLab: "Warm", col: "var(--lime)" };
+  return { cls: "s-cold", lab: "Track", shortLab: "Track", col: "var(--dim)" };
 }
 
 function buildIncompleteCircleScoreSvg(score, size = 54, subLabel = "", valueId = "") {
@@ -492,7 +534,7 @@ function buildIncompleteCircleScoreSvg(score, size = 54, subLabel = "", valueId 
   return `
     <div class="incomplete-ring ${b.cls} ${sizeClass}" style="--ring-size: ${size}px; --ring-color: ${col}" data-score-gauge="incomplete-circle">
       <svg width="${size}" height="${size}" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Fit score ${val} out of 100">
-        <circle cx="32" cy="32" r="${r}" fill="none" stroke="rgba(148, 163, 184, 0.2)" stroke-width="5.2" stroke-linecap="round"
+        <circle cx="32" cy="32" r="${r}" fill="none" stroke="var(--svg-track)" stroke-width="5.2" stroke-linecap="round"
           stroke-dasharray="${arcLen.toFixed(2)} ${circ.toFixed(2)}" transform="rotate(145 32 32)" />
         <circle cx="32" cy="32" r="${r}" fill="none" stroke="${col}" stroke-width="5.2" stroke-linecap="round"
           stroke-dasharray="${fillLen.toFixed(2)} ${circ.toFixed(2)}" stroke-opacity="${val > 0 ? "1" : "0"}" transform="rotate(145 32 32)" />
@@ -510,9 +552,9 @@ function scoreRingHtml(score) {
 function buildStartupLogoSvg(name, sector, size = 64) {
   const initials = getInitials(name);
   const theme = SECTOR_THEMES[sector] || {
-    bg: "#111a2e",
-    fg: "#34d399",
-    border: "#273449",
+    bg: "#171c18",
+    fg: "#22c55e",
+    border: "#166534",
     shape: "orbit"
   };
 
@@ -995,14 +1037,14 @@ function syncCallListUI() {
   if (drawerStarBtn && state.activeStartupId) {
     const isSaved = state.savedCallListIds.includes(state.activeStartupId);
     drawerStarBtn.classList.toggle("is-saved", isSaved);
-    drawerStarBtn.innerHTML = isSaved ? "&#9733; In Call List" : "&#9734; Call List";
+    drawerStarBtn.innerHTML = `${bookmarkIconSvg(13)} <span>${isSaved ? "Saved" : "Save"}</span>`;
   }
 
   const talkStarBtn = document.getElementById("talkSaveCallBtn");
   if (talkStarBtn && state.activeStartupId) {
     const isSaved = state.savedCallListIds.includes(state.activeStartupId);
     talkStarBtn.classList.toggle("is-saved", isSaved);
-    talkStarBtn.innerHTML = isSaved ? "&#9733; In Call List" : "&#9734; Save to Call List";
+    talkStarBtn.innerHTML = `${bookmarkIconSvg(13)} <span>${isSaved ? "Saved" : "Save to Call List"}</span>`;
   }
 
   if (state.compareMatrixOpen) {
@@ -1252,7 +1294,7 @@ function renderStartupGrid(shortlist) {
                 aria-label="${isSaved ? "Remove from Call List" : "Add to Call List"}"
                 title="${isSaved ? "In Call List" : "Save to Call List"}"
               >
-                &#9733;
+                ${bookmarkIconSvg(14)}
               </button>
             </div>
             <div class="tile-foot-slot">
@@ -1536,7 +1578,7 @@ function buildAiCopilotSynthesis(queryText, parsed, items, backendRes) {
     topLead.linkedinNetwork?.bridgePerson?.split("(")[0]?.trim() ||
     topLead.coInvestorPath?.coInvestorName ||
     "Cala syndicate";
-  return `AI Search matched ${items.length} verified startup${items.length === 1 ? "" : "s"}. Top match: ${topLead.name} (${prof?.legalName || topLead.name}, ${topLead.suitabilityScore}/100) in ${topLead.hqCity} (${topLead.stage}, ${formatEur(topLead.lastRoundAmountEurM)} ISSUER, route via ${bridge}).`;
+  return `Matched ${items.length} startup${items.length === 1 ? "" : "s"}. Top match: ${topLead.name} (${topLead.suitabilityScore}/100) in ${topLead.hqCity} (${topLead.stage}, ${formatEur(topLead.lastRoundAmountEurM)}, intro via ${bridge}).`;
 }
 
 async function executeSearchRefinement(customQuery) {
@@ -1679,7 +1721,7 @@ async function executeSearchRefinement(customQuery) {
         )
         .join("");
       const askLiveBtn = queryText.trim()
-        ? `<button type="button" class="ai-escalate-cala-btn" data-ai-escalation-query="${escapeHtml(queryText.trim())}">&#9889; Ask Live Cala Knowledge</button>`
+        ? `<button type="button" class="ai-escalate-cala-btn" data-ai-escalation-query="${escapeHtml(queryText.trim())}"><span class="live-dot" aria-hidden="true"></span> Check Live Cala</button>`
         : "";
       citesEl.innerHTML = topChips + askLiveBtn;
     }
@@ -1813,10 +1855,10 @@ function renderTalkScreen() {
         </div>
       </div>
       <div class="t">
-        <div class="eyebrow" style="margin-bottom: 6px">One startup in detail · Verified in Cala</div>
+        <div class="eyebrow" style="margin-bottom: 6px">Startup deep dive</div>
         <h2>${escapeHtml(candidate.name)}</h2>
         <div class="m">
-          ${escapeHtml(getStartupCalaFieldProfile(candidate)?.legalName || candidate.name)} · ${escapeHtml(candidate.hqCity)}, ${escapeHtml(candidate.country)} · ${escapeHtml(candidate.sector)} · ${escapeHtml(getStartupCalaFieldProfile(candidate)?.fundingStage || candidate.stage)} (${formatEur(candidate.lastRoundAmountEurM)})${getStartupCalaFieldProfile(candidate)?.slush2026?.attending ? " · Slush 2026 ATTENDEE" : ""}
+          ${escapeHtml(candidate.hqCity)}, ${escapeHtml(candidate.country)} · ${escapeHtml(candidate.sector)} · ${escapeHtml(getStartupCalaFieldProfile(candidate)?.fundingStage || candidate.stage)} (${formatEur(candidate.lastRoundAmountEurM)})${getStartupCalaFieldProfile(candidate)?.slush2026?.attending ? " · Attending Slush 2026" : ""}
         </div>
       </div>
       <div class="talk-head-actions">
@@ -1826,7 +1868,7 @@ function renderTalkScreen() {
           id="talkSaveCallBtn"
           aria-pressed="${isSaved ? "true" : "false"}"
         >
-          ${isSaved ? "&#9733; In Call List" : "&#9734; Save to Call List"}
+          ${bookmarkIconSvg(13)} <span>${isSaved ? "Saved" : "Save to Call List"}</span>
         </button>
         <button type="button" class="btn sm primary" id="talkCopyIntroBtn">Copy Warm Intro</button>
         <button type="button" class="btn sm" id="talkPrevStartupBtn">&larr; Prev</button>
@@ -1986,7 +2028,7 @@ function renderTalkScreen() {
     }
     const copyBtn = document.getElementById("talkCopyIntroBtn");
     if (copyBtn) {
-      copyBtn.textContent = "Copied Intro ✓";
+      copyBtn.textContent = "Copied Intro";
       window.setTimeout(() => {
         if (copyBtn.isConnected) copyBtn.textContent = "Copy Warm Intro";
       }, 1800);
@@ -2075,23 +2117,19 @@ function applyExposureDepth(depth) {
   });
 
   const layer1 = document.getElementById("gradualLayer1");
-  const layerIntro = document.getElementById("gradualLayerIntro");
   const layer2 = document.getElementById("gradualLayer2");
   const layer3 = document.getElementById("gradualLayer3");
 
   if (depth === "quick") {
     if (layer1) layer1.open = false;
-    if (layerIntro) layerIntro.open = false;
     if (layer2) layer2.open = false;
     if (layer3) layer3.open = false;
   } else if (depth === "evidence") {
     if (layer1) layer1.open = true;
-    if (layerIntro) layerIntro.open = false;
     if (layer2) layer2.open = true;
     if (layer3) layer3.open = false;
   } else if (depth === "memo") {
     if (layer1) layer1.open = true;
-    if (layerIntro) layerIntro.open = true;
     if (layer2) layer2.open = true;
     if (layer3) layer3.open = true;
   }
@@ -2141,13 +2179,13 @@ async function openStartupInspector(companyId, options = {}) {
       rankIdx >= 0 ? `Rank #${rankIdx + 1} of ${state.DisplayedShortlist.length}` : "Connected peer";
     document.getElementById("drawerStartupName").textContent = candidate.name;
     document.getElementById("drawerStartupMeta").textContent =
-      `${calaProfile?.legalName || candidate.name} · ${candidate.sector} · ${calaProfile?.fundingStage || candidate.stage} · ${candidate.hqCity}, ${candidate.country}`;
+      `${candidate.sector} · ${candidate.stage} · ${candidate.hqCity}, ${candidate.country}`;
 
     const scoreArcEl = document.getElementById("drawerScoreArc");
     if (scoreArcEl) {
       scoreArcEl.innerHTML = buildIncompleteCircleScoreSvg(
         candidate.suitabilityScore ?? 0,
-        64,
+        58,
         "/100",
         "drawerScoreNumber"
       );
@@ -2183,6 +2221,8 @@ async function openStartupInspector(companyId, options = {}) {
     renderDrawerBriefPane(brief, candidate);
     renderDrawerNetworkPane(brief, candidate);
   }
+  const drawerBody = drawer?.querySelector(".drawer-body");
+  if (drawerBody) drawerBody.scrollTop = 0;
 }
 
 function closeStartupInspector() {
@@ -2219,7 +2259,7 @@ async function copyWarmIntroNote() {
   }
   if (btn) {
     btn.classList.add("is-copied");
-    btn.textContent = "Copied intro note ✓";
+    btn.textContent = "Copied intro note";
     window.clearTimeout(btn._copyTimer);
     btn._copyTimer = window.setTimeout(() => {
       btn.classList.remove("is-copied");
@@ -2260,26 +2300,23 @@ function renderDrawerBriefPane(brief, candidate) {
     )
       .split("(")[0]
       .trim();
+    const roundsArr = brief?.rounds || candidate.roundHistory || [];
+    const latestDate = roundsArr[roundsArr.length - 1]?.date || "";
     heroEl.innerHTML = `
       <div class="hk-card">
-        <span class="hk-kicker">Cala Fit Score</span>
+        <span class="hk-kicker">Thesis Fit</span>
         <b class="hk-val num-tabular" style="color:${band.col}">${score}/100</b>
         <span class="hk-lab">${escapeHtml(band.lab)}</span>
       </div>
       <div class="hk-card">
         <span class="hk-kicker">Latest Round</span>
         <b class="hk-val num-tabular">${formatEur(candidate.lastRoundAmountEurM)}</b>
-        <span class="hk-lab">${escapeHtml(candidate.stage)}</span>
+        <span class="hk-lab">${escapeHtml(candidate.stage)}${latestDate ? ` · ${escapeHtml(latestDate.slice(0, 7))}` : ""}</span>
       </div>
       <div class="hk-card">
-        <span class="hk-kicker">Next Window</span>
-        <b class="hk-val">${escapeHtml(candidate.likelyNextStage || "Series A")}</b>
-        <span class="hk-lab">${candidate.raisingSoon ? "Raising window" : "Standard cycle"}</span>
-      </div>
-      <div class="hk-card">
-        <span class="hk-kicker">Warmest Bridge</span>
+        <span class="hk-kicker">Warm Route</span>
         <b class="hk-val hk-val-text">${escapeHtml(shortBridge)}</b>
-        <span class="hk-lab">${escapeHtml(candidate.linkedinNetwork ? "LinkedIn 2nd°" : "Cala syndicate")}</span>
+        <span class="hk-lab">${escapeHtml(candidate.linkedinNetwork ? "2nd-degree intro" : "Co-investor path")}</span>
       </div>
     `;
   }
@@ -2295,12 +2332,11 @@ function renderDrawerBriefPane(brief, candidate) {
     const latestLead = roundsArr[roundsArr.length - 1]?.leadInvestorName || candidate.coInvestorPath?.coInvestorName;
     const basePills = [
       `${candidate.hqCity}, ${candidate.country}`,
-      `${candidate.employeeCount} employees`,
-      calaProfile?.operationalStatus ? `Status: ${calaProfile.operationalStatus}` : null,
-      latestLead ? `Lead: ${latestLead}` : null
+      `${candidate.employeeCount} people`,
+      !calaProfile?.slush2026?.attending && latestLead ? `Lead: ${latestLead}` : null
     ].filter(Boolean);
     const slushPill = calaProfile?.slush2026?.attending
-      ? `<span class="meta-pill slush-attendee-chip" title="Cala PARTICIPATES_IN_EVENT · ${SLUSH_2026_EVENT_ID}">Slush 2026 · ATTENDEE</span>`
+      ? `<span class="meta-pill slush-attendee-chip">Attending Slush 2026</span>`
       : "";
     pillsEl.innerHTML =
       basePills.map((p) => `<span class="meta-pill">${escapeHtml(p)}</span>`).join("") + slushPill;
@@ -2316,28 +2352,28 @@ function renderDrawerBriefPane(brief, candidate) {
 
   const confEl = document.getElementById("drawerConfidenceLabel");
   if (confEl) {
-    confEl.textContent = `${(candidate.roundHistory || []).length} ISSUER rounds`;
+    const roundsCount = (candidate.roundHistory || []).length;
+    confEl.textContent = roundsCount > 0 ? `${roundsCount} verified round${roundsCount === 1 ? "" : "s"}` : "Verified";
   }
 
   const reasons = candidate.reasons || [];
   const risks = brief?.risks || [
     candidate.competitorConflict
       ? `Adjacent to portfolio company ${candidate.competitorConflict}; requires conflict clearance.`
-      : "No direct portfolio conflict detected in indexed Cala rounds.",
+      : "No direct portfolio conflict detected in current portfolio.",
     candidate.raisingSoon
-      ? "Inside active 12-to-24 month post-round raising window."
-      : "Out-of-cycle outreach; monitor milestone triggers prior to next round."
+      ? "Inside active 12-to-24 month post-round fundraising window."
+      : "Out-of-cycle outreach; confirm runway and next milestone timing."
   ];
   const roundsList = brief?.rounds || candidate.roundHistory || [];
-  const analoguesList = candidate.similarPortfolio || [];
   const missingList = brief?.notFoundInCala || [];
 
   const b1 = document.getElementById("gradualBadge1");
   if (b1) b1.textContent = `${reasons.length} facts · ${risks.length} risks`;
   const b2 = document.getElementById("gradualBadge2");
-  if (b2) b2.textContent = `${roundsList.length} rounds · ${calaProfile?.numericalObservations?.length || 0} time-series · ${calaProfile?.leadershipRelationships?.length || 0} leaders`;
+  if (b2) b2.textContent = `${roundsList.length} round${roundsList.length === 1 ? "" : "s"} · team`;
   const b3 = document.getElementById("gradualBadge3");
-  if (b3) b3.textContent = `${missingList.length} gaps · Export & Live Cala`;
+  if (b3) b3.textContent = missingList.length ? `${missingList.length} notes · export` : "Intro & audit";
 
   const breakdownEl = document.getElementById("drawerScoreBreakdown");
   if (breakdownEl) {
@@ -2346,17 +2382,17 @@ function renderDrawerBriefPane(brief, candidate) {
       .map((f) => {
         const pct = Math.min(100, Math.round((Number(f.points) / f.maxPoints) * 100));
         return `
-          <div class="sb-row" tabindex="0" title="${escapeHtml(f.detail || "Verified via Cala round ledger")}">
+          <div class="sb-row" tabindex="0" title="${escapeHtml(f.detail || "Verified fit factor")}">
             <div class="sb-top">
               <span class="sb-label">${escapeHtml(f.label)}</span>
-              <span class="sb-pts num-tabular">${f.points} / ${f.maxPoints} pts</span>
+              <span class="sb-pts num-tabular">${f.points} / ${f.maxPoints}</span>
             </div>
             <div class="sb-bar-track">
               <div class="sb-bar-fill" style="width: ${pct}%"></div>
             </div>
             <div class="sb-hover-detail">
-              <span class="sb-pct num-tabular">${pct}% of max weight</span>
-              <span>${escapeHtml(f.detail || "Verified via Cala round ledger")}</span>
+              <span class="sb-pct num-tabular">${pct}% match</span>
+              <span>${escapeHtml(f.detail || "")}</span>
             </div>
           </div>
         `;
@@ -2372,19 +2408,16 @@ function renderDrawerBriefPane(brief, candidate) {
         const cites = sources
           .map(
             (src, idx) =>
-              `${renderCalaRankPill(src)} <a href="${escapeHtml(src.url)}" target="_blank" rel="noopener noreferrer" class="citation-link" title="${escapeHtml(src.title)}">[${idx + 1} &#8599;]</a>`
+              `<a href="${escapeHtml(src.url)}" target="_blank" rel="noopener noreferrer" class="citation-link" title="${escapeHtml(src.title)}">[${escapeHtml(src.publisher || `Source ${idx + 1}`)}]</a>`
           )
           .join(" ");
         const metaText = sources
-          .map((src) => {
-            const p = deriveCalaSourceProvenance(src);
-            return `${src.publisher || src.title || "Source"} (${src.date || "Cala indexed"}, ${p.sourceRank}, precision: ${p.datePrecision})`;
-          })
+          .map((src) => `${src.publisher || src.title || "Source"} (${src.date || "Recent"})`)
           .join(" · ");
         return `
           <li class="evidence-item" tabindex="0">
             <span>${escapeHtml(r.text)} ${cites}</span>
-            ${metaText ? `<span class="cite-hover-meta">Grounded via ${escapeHtml(metaText)}</span>` : ""}
+            ${metaText ? `<span class="cite-hover-meta">${escapeHtml(metaText)}</span>` : ""}
           </li>
         `;
       })
@@ -2393,15 +2426,15 @@ function renderDrawerBriefPane(brief, candidate) {
 
   const risksList = document.getElementById("drawerRisksList");
   if (risksList) {
-    const risks = brief?.risks || [
+    const risksArr = brief?.risks || [
       candidate.competitorConflict
         ? `Adjacent to portfolio company ${candidate.competitorConflict}; requires conflict clearance.`
-        : "No direct portfolio conflict detected in indexed Cala rounds.",
+        : "No direct portfolio conflict detected.",
       candidate.raisingSoon
-        ? "Inside active 12-to-24 month post-round raising window."
-        : "Out-of-cycle outreach; monitor milestone triggers prior to next round."
+        ? "Inside active 12-to-24 month post-round fundraising window."
+        : "Out-of-cycle outreach; confirm milestone timing prior to next round."
     ];
-    risksList.innerHTML = risks.map((rk) => `<li>${escapeHtml(rk)}</li>`).join("");
+    risksList.innerHTML = risksArr.map((rk) => `<li>${escapeHtml(rk)}</li>`).join("");
   }
 
   const roundsBody = document.getElementById("drawerRoundsTableBody");
@@ -2409,23 +2442,18 @@ function renderDrawerBriefPane(brief, candidate) {
     const rounds = brief?.rounds || candidate.roundHistory || [];
     roundsBody.innerHTML = rounds
       .map((r) => {
-        const src = (r.sources || [])[0];
-        const prov = deriveCalaSourceProvenance(src);
-        const deduped = Boolean(src) && prov.sourceRank === "FILING";
-        const srcHtml = src
-          ? `${renderCalaRankPill(src)}<span class="cala-filing-dedupe-tag">${
-              deduped
-                ? "✓ FINANCING_RAISED filing matched (deduplicated)"
-                : "✓ Cross-checked vs registry events (no double-count)"
-            }</span>`
-          : `<span class="cala-rank-pill rank-primary">PRIMARY · month</span>`;
+        const investors = [
+          r.leadInvestorName ? `${r.leadInvestorName} (Lead)` : null,
+          ...(r.investorNames || []).filter((n) => n !== r.leadInvestorName)
+        ]
+          .filter(Boolean)
+          .join(", ");
         return `
         <tr>
-          <td class="num-tabular">${escapeHtml(r.date)}<span class="cala-precision-tag">(${escapeHtml(prov.datePrecision)})</span></td>
-          <td><strong>${escapeHtml(r.type)}</strong><span class="cala-role-chip" title="Filtered on role: ISSUER per Cala Field Guide">ISSUER · EQUITY</span></td>
+          <td class="num-tabular">${escapeHtml((r.date || "").slice(0, 7))}</td>
+          <td><strong>${escapeHtml(r.type)}</strong></td>
           <td class="num-tabular">${formatEur(r.amountEurM)}</td>
-          <td><strong>Lead: ${escapeHtml(r.leadInvestorName)}</strong> · ${escapeHtml((r.investorNames || []).join(", "))}</td>
-          <td>${srcHtml}</td>
+          <td>${escapeHtml(investors || "Undisclosed")}</td>
         </tr>
       `;
       })
@@ -2434,42 +2462,46 @@ function renderDrawerBriefPane(brief, candidate) {
 
   const tsLeadEl = document.getElementById("drawerTimeSeriesAndLeadership");
   if (tsLeadEl && calaProfile) {
+    const obsList = calaProfile.numericalObservations || [];
+    const firstObs = obsList[0];
+    const lastObs = obsList[obsList.length - 1];
+    const teamDelta =
+      firstObs && lastObs && obsList.length > 1
+        ? `${firstObs.value} -> ${lastObs.value} people (${firstObs.date} to ${lastObs.date})`
+        : lastObs
+          ? `${lastObs.value} people (${lastObs.date})`
+          : `${candidate.employeeCount} people`;
+
     tsLeadEl.innerHTML = `
       <div class="cala-mini-card">
         <div class="cala-mini-head">
-          <span class="cala-mini-title">Time Series (numerical_observations)</span>
-          <span class="cala-rank-pill rank-filing">employee_count</span>
+          <span class="cala-mini-title">Team growth</span>
+          <span class="badge b-green">${escapeHtml(String(candidate.employeeCount))} active</span>
         </div>
         <div class="cala-ts-list">
-          ${calaProfile.numericalObservations
-            .map(
-              (o) => `
-            <div class="cala-ts-row">
-              <span>${escapeHtml(o.date)} <span class="cala-precision-tag">(${escapeHtml(o.precision)})</span></span>
-              <span><strong class="cala-ts-val num-tabular">${o.value} employees</strong> <span class="cala-rank-pill ${o.sourceRank === "FILING" ? "rank-filing" : "rank-primary"}">${escapeHtml(o.sourceRank)}</span></span>
-            </div>
-          `
-            )
-            .join("")}
           <div class="cala-ts-row">
-            <span>${escapeHtml(calaProfile.employeeCountRangeLabel)}</span>
-            <span class="note">ARR: ${escapeHtml(calaProfile.arrStatus)}</span>
+            <span>Headcount trajectory</span>
+            <strong class="cala-ts-val num-tabular">${escapeHtml(teamDelta)}</strong>
+          </div>
+          <div class="cala-ts-row">
+            <span>Company size bracket</span>
+            <span class="note">${escapeHtml(calaProfile.employeeCountRangeLabel || `${candidate.employeeCount} employees`)}</span>
           </div>
         </div>
       </div>
 
       <div class="cala-mini-card">
         <div class="cala-mini-head">
-          <span class="cala-mini-title">Leadership &amp; Governance (incoming)</span>
-          <span class="cala-rank-pill rank-primary">${escapeHtml(calaProfile.ownershipStatus)}</span>
+          <span class="cala-mini-title">Founders &amp; leadership</span>
+          <span class="note">${escapeHtml(calaProfile.ownershipStatus || "Private")}</span>
         </div>
         <div class="cala-ts-list">
           ${calaProfile.leadershipRelationships
             .map(
               (rel) => `
             <div class="cala-ts-row">
-              <span><strong>${escapeHtml(rel.person)}</strong><span class="cala-role-chip">${escapeHtml(rel.relation)}</span></span>
-              <span class="note num-tabular">since ${escapeHtml(rel.validSince)} <span class="cala-rank-pill ${rel.sourceRank === "FILING" ? "rank-filing" : "rank-primary"}">${escapeHtml(rel.sourceRank)}</span></span>
+              <span><strong>${escapeHtml(rel.person)}</strong> · ${escapeHtml(formatLeadershipTitle(rel.relation))}</span>
+              <span class="note num-tabular">since ${escapeHtml(rel.validSince)}</span>
             </div>
           `
             )
@@ -2502,13 +2534,14 @@ function renderDrawerBriefPane(brief, candidate) {
   const missingEl = document.getElementById("drawerMissingDataList");
   if (missingEl) {
     missingEl.innerHTML = (brief?.notFoundInCala || [])
-      .map(
-        (m) => `
+      .map((m) => {
+        const cleanStatus = String(m.status || "").replace(/Not found in Cala/gi, "Ask on call");
+        return `
         <li>
-          <strong>${escapeHtml(m.field)}:</strong> ${escapeHtml(m.status)} (${escapeHtml(m.reason)})
+          <strong>${escapeHtml(m.field)}:</strong> ${escapeHtml(cleanStatus)}${m.reason ? ` (${escapeHtml(m.reason)})` : ""}
         </li>
-      `
-      )
+      `;
+      })
       .join("");
   }
 
@@ -2762,17 +2795,17 @@ function buildNetworkGraphSvg(graphObj, selectedStartupId) {
     .filter((col) => col.list.length > 0)
     .map(
       (col) =>
-        `<text x="${col.cx}" y="20" text-anchor="middle" font-family="'Plus Jakarta Sans', sans-serif" font-size="10" font-weight="800" letter-spacing="0.9" fill="#64748b">${escapeHtml(col.label)}</text>`
+        `<text x="${col.cx}" y="20" text-anchor="middle" font-family="'Plus Jakarta Sans', sans-serif" font-size="10" font-weight="800" letter-spacing="0.9" fill="var(--dim)">${escapeHtml(col.label)}</text>`
     )
     .join("");
 
   const styleForType = (type, id) => {
-    if (type === "target_fund") return { accent: "#34d399", kind: "BENCHMARK" };
-    if (id === selectedStartupId || type === "target_startup") return { accent: "#34d399", kind: "SELECTED" };
-    if (type === "co_investor") return { accent: "#fbbf24", kind: "BRIDGE" };
-    if (id === "li-leader") return { accent: "#38bdf8", kind: "LEADERSHIP" };
-    if (type === "portfolio") return { accent: "#94a3b8", kind: "PORTFOLIO" };
-    return { accent: "#38bdf8", kind: "PEER STARTUP" };
+    if (type === "target_fund") return { accent: "var(--green)", kind: "BENCHMARK" };
+    if (id === selectedStartupId || type === "target_startup") return { accent: "var(--green)", kind: "SELECTED" };
+    if (type === "co_investor") return { accent: "var(--amber)", kind: "BRIDGE" };
+    if (id === "li-leader") return { accent: "var(--lime)", kind: "LEADERSHIP" };
+    if (type === "portfolio") return { accent: "var(--muted)", kind: "PORTFOLIO" };
+    return { accent: "var(--lime)", kind: "PEER STARTUP" };
   };
 
   const edgeSvg = links
@@ -2784,7 +2817,7 @@ function buildNetworkGraphSvg(graphObj, selectedStartupId) {
       if (a.cx === b.cx) {
         const yTop = a.cy < b.cy ? a.cy + cardH / 2 : b.cy + cardH / 2;
         const yBot = a.cy < b.cy ? b.cy - cardH / 2 : a.cy - cardH / 2;
-        return `<path d="M ${a.cx} ${yTop} L ${b.cx} ${yBot}" fill="none" stroke="#273449" stroke-width="1.6" />`;
+        return `<path d="M ${a.cx} ${yTop} L ${b.cx} ${yBot}" fill="none" stroke="var(--line-2)" stroke-width="1.6" />`;
       }
 
       const x1 = a.cx < b.cx ? a.cx + cardW / 2 : a.cx - cardW / 2;
@@ -2802,10 +2835,10 @@ function buildNetworkGraphSvg(graphObj, selectedStartupId) {
         b.node.type === "target_startup";
 
       if (touchesTarget) {
-        return `<path d="${pathD}" fill="none" stroke="#34d399" stroke-opacity="0.28" stroke-width="2" /><path class="svg-warm-flow-edge" d="${pathD}" fill="none" stroke="#34d399" stroke-opacity="0.85" stroke-width="2" />`;
+        return `<path d="${pathD}" fill="none" stroke="var(--green)" stroke-opacity="0.28" stroke-width="2" /><path class="svg-warm-flow-edge" d="${pathD}" fill="none" stroke="var(--green)" stroke-opacity="0.85" stroke-width="2" />`;
       }
 
-      return `<path d="${pathD}" fill="none" stroke="#34d399" stroke-opacity="0.45" stroke-width="1.5" />`;
+      return `<path d="${pathD}" fill="none" stroke="var(--green)" stroke-opacity="0.45" stroke-width="1.5" />`;
     })
     .join("");
 
@@ -2821,9 +2854,9 @@ function buildNetworkGraphSvg(graphObj, selectedStartupId) {
 
       return `
         <g class="${nodeClass}" data-node-id="${escapeHtml(node.id)}" data-node-type="${escapeHtml(node.type)}" data-node-label="${escapeHtml(node.label)}"${peerAttr} tabindex="0" role="button" aria-label="Inspect ${escapeHtml(node.label)}" style="cursor:pointer">
-          <rect x="${x}" y="${y}" width="${cardW}" height="${cardH}" rx="10" fill="#0d1424" stroke="${st.accent}" stroke-width="1.4" />
+          <rect x="${x}" y="${y}" width="${cardW}" height="${cardH}" rx="10" fill="var(--panel)" stroke="${st.accent}" stroke-width="1.4" />
           <text x="${x + 12}" y="${y + 19}" font-family="'Plus Jakarta Sans', sans-serif" font-size="10" font-weight="800" fill="${st.accent}">${escapeHtml(st.kind)}</text>
-          <text x="${x + 12}" y="${y + 37}" font-family="'Plus Jakarta Sans', sans-serif" font-size="12.5" font-weight="700" fill="#e2e8f0">${escapeHtml(shortLabel)}</text>
+          <text x="${x + 12}" y="${y + 37}" font-family="'Plus Jakarta Sans', sans-serif" font-size="12.5" font-weight="700" fill="var(--text)">${escapeHtml(shortLabel)}</text>
         </g>
       `;
     })
@@ -2970,7 +3003,7 @@ function renderThesisAndBacktest(result) {
         </div>
         <div>
           <b>Zero-hallucination evidence gate</b>
-          Every claim is bound to a verified Cala citation ID; unverified attributes are explicitly surfaced as "Not found in Cala".
+          Every key claim is tied to a public filing or verified press source; private metrics are flagged for your first call.
         </div>
       </li>
     `;
@@ -3052,8 +3085,8 @@ function buildLiveCalaIntelHtml(res, options = {}) {
     (ka ? JSON.stringify(ka, null, 2) : "");
 
   const costBadge = res?.fromCache
-    ? `<span class="badge b-green">Cached · 0 credits</span>`
-    : `<span class="badge b-sky">Live Cala API</span>`;
+    ? `<span class="badge b-green">Cached</span>`
+    : `<span class="badge b-sky">Live verified</span>`;
 
   const relRows = [
     ...(isEventEntity
@@ -3064,9 +3097,7 @@ function buildLiveCalaIntelHtml(res, options = {}) {
             <div class="cala-rel-row">
               <div>
                 <strong>${escapeHtml(co.name)}</strong>
-                ${co.legalName ? `<span class="note" style="margin-left:6px">(${escapeHtml(co.legalName)})</span>` : ""}
-                <span class="cala-role-chip">PARTICIPATES_IN_EVENT · ATTENDEE</span>
-                ${src ? renderCalaRankPill(src) : ""}
+                <span class="note" style="margin-left:6px">${escapeHtml(co.hqCity || "")} · ${escapeHtml(co.stage || "")}</span>
               </div>
               <div style="display:flex;align-items:center;gap:8px">
                 <button type="button" class="cala-attendee-open-btn" data-slush-open-startup="${escapeHtml(co.id)}">
@@ -3085,50 +3116,43 @@ function buildLiveCalaIntelHtml(res, options = {}) {
         <div class="cala-rel-row">
           <div>
             <strong>${escapeHtml(c.name)}</strong>
-            <span class="cala-role-chip">${escapeHtml(c.entityType || "Company")} · INVESTED_IN</span>
-            ${src ? renderCalaRankPill(src) : ""}
+            <span class="note" style="margin-left:8px">Portfolio investment</span>
           </div>
-          ${href ? `<a class="cala-src-link" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(src.name || "Source")} &#8599;</a>` : `<span class="note">Cala Edge</span>`}
+          ${href ? `<a class="cala-src-link" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(src.name || "Source")} &#8599;</a>` : `<span class="note">Verified</span>`}
         </div>
       `;
     }),
     ...allRounds.slice(0, 6).map((r) => {
       const src = (r.sources || [])[0];
       const href = src?.document && src.document.startsWith("http") ? src.document : "";
-      const roleTag = r.role || (issuerRounds.length ? "ISSUER" : "INVESTOR");
+      const roleLabel = r.isLead ? "Lead investor" : r.role === "INVESTOR" ? "Investor" : "Raised";
       return `
         <div class="cala-rel-row">
           <div>
             <strong>${escapeHtml(r.roundType || "Funding Round")}</strong>
-            <span class="cala-role-chip">role: ${escapeHtml(roleTag)}${r.isLead ? " · Lead" : ""}</span>
-            <span class="note" style="margin-left:6px">${escapeHtml(r.eventDate || "Verified")}</span>
-            ${src ? renderCalaRankPill(src) : ""}
+            <span class="note" style="margin-left:8px">${escapeHtml(roleLabel)} · ${escapeHtml(r.eventDate || "Verified")}</span>
           </div>
-          ${href ? `<a class="cala-src-link" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(src.name || "Citation")} &#8599;</a>` : `<span class="note">Cala Round</span>`}
+          ${href ? `<a class="cala-src-link" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(src.name || "Citation")} &#8599;</a>` : `<span class="note">Recorded</span>`}
         </div>
       `;
     }),
-    ...corpEvents.slice(0, 4).map((ev) => {
-      const src = (ev.sources || [])[0];
-      return `
+    ...corpEvents.slice(0, 4).map((ev) => `
         <div class="cala-rel-row">
           <div>
             <strong>${escapeHtml(ev.name)}</strong>
-            <span class="note" style="margin-left:8px">${escapeHtml(ev.eventDate || "")} ${ev.deduplicatedAgainstRound ? "· Deduplicated vs FundingRound" : ""}</span>
-            ${src ? renderCalaRankPill(src) : ""}
+            <span class="note" style="margin-left:8px">${escapeHtml(ev.eventDate || "")}</span>
           </div>
-          <span class="cala-rank-pill rank-filing">FILING</span>
+          <span class="badge b-green">Filing</span>
         </div>
-      `;
-    })
+      `)
   ];
 
   const candRows = [
     ...leadership.map(
       (p) => `
       <div class="cala-rel-row">
-        <div><strong>${escapeHtml(p.name)}</strong> <span class="cala-role-chip">${escapeHtml(p.relation || p.role)}</span></div>
-        <span class="note">${p.validSince ? `since ${escapeHtml(p.validSince)}` : "Person"}</span>
+        <div><strong>${escapeHtml(p.name)}</strong> · <span class="note">${escapeHtml(formatLeadershipTitle(p.relation || p.role))}</span></div>
+        <span class="note">${p.validSince ? `since ${escapeHtml(p.validSince)}` : "Leadership"}</span>
       </div>
     `
     ),
@@ -3136,15 +3160,15 @@ function buildLiveCalaIntelHtml(res, options = {}) {
       (p) => `
       <div class="cala-rel-row">
         <div><strong>${escapeHtml(p.name)}</strong> · <span class="note">${escapeHtml(p.role || "Team")}</span></div>
-        <span class="badge b-amber">WORKS_AT</span>
+        <span class="note">Team</span>
       </div>
     `
     ),
     ...numObs.slice(0, 4).map(
       (obs, idx) => `
       <div class="cala-rel-row">
-        <div><strong>Observation #${idx + 1}</strong> · <span class="note">${escapeHtml(JSON.stringify(obs).slice(0, 110))}</span></div>
-        <span class="cala-rank-pill rank-filing">TIME SERIES</span>
+        <div><strong>Metric ${idx + 1}</strong> · <span class="note">${escapeHtml(obs.value ? `${obs.value} (${obs.date || ""})` : JSON.stringify(obs).slice(0, 80))}</span></div>
+        <span class="badge b-green">Growth</span>
       </div>
     `
     ),
@@ -3155,31 +3179,27 @@ function buildLiveCalaIntelHtml(res, options = {}) {
           <strong>${escapeHtml(e.name)}</strong> <span class="note">(${escapeHtml(e.entity_type || "Entity")})</span>
           ${e.description ? `<span class="note" style="display:block">${escapeHtml(e.description)}</span>` : ""}
         </div>
-        <span class="cala-uuid-chip">${escapeHtml((e.id || "").slice(0, 8))}</span>
-      </div>
-    `
+      </div>`
     )
   ];
 
-  const entityTitle = live?.name || matched?.name || res?.queryName || "Cala Entity";
-  const entityType = live?.entityType || matched?.entity_type || "Entity";
+  const entityTitle = live?.name || matched?.name || res?.queryName || "Company Summary";
+  const entityType = live?.entityType || matched?.entity_type || "Company";
   const entityId = live?.id || matched?.id || "";
 
   const schemaChips = [
-    live?.legalName ? `<span class="meta-pill">legal_name: ${escapeHtml(live.legalName)}</span>` : "",
-    live?.operationalStatus ? `<span class="meta-pill">status: ${escapeHtml(live.operationalStatus)}</span>` : "",
-    live?.fundingStage ? `<span class="meta-pill">stage: ${escapeHtml(live.fundingStage)}</span>` : "",
-    live?.employeeCountRange ? `<span class="meta-pill">headcount: [${escapeHtml(String(live.employeeCountRange))}]</span>` : ""
+    live?.fundingStage ? `<span class="meta-pill">${escapeHtml(live.fundingStage)} stage</span>` : "",
+    live?.employeeCountRange ? `<span class="meta-pill">${escapeHtml(String(live.employeeCountRange).replace(",", "-"))} team</span>` : "",
+    live?.headquarters ? `<span class="meta-pill">${escapeHtml(live.headquarters)}</span>` : ""
   ].filter(Boolean);
 
   return `
     <div class="cala-intel-head">
       <div style="min-width:0">
         <div class="cala-intel-title-row">
-          <span class="drawer-kicker" style="margin:0">&#9889; Live Cala AI Graph (4-Step Entity Pipeline)</span>
+          <span class="drawer-kicker" style="margin:0"><span class="live-dot" aria-hidden="true"></span> Live Cala check</span>
           ${costBadge}
           <span class="badge b-sky">${escapeHtml(entityType)}</span>
-          ${entityId ? `<span class="cala-uuid-chip" title="Cala Entity UUID">${escapeHtml(entityId.slice(0, 13))}..</span>` : ""}
         </div>
         <h3 class="cala-intel-title">${escapeHtml(entityTitle)}</h3>
         ${live?.description || matched?.description ? `<p class="cala-intel-desc">${escapeHtml(live?.description || matched?.description)}</p>` : ""}
@@ -3188,12 +3208,12 @@ function buildLiveCalaIntelHtml(res, options = {}) {
       <div class="cala-intel-actions">
         ${
           entityId !== SLUSH_2026_EVENT_ID
-            ? `<button type="button" class="btn sm slush-event-btn" data-open-slush-graph="1" title="Inspect Cala Slush 2026 Event Entity (bc844d56-6ab4-452b-96bf-2661e86e592b)">Slush 2026 Event Graph (0 credits)</button>`
+            ? `<button type="button" class="btn sm slush-event-btn" data-open-slush-graph="1" title="See startups attending Slush 2026">Slush 2026 list</button>`
             : ""
         }
         ${
           !ka && entityId !== SLUSH_2026_EVENT_ID
-            ? `<button type="button" class="btn sm primary" data-cala-deep-name="${escapeHtml(res?.queryName || entityTitle)}" data-cala-deep-type="${escapeHtml(res?.type || "company")}" data-cala-deep-ctx="${escapeHtml(ctx)}">Ask Deep Knowledge (1 credit)</button>`
+            ? `<button type="button" class="btn sm primary" data-cala-deep-name="${escapeHtml(res?.queryName || entityTitle)}" data-cala-deep-type="${escapeHtml(res?.type || "company")}" data-cala-deep-ctx="${escapeHtml(ctx)}">Deep summary (1 credit)</button>`
             : ""
         }
         <button type="button" class="btn sm" data-close-cala-ctx="${escapeHtml(ctx)}">Close &times;</button>
@@ -3202,48 +3222,48 @@ function buildLiveCalaIntelHtml(res, options = {}) {
 
     <div class="hero-kpi-strip cala-live-kpis">
       <div class="hk-card">
-        <span class="hk-kicker">Matched Entity</span>
+        <span class="hk-kicker">Profile</span>
         <b class="hk-val hk-val-text">${escapeHtml(entityType)}</b>
-        <span class="hk-lab">${matched ? "Verified via entity_retrieval" : "No exact graph node"}</span>
+        <span class="hk-lab">${matched ? "Verified match" : "Public summary"}</span>
       </div>
       <div class="hk-card">
-        <span class="hk-kicker">${isEventEntity ? "Slush Attendees" : "Relationship Edges"}</span>
+        <span class="hk-kicker">${isEventEntity ? "Attending Startups" : "Connections"}</span>
         <b class="hk-val num-tabular">${edgeCount}</b>
-        <span class="hk-lab">${isEventEntity ? "incoming PARTICIPATES_IN_EVENT" : `${invested.length} portfolio · ${allRounds.length} rounds`}</span>
+        <span class="hk-lab">${isEventEntity ? "Slush 2026 attendees" : `${invested.length} portfolio · ${allRounds.length} rounds`}</span>
       </div>
       <div class="hk-card">
-        <span class="hk-kicker">Disambiguation Pool</span>
+        <span class="hk-kicker">People &amp; Matches</span>
         <b class="hk-val num-tabular">${candidates.length}</b>
-        <span class="hk-lab">${worksAt.length + leadership.length} people &amp; leadership</span>
+        <span class="hk-lab">${worksAt.length + leadership.length} team &amp; leaders</span>
       </div>
     </div>
 
     ${
       kaText
-        ? `<div class="cala-knowledge-box"><strong>Cala Knowledge Answer:</strong><p style="margin:6px 0 0">${escapeHtml(kaText)}</p></div>`
+        ? `<div class="cala-knowledge-box"><strong>Live summary:</strong><p style="margin:6px 0 0">${escapeHtml(kaText)}</p></div>`
         : ""
     }
 
     <details class="gradual-block" style="margin-bottom: 8px" ${isEventEntity ? "open" : ""}>
       <summary class="gradual-summary">
-        <span>${isEventEntity ? "Slush 2026 Participating Startups (role: ATTENDEE)" : "Verified Cala Deals, Rounds &amp; Citations"}</span>
-        <span class="gradual-hint">${relRows.length} edges</span>
+        <span>${isEventEntity ? "Slush 2026 participating startups" : "Verified deals, rounds &amp; sources"}</span>
+        <span class="gradual-hint">${relRows.length} items</span>
       </summary>
       <div class="gradual-content">
         <div class="cala-rel-list">
-          ${relRows.length ? relRows.join("") : `<p class="note" style="margin:10px 0 0">No relationship edges returned in current entity slice.</p>`}
+          ${relRows.length ? relRows.join("") : `<p class="note" style="margin:10px 0 0">No deals or links listed for this view.</p>`}
         </div>
       </div>
     </details>
 
     <details class="gradual-block">
       <summary class="gradual-summary">
-        <span>Disambiguated Cala Entities, Time Series &amp; Team</span>
+        <span>Team, leadership &amp; related entities</span>
         <span class="gradual-hint">${candRows.length} items</span>
       </summary>
       <div class="gradual-content">
         <div class="cala-rel-list">
-          ${candRows.length ? candRows.join("") : `<p class="note" style="margin:10px 0 0">No additional entity candidates listed.</p>`}
+          ${candRows.length ? candRows.join("") : `<p class="note" style="margin:10px 0 0">No additional team details listed.</p>`}
         </div>
       </div>
     </details>
@@ -3470,6 +3490,14 @@ function bindEvents() {
     if (optWrap && !optWrap.contains(e.target)) {
       closeOptionsPopover();
     }
+  });
+
+  document.getElementById("themeToggleBtn")?.addEventListener("click", toggleTheme);
+  document.getElementById("onbThemeToggleBtn")?.addEventListener("click", toggleTheme);
+  document.querySelectorAll("[data-set-theme]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      applyTheme(btn.getAttribute("data-set-theme"));
+    });
   });
 
   document.getElementById("optionsMenuBtn")?.addEventListener("click", (e) => {
@@ -3827,7 +3855,7 @@ function bindEvents() {
         } catch {
           // Non-fatal in non-clipboard contexts
         }
-        copyBtn.textContent = "Copied ✓";
+        copyBtn.textContent = "Copied";
         window.setTimeout(() => {
           if (copyBtn.isConnected) copyBtn.textContent = "Copy Intro";
         }, 1600);
@@ -4095,6 +4123,11 @@ function syncNetworkSourceButtons() {
 }
 
 async function init() {
+  const placeholder = document.querySelector("#aiSearchInput");
+  if (placeholder && placeholder.placeholder.length > 72) {
+    placeholder.placeholder = "Ask AI or search: 'Slush 2026 DeepTech', 'Why not Oura?', company";
+  }
+  applyTheme(getActiveTheme());
   const hasSavedCallList = loadPrefsFromStorage();
   bindEvents();
 
