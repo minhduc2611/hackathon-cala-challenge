@@ -1,11 +1,13 @@
 import http from 'node:http';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { COMPANIES, FUNDS, REFERENCE_DATE, SOURCES } from './src/data.mjs';
 import { createCalaClient, loadEnvFile } from './src/calaClient.mjs';
 import {
   buildStartupBrief,
+  ingestLiveCalaEntities,
   refineShortlist,
   runFullAnalysis,
   searchEntities
@@ -16,6 +18,8 @@ loadEnvFile();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const CALA_CACHE_FILE = path.join(__dirname, '.cache', 'cala-cache.json');
+const SLUSH_2026_ENTITY_ID = 'bc844d56-6ab4-452b-96bf-2661e86e592b';
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -249,8 +253,187 @@ async function serveStatic(res, reqPathname) {
   }
 }
 
+export function hydrateEntitiesFromDiskCache(cacheFile = CALA_CACHE_FILE) {
+  try {
+    if (!fsSync.existsSync(cacheFile)) return { ingestedCount: 0, enrichedCount: 0 };
+    const store = JSON.parse(fsSync.readFileSync(cacheFile, 'utf8'));
+    let totalIngested = 0;
+    let totalEnriched = 0;
+
+    for (const entry of Object.values(store || {})) {
+      const data = entry?.data;
+      if (!data) continue;
+      const apiPath = String(entry.apiPath || '');
+      const isSlush = apiPath.includes(SLUSH_2026_ENTITY_ID);
+      if (data.id && data.entity_type === 'Company') {
+        const r = ingestLiveCalaEntities([data], { slush2026: isSlush });
+        totalIngested += r.ingestedCount;
+        totalEnriched += r.enrichedCount;
+      }
+      if (apiPath === '/v1/knowledge/search' && Array.isArray(data.entities)) {
+        const r = ingestLiveCalaEntities(data.entities, { slush2026: isSlush });
+        totalIngested += r.ingestedCount;
+        totalEnriched += r.enrichedCount;
+      }
+      const invested = data.relationships?.outgoing?.INVESTED_IN || [];
+      if (invested.length) {
+        const matchedFund = FUNDS.find((f) => f.name.toLowerCase() === String(data.name || '').toLowerCase());
+        const r = ingestLiveCalaEntities(invested, matchedFund ? { investorId: matchedFund.id } : {});
+        totalIngested += r.ingestedCount;
+        totalEnriched += r.enrichedCount;
+      }
+      const eventCompanies = data.relationships?.incoming?.PARTICIPATES_IN_EVENT || [];
+      if (eventCompanies.length) {
+        const r = ingestLiveCalaEntities(eventCompanies, { slush2026: isSlush });
+        totalIngested += r.ingestedCount;
+        totalEnriched += r.enrichedCount;
+      }
+    }
+    return { ingestedCount: totalIngested, enrichedCount: totalEnriched };
+  } catch {
+    return { ingestedCount: 0, enrichedCount: 0 };
+  }
+}
+
+async function retrieveEntityWithIntrospection(calaClient, entityId, incomingEventLimit = 20) {
+  const introRes = await calaClient.calaIntrospect(entityId);
+  const outgoingMap = {};
+  for (const rel of introRes.data?.relationships?.outgoing || []) {
+    outgoingMap[rel] = { limit: 20, offset: 0 };
+  }
+  const incomingMap = {};
+  for (const rel of introRes.data?.relationships?.incoming || []) {
+    incomingMap[rel] = { limit: rel === 'PARTICIPATES_IN_EVENT' ? incomingEventLimit : 20, offset: 0 };
+  }
+  const retrieveBody = {
+    properties: introRes.data?.properties || ['name', 'description'],
+    relationships: { outgoing: outgoingMap, incoming: incomingMap }
+  };
+  if (Array.isArray(introRes.data?.numerical_observations) && introRes.data.numerical_observations.length > 0) {
+    retrieveBody.numerical_observations = introRes.data.numerical_observations;
+  }
+  const entityRes = await calaClient.calaRetrieveEntity(entityId, retrieveBody);
+  return { introRes, entityRes };
+}
+
+function extractCleanCalaSearchQuery(rawQuery) {
+  const cleaned = String(rawQuery || '')
+    .replace(/\b(find|show|give|list|recommend|which|what|who|startups?|companies?|raising|soon|in|under|below|employees|staff|people|headcount|fast|growth|velocity|feeder|syndicate|filing|signal|alumni|founder|only|warm|warmest|intro|bridge|slush|2026)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.length >= 2 ? cleaned : String(rawQuery || '').trim();
+}
+
+async function deepHydrateCalaEntities(calaClient, entityIds = [], context = {}) {
+  let discoveredCount = 0;
+  let enrichedCount = 0;
+  for (const id of entityIds) {
+    if (!id) continue;
+    try {
+      const { entityRes } = await retrieveEntityWithIntrospection(calaClient, id);
+      if (entityRes?.data) {
+        const deepIng = ingestLiveCalaEntities([entityRes.data], context);
+        discoveredCount += deepIng.ingestedCount;
+        enrichedCount += deepIng.enrichedCount;
+      }
+    } catch {
+      // Best-effort deep hydration
+    }
+  }
+  return { discoveredCount, enrichedCount };
+}
+
+async function discoverStartupsFromCala(calaClient, { queryText = '', mode = 'ecosystem' } = {}) {
+  let discoveredCount = 0;
+  let enrichedCount = 0;
+  let knowledgeAnswer = null;
+  const cleanQ = String(queryText || '').trim();
+
+  if (mode === 'ecosystem' || /slush/i.test(cleanQ)) {
+    try {
+      const eventRes = await calaClient.calaRetrieveEntity(SLUSH_2026_ENTITY_ID, {
+        properties: ['name', 'description'],
+        relationships: { incoming: { PARTICIPATES_IN_EVENT: { limit: 100, offset: 0 } } }
+      });
+      const attendees = (eventRes.data?.relationships?.incoming?.PARTICIPATES_IN_EVENT || [])
+        .filter((e) => !e.entity_type || e.entity_type === 'Company')
+        .slice(0, 60);
+      const ing = ingestLiveCalaEntities(attendees, { slush2026: true });
+      discoveredCount += ing.ingestedCount;
+      enrichedCount += ing.enrichedCount;
+
+      const deep = await deepHydrateCalaEntities(
+        calaClient,
+        ing.companies.slice(0, 3).map((c) => c.calaEntityId),
+        { slush2026: true }
+      );
+      discoveredCount += deep.discoveredCount;
+      enrichedCount += deep.enrichedCount;
+    } catch {
+      // Non-fatal in offline/budget-restricted runs
+    }
+  }
+
+  if (cleanQ) {
+    const searchTerm = extractCleanCalaSearchQuery(cleanQ);
+    let directHits = [];
+    if (searchTerm.length >= 2 && !/^(slush|2026)$/i.test(searchTerm)) {
+      try {
+        const searchRes = await calaClient.calaEntitySearch(searchTerm, 10, ['Company']);
+        directHits = searchRes.data?.entities || [];
+        const ing = ingestLiveCalaEntities(directHits);
+        discoveredCount += ing.ingestedCount;
+        enrichedCount += ing.enrichedCount;
+
+        const deep = await deepHydrateCalaEntities(
+          calaClient,
+          directHits.filter((e) => !e.entity_type || e.entity_type === 'Company').slice(0, 2).map((e) => e.id)
+        );
+        discoveredCount += deep.discoveredCount;
+        enrichedCount += deep.enrichedCount;
+      } catch {
+        // Non-fatal in offline/test environments
+      }
+    }
+
+    if (cleanQ.split(/\s+/).length >= 2) {
+      try {
+        const ksRes = await calaClient.calaKnowledgeSearch(cleanQ, {
+          explainability: true,
+          returnEntities: true
+        });
+        knowledgeAnswer = ksRes.data || null;
+        const ksEntities = Array.isArray(knowledgeAnswer?.entities) ? knowledgeAnswer.entities : [];
+        if (ksEntities.length > 0) {
+          const ksIng = ingestLiveCalaEntities(ksEntities, { allowOrganizations: true });
+          discoveredCount += ksIng.ingestedCount;
+          enrichedCount += ksIng.enrichedCount;
+
+          if (directHits.length === 0) {
+            const ksCompanyIds = ksEntities
+              .filter((e) => e.entity_type === 'Company' || e.entity_type === 'Organization')
+              .slice(0, 2)
+              .map((e) => e.id);
+            const deep = await deepHydrateCalaEntities(calaClient, ksCompanyIds, { allowOrganizations: true });
+            discoveredCount += deep.discoveredCount;
+            enrichedCount += deep.enrichedCount;
+          }
+        }
+      } catch {
+        // Non-fatal knowledge search escalation
+      }
+    }
+  }
+
+  if (discoveredCount > 0 || enrichedCount > 0) {
+    analysisCache.clear();
+  }
+
+  return { discoveredCount, enrichedCount, knowledgeAnswer };
+}
+
 export function createAppServer(options = {}) {
-  const calaClient = options.calaClient || createCalaClient({ maxLiveCalls: options.maxLiveCalls ?? 8 });
+  const calaClient = options.calaClient || createCalaClient({ maxLiveCalls: options.maxLiveCalls ?? 250 });
 
   return http.createServer(async (req, res) => {
     try {
@@ -319,23 +502,9 @@ export function createAppServer(options = {}) {
         let knowledgeRes = null;
 
         if (matched) {
-          introRes = await calaClient.calaIntrospect(matched.id);
-          const outgoingMap = {};
-          for (const rel of introRes.data?.relationships?.outgoing || []) {
-            outgoingMap[rel] = { limit: 20, offset: 0 };
-          }
-          const incomingMap = {};
-          for (const rel of introRes.data?.relationships?.incoming || []) {
-            incomingMap[rel] = { limit: type === 'event' ? 100 : 20, offset: 0 };
-          }
-          const retrieveBody = {
-            properties: introRes.data?.properties || ['name', 'description'],
-            relationships: { outgoing: outgoingMap, incoming: incomingMap }
-          };
-          if (Array.isArray(introRes.data?.numerical_observations) && introRes.data.numerical_observations.length > 0) {
-            retrieveBody.numerical_observations = introRes.data.numerical_observations;
-          }
-          entityRes = await calaClient.calaRetrieveEntity(matched.id, retrieveBody);
+          const retrieved = await retrieveEntityWithIntrospection(calaClient, matched.id, type === 'event' ? 100 : 20);
+          introRes = retrieved.introRes;
+          entityRes = retrieved.entityRes;
           liveSummary = summarizeLiveCalaEntity(entityRes.data);
         }
 
@@ -345,6 +514,24 @@ export function createAppServer(options = {}) {
               ? `What companies and funding rounds has ${name} invested in recently?`
               : `What is the complete funding history, round dates, amounts, and investors of ${name}?`;
           knowledgeRes = await calaClient.calaKnowledgeSearch(prompt);
+        }
+
+        const verifyPool = [
+          ...(entityRes?.data?.entity_type === 'Company' ? [entityRes.data] : []),
+          ...candidates.slice(0, type === 'company' ? 1 : 0),
+          ...(entityRes?.data?.relationships?.incoming?.PARTICIPATES_IN_EVENT || []),
+          ...(knowledgeRes?.data?.entities || [])
+        ].filter(Boolean);
+        const verifyIng = ingestLiveCalaEntities(verifyPool, {
+          slush2026: type === 'event' || /slush/i.test(name)
+        });
+        const fundMatch = FUNDS.find((f) => f.name.toLowerCase() === String(entityRes?.data?.name || name || '').toLowerCase());
+        const invPool = entityRes?.data?.relationships?.outgoing?.INVESTED_IN || [];
+        const invIng = invPool.length
+          ? ingestLiveCalaEntities(invPool, fundMatch ? { investorId: fundMatch.id } : {})
+          : { ingestedCount: 0, enrichedCount: 0 };
+        if (verifyIng.ingestedCount > 0 || verifyIng.enrichedCount > 0 || invIng.ingestedCount > 0 || invIng.enrichedCount > 0) {
+          analysisCache.clear();
         }
 
         const anyLiveCall =
@@ -396,8 +583,64 @@ export function createAppServer(options = {}) {
         return;
       }
 
+      if (req.method === 'POST' && pathname === '/api/cala-discover') {
+        const body = await readJsonBody(req);
+        const discovery = await discoverStartupsFromCala(calaClient, {
+          queryText: body.queryText || '',
+          fundId: body.fundId,
+          mode: body.mode || 'ecosystem'
+        });
+        const analysis = getCachedAnalysis(body);
+        const { allRanked, ...publicPayload } = analysis;
+        const refined = body.queryText
+          ? refineShortlist(analysis.thesis, allRanked, {
+              region: body.region,
+              stageFilter: body.stageFilter,
+              excludeSector: body.excludeSector,
+              raisingSoonOnly: body.raisingSoonOnly,
+              untappedOnly: body.untappedOnly,
+              highVelocityOnly: body.highVelocityOnly,
+              feederOnly: body.feederOnly,
+              filingOnly: body.filingOnly,
+              alumniOnly: body.alumniOnly,
+              sectors: body.sectors,
+              countries: body.countries,
+              maxEmployees: body.maxEmployees,
+              slush2026Only: body.slush2026Only,
+              preferWarm: body.preferWarm,
+              queryText: body.queryText
+            })
+          : null;
+
+        sendJson(res, 200, {
+          ...publicPayload,
+          shortlist: refined ? refined.shortlist : publicPayload.shortlist,
+          discoveredCount: discovery.discoveredCount,
+          enrichedCount: discovery.enrichedCount,
+          knowledgeAnswer: discovery.knowledgeAnswer,
+          totalCompaniesIndexed: COMPANIES.length,
+          calaBudget: calaClient.getBudgetStatus()
+        });
+        return;
+      }
+
       if (req.method === 'POST' && pathname === '/api/refine') {
         const body = await readJsonBody(req);
+        let liveDiscoveredCount = 0;
+        let knowledgeAnswer = null;
+        if (body.discoverLive === true && body.queryText && !/^\s*why not\s+/i.test(String(body.queryText))) {
+          try {
+            const discovery = await discoverStartupsFromCala(calaClient, {
+              queryText: body.queryText,
+              fundId: body.fundId,
+              mode: 'query'
+            });
+            liveDiscoveredCount = discovery.discoveredCount;
+            knowledgeAnswer = discovery.knowledgeAnswer;
+          } catch {
+            // Non-fatal in offline/test environments
+          }
+        }
         const analysis = getCachedAnalysis(body);
         const refined = refineShortlist(analysis.thesis, analysis.allRanked, {
           region: body.region,
@@ -409,9 +652,21 @@ export function createAppServer(options = {}) {
           feederOnly: body.feederOnly,
           filingOnly: body.filingOnly,
           alumniOnly: body.alumniOnly,
+          sectors: body.sectors,
+          countries: body.countries,
+          maxEmployees: body.maxEmployees,
+          slush2026Only: body.slush2026Only,
+          preferWarm: body.preferWarm,
+          limit: body.limit,
           queryText: body.queryText
         });
-        sendJson(res, 200, refined);
+        sendJson(res, 200, {
+          ...refined,
+          liveDiscoveredCount,
+          knowledgeAnswer,
+          totalCompaniesIndexed: COMPANIES.length,
+          calaBudget: calaClient.getBudgetStatus()
+        });
         return;
       }
 
@@ -430,6 +685,7 @@ export function createAppServer(options = {}) {
 
 const isEntrypoint = process.argv[1] && path.resolve(process.argv[1]) === __filename;
 if (isEntrypoint) {
+  hydrateEntitiesFromDiskCache();
   const port = Number(process.env.PORT) || 4173;
   const server = createAppServer();
   server.listen(port, '127.0.0.1', () => {

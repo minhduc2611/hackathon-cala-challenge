@@ -4,6 +4,7 @@ import {
   buildStartupBrief,
   computeRevealedThesis,
   enforceFactCitations,
+  ingestLiveCalaEntities,
   interpolateHeadcountAtDate,
   refineShortlist,
   runFullAnalysis,
@@ -264,4 +265,93 @@ test('refineShortlist handles agentic velocity, feeder, filing, alumni filters &
   });
   assert.ok(alumniRes.shortlist.length >= 1);
   assert.ok(alumniRes.shortlist.every((c) => Boolean(c.alumniSpinout)));
+});
+
+test('ingestLiveCalaEntities expands COMPANIES + SOURCES, scores in full analysis, builds brief, and preserves backtest', () => {
+  const baselineBacktest = runPointInTimeBacktest('lifeline-ventures');
+  const beforeCount = COMPANIES.length;
+
+  const ing = ingestLiveCalaEntities(
+    [
+      {
+        id: '00541f9a-8af0-5d33-b013-c32d90ba3076',
+        name: 'Finadeck Oy',
+        entity_type: 'Company',
+        description: 'AI-based CFO forecasting, budgeting and consolidation software founded in 2019 in Tampere, Finland.'
+      },
+      {
+        id: 'test-unlocated-slush-1',
+        name: 'AlphaMesh AI',
+        entity_type: 'Company',
+        description: 'AlphaMesh AI is a technology startup indexed in the Cala AI knowledge graph.'
+      },
+      {
+        id: 'fake-vc-entity-1',
+        name: 'Nordic Test Ventures',
+        entity_type: 'Company',
+        description: 'A venture capital fund.'
+      }
+    ],
+    { slush2026: true }
+  );
+
+  assert.equal(ing.ingestedCount, 2);
+  assert.equal(COMPANIES.length, beforeCount + 2);
+
+  const nonSlushIng = ingestLiveCalaEntities(
+    [
+      {
+        id: 'test-legacy-ipg',
+        name: 'IPG PHOTONICS CORP',
+        entity_type: 'Company',
+        description: 'Optical fiber laser manufacturer founded in 1998 in Oxford, Massachusetts.'
+      },
+      {
+        id: 'test-singular-photonics',
+        name: 'SINGULAR PHOTONICS LIMITED',
+        entity_type: 'Company',
+        description: 'SPAD image sensor startup founded in 2024 in Edinburgh, United Kingdom.'
+      }
+    ],
+    { slush2026: false }
+  );
+  assert.equal(nonSlushIng.ingestedCount, 1);
+
+  const analysis = runFullAnalysis({ mode: 'fund', fundId: 'lifeline-ventures' });
+  assert.ok(analysis.shortlist.length > 20);
+  const finadeck = analysis.shortlist.find((c) => c.calaEntityId === '00541f9a-8af0-5d33-b013-c32d90ba3076');
+  assert.ok(finadeck);
+  assert.equal(finadeck.isLiveCalaDiscovered, true);
+  assert.equal(finadeck.attendingSlush2026, true);
+  assert.equal(finadeck.sector, 'Fintech');
+  assert.equal(finadeck.country, 'Finland');
+
+  const alphaMesh = COMPANIES.find((c) => c.calaEntityId === 'test-unlocated-slush-1');
+  assert.ok(alphaMesh);
+  assert.equal(alphaMesh.country, 'Europe');
+  assert.equal(alphaMesh.hqCity, 'Slush 2026');
+
+  const ipg = COMPANIES.find((c) => c.calaEntityId === 'test-legacy-ipg');
+  assert.equal(ipg, undefined);
+
+  const singular = COMPANIES.find((c) => c.calaEntityId === 'test-singular-photonics');
+  assert.ok(singular);
+  assert.equal(singular.country, 'United Kingdom');
+  assert.equal(singular.hqCity, 'Edinburgh');
+
+  const brief = buildStartupBrief(finadeck.id, 'lifeline-ventures');
+  assert.equal(brief.name, 'Finadeck Oy');
+  assert.ok(brief.rounds.length >= 1);
+  assert.ok(brief.sources.length >= 1);
+
+  const afterBacktest = runPointInTimeBacktest('lifeline-ventures');
+  assert.equal(afterBacktest.hiddenDealsCount, baselineBacktest.hiddenDealsCount);
+  assert.equal(afterBacktest.hitsInTop15, baselineBacktest.hitsInTop15);
+  assert.equal(afterBacktest.hitsInTop50, baselineBacktest.hitsInTop50);
+
+  // Clean up runtime test companies so baseline remains tidy
+  for (const calaId of ['00541f9a-8af0-5d33-b013-c32d90ba3076', 'test-unlocated-slush-1', 'test-singular-photonics']) {
+    const idx = COMPANIES.findIndex((c) => c.calaEntityId === calaId);
+    if (idx !== -1) COMPANIES.splice(idx, 1);
+  }
 });

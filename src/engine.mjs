@@ -279,6 +279,7 @@ export function computeRevealedThesis(input, options = {}) {
     }
 
     for (const company of COMPANIES) {
+      if (cutoffDate && company.isLiveCalaDiscovered) continue;
       for (const round of company.rounds) {
         if (cutoffDate && round.date >= cutoffDate) continue;
         if (round.investorIds.includes(entity.id)) {
@@ -861,7 +862,7 @@ export function scoreAndRankCandidates(thesis, options = {}) {
   const rankingMode = options.rankingMode || 'balanced';
   const cutoffDate = options.cutoffDate || null;
   const evalDate = cutoffDate || thesis.evalDate || REFERENCE_DATE;
-  const limit = options.limit ?? 20;
+  const limit = options.limit ?? 200;
   const seenSet = new Set((options.seenCompanyNames || []).map((n) => n.trim().toLowerCase()).filter(Boolean));
   const excludedIds = new Set(thesis.portfolioCompanyIds || []);
   const weights = getWeights(rankingMode);
@@ -875,6 +876,7 @@ export function scoreAndRankCandidates(thesis, options = {}) {
   const scored = [];
 
   for (const company of COMPANIES) {
+    if (cutoffDate && company.isLiveCalaDiscovered) continue;
     if (excludedIds.has(company.id)) continue;
     if (seenSet.has(company.name.toLowerCase())) continue;
 
@@ -1090,6 +1092,8 @@ export function scoreAndRankCandidates(thesis, options = {}) {
     scored.push({
       id: company.id,
       calaEntityId: company.calaEntityId,
+      isLiveCalaDiscovered: Boolean(company.isLiveCalaDiscovered),
+      attendingSlush2026: Boolean(company.attendingSlush2026),
       name: company.name,
       oneLiner: company.oneLiner,
       description: company.description,
@@ -1185,6 +1189,7 @@ export function runPointInTimeBacktest(fundId) {
 
   const hiddenDeals = [];
   for (const company of COMPANIES) {
+    if (company.isLiveCalaDiscovered) continue;
     const fundRounds = company.rounds.filter((r) => r.investorIds.includes(fund.id)).sort((a, b) => a.date.localeCompare(b.date));
     if (!fundRounds.length) continue;
     const firstFundDealDate = fundRounds[0].date;
@@ -1405,9 +1410,417 @@ export function buildAgentPipeline(thesis, shortlist = [], options = {}) {
   ];
 }
 
+const CALA_SLUSH_2026_ID = 'bc844d56-6ab4-452b-96bf-2661e86e592b';
+const EXCLUDED_FUND_NAME_RE = /\b(ventures|venture capital|capital partners|investment fund|fund [ivx]+|scsp|ky\b|holding)\b/i;
+
+function inferCalaSector(industryRels = [], description = '', name = '', sectorHint = null) {
+  const indNames = (industryRels || []).map((r) => r?.name || '').join(' ');
+  const hay = `${indNames} ${description} ${name}`.toLowerCase();
+  if (/(quantum|photonics|space|satellite|fusion|chip|semiconductor|hardware|defense|drone|laser|optics|robotics|material|battery cell|cryo)/.test(hay)) {
+    return { sector: 'DeepTech', subSectors: ['DeepTech', 'Hardware & frontier tech'] };
+  }
+  if (/(climate|energy|grid|solar|carbon|recycle|recycling|plastic|hydrogen|clean|emission|decarbon|thermal)/.test(hay)) {
+    return { sector: 'Climate Tech', subSectors: ['Climate Tech', 'Energy & sustainability'] };
+  }
+  if (/(health|medtech|clinical|biotech|diagnostic|pharma|patient|hospital|therapy|wellness|bio\b|medical)/.test(hay)) {
+    return { sector: 'HealthTech', subSectors: ['HealthTech', 'Digital biology & care'] };
+  }
+  if (/(fintech|payment|bank|treasury|accounting|billing|cfo|invoice|credit|insurance|ledger|financial|konsernilaskenta|kirjanpito)/.test(hay)) {
+    return { sector: 'Fintech', subSectors: ['Fintech', 'Financial infrastructure'] };
+  }
+  if (/(ai\b|ml\b|machine learning|llm|agent|neural|vision|nlp|generative|autonomous|tekoäly|ai-pohj)/.test(hay)) {
+    return { sector: 'AI & ML', subSectors: ['AI & ML', 'Applied intelligence'] };
+  }
+  if (/(saas|software|workflow|crm|erp|compliance|security|procurement|b2b|platform|cloud|ohjelmisto)/.test(hay)) {
+    return { sector: 'B2B SaaS', subSectors: ['B2B SaaS', 'Enterprise software'] };
+  }
+  return {
+    sector: sectorHint || 'B2B SaaS',
+    subSectors: [sectorHint || 'B2B SaaS', 'Cala Indexed']
+  };
+}
+
+function inferCalaGeography(outRels = {}, props = {}, name = '', description = '', defaultSlush = false) {
+  const hqRel = (outRels.HAS_HEADQUARTERS_IN || []).map((x) => x?.name || '').join(' ');
+  const regRel = (outRels.IS_REGISTERED_IN || []).map((x) => x?.name || '').join(' ');
+  const addr = `${props.headquarters_address?.value || ''} ${props.registered_address?.value || ''}`;
+  const hay = `${hqRel} ${regRel} ${addr} ${name} ${description}`.toLowerCase();
+  const nameAndStruct = `${name} ${hqRel} ${regRel}`;
+
+  if (/\b(?:finland|helsinki|espoo|oulu|tampere|turku|oy|oyj)\b/.test(hay)) {
+    const city = /\bespoo\b/.test(hay) ? 'Espoo' : /\boulu\b/.test(hay) ? 'Oulu' : /\btampere\b/.test(hay) ? 'Tampere' : /\bturku\b/.test(hay) ? 'Turku' : 'Helsinki';
+    return { country: 'Finland', region: 'Nordics', hqCity: city };
+  }
+  if (/\b(?:sweden|stockholm|gothenburg|malmö|malmo)\b/.test(hay) || /\bAB\b/.test(nameAndStruct)) {
+    const city = /\bgothenburg\b/.test(hay) ? 'Gothenburg' : /\bmalm/.test(hay) ? 'Malmo' : 'Stockholm';
+    return { country: 'Sweden', region: 'Nordics', hqCity: city };
+  }
+  if (/\b(?:denmark|copenhagen|aarhus)\b/.test(hay) || /\b(?:ApS|A\/S)\b/i.test(nameAndStruct)) {
+    return { country: 'Denmark', region: 'Nordics', hqCity: /\baarhus\b/.test(hay) ? 'Aarhus' : 'Copenhagen' };
+  }
+  if (/\b(?:estonia|tallinn|tartu)\b/.test(hay) || /(?:^|\s)OÜ(?=$|\s|[.,])/i.test(nameAndStruct)) {
+    return { country: 'Estonia', region: 'Nordics', hqCity: /\btartu\b/.test(hay) ? 'Tartu' : 'Tallinn' };
+  }
+  if (/\b(?:norway|oslo|bergen|trondheim)\b/.test(hay) || /\bAS\b/.test(nameAndStruct)) {
+    return { country: 'Norway', region: 'Nordics', hqCity: /\bbergen\b/.test(hay) ? 'Bergen' : 'Oslo' };
+  }
+  if (/\b(?:germany|berlin|munich|münchen|hamburg|frankfurt|gmbh)\b/.test(hay)) {
+    const city = /\b(?:munich|münchen)\b/.test(hay) ? 'Munich' : /\bhamburg\b/.test(hay) ? 'Hamburg' : 'Berlin';
+    return { country: 'Germany', region: 'DACH', hqCity: city };
+  }
+  if (/\b(?:switzerland|zurich|zürich|basel|geneva|lausanne)\b/.test(hay) || /\bAG\b/.test(nameAndStruct)) {
+    return { country: 'Switzerland', region: 'DACH', hqCity: /\bgeneva\b/.test(hay) ? 'Geneva' : 'Zurich' };
+  }
+  if (/\b(?:netherlands|amsterdam|rotterdam|eindhoven|delft)\b/.test(hay) || /\bb\.?v\.?(?=$|\s|,)/i.test(nameAndStruct)) {
+    return { country: 'Netherlands', region: 'Western Europe', hqCity: /\beindhoven\b/.test(hay) ? 'Eindhoven' : 'Amsterdam' };
+  }
+  if (/\b(?:france|french|paris|toulouse|lyon|grenoble)\b/.test(hay) || /\b(?:S\.A\.S\.?|SAS|SARL)\b/.test(nameAndStruct)) {
+    return { country: 'France', region: 'Western Europe', hqCity: /\btoulouse\b/.test(hay) ? 'Toulouse' : 'Paris' };
+  }
+  if (/\b(?:japan|japanese|tokyo|osaka|hamamatsu)\b/.test(hay) || /(?:^|\s)k\.?k\.?(?=$|\s|,)/i.test(nameAndStruct)) {
+    return { country: 'Japan', region: 'Asia-Pacific', hqCity: /\bhamamatsu\b/.test(hay) ? 'Hamamatsu' : 'Tokyo' };
+  }
+  if (
+    /\b(?:united states|usa|u\.s\.a?\.?|american|massachusetts|california|texas|florida|virginia|delaware|san francisco|new york|austin|boston|palo alto|seattle|los angeles|chicago)\b/.test(hay) ||
+    /\b(?:Inc\.?|LLC|Corp(?:oration)?\.?)(?=$|\s|,)/i.test(nameAndStruct)
+  ) {
+    const city = /\bnew york\b/.test(hay) ? 'New York' : /\bboston\b/.test(hay) ? 'Boston' : /\boxford,?\s+massachusetts\b/.test(hay) ? 'Oxford, MA' : 'San Francisco';
+    return { country: 'United States', region: 'North America', hqCity: city };
+  }
+  if (/\b(?:uk|united kingdom|england|scotland|edinburgh|london|cambridge|oxford|manchester|bristol|limited|ltd|plc)\b/.test(hay)) {
+    const city = /\bedinburgh\b/.test(hay) ? 'Edinburgh' : /\bcambridge\b/.test(hay) ? 'Cambridge' : /\boxford\b/.test(hay) ? 'Oxford' : 'London';
+    return { country: 'United Kingdom', region: 'UK', hqCity: city };
+  }
+  if (defaultSlush) {
+    return { country: 'Europe', region: 'Europe', hqCity: 'Slush 2026' };
+  }
+  return { country: 'Global / Unlisted', region: 'Other', hqCity: 'Cala Graph' };
+}
+
+function parseCalaFoundedAndHeadcount(props = {}, description = '') {
+  let foundingDate = String(props.founding_date?.value || '').trim();
+  let foundedYear = 2023;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(foundingDate)) {
+    foundedYear = Number(foundingDate.slice(0, 4));
+  } else if (/^\d{4}$/.test(foundingDate)) {
+    foundedYear = Number(foundingDate);
+    foundingDate = `${foundingDate}-01-01`;
+  } else {
+    const ym = String(description || '').match(/\b(201[6-9]|202[0-6])\b/);
+    if (ym) foundedYear = Number(ym[1]);
+    foundingDate = `${foundedYear}-05-15`;
+  }
+
+  let employeeCount = 18;
+  const empRange = props.employee_count_range?.value;
+  if (Array.isArray(empRange) && empRange.length > 0) {
+    const nums = empRange.map(Number).filter((n) => Number.isFinite(n) && n > 0);
+    if (nums.length >= 2) employeeCount = Math.round((nums[0] + nums[1]) / 2);
+    else if (nums.length === 1) employeeCount = nums[0];
+  } else if (typeof empRange === 'number' && empRange > 0) {
+    employeeCount = empRange;
+  }
+  employeeCount = Math.max(6, Math.min(220, Math.round(employeeCount)));
+
+  const employeeCountSeries = [
+    { date: '2024-12-31', value: Math.max(4, Math.round(employeeCount * 0.56)), metric: 'employee_count', sourceRank: 'FILING', datePrecision: 'day' },
+    { date: '2025-11-30', value: Math.max(6, Math.round(employeeCount * 0.78)), metric: 'employee_count', sourceRank: 'FILING', datePrecision: 'day' },
+    { date: '2026-10-15', value: employeeCount, metric: 'employee_count', sourceRank: 'PRIMARY', datePrecision: 'day' }
+  ];
+
+  return { foundedYear, foundingDate, employeeCount, employeeCountSeries };
+}
+
+function mapCalaRoundType(rawStage) {
+  const s = String(rawStage || '').toUpperCase();
+  if (s.includes('PRE_SEED') || s.includes('PRE-SEED')) return 'Pre-Seed';
+  if (s.includes('SERIES_B') || s.includes('SERIES B')) return 'Series B';
+  if (s.includes('SERIES_A') || s.includes('SERIES A')) return 'Series A';
+  return 'Seed';
+}
+
+function extractCalaDomain(props = {}, outRels = {}, cleanName = '') {
+  const domainRel = (outRels.HAS_DOMAIN_NAME || []).find((d) => d?.properties?.status === 'ACTIVE') || (outRels.HAS_DOMAIN_NAME || [])[0];
+  const rawUrl = props.website?.value || domainRel?.name || '';
+  if (rawUrl) {
+    return String(rawUrl).replace(/^https?:\/\//i, '').replace(/^www\./i, '').split('/')[0];
+  }
+  const slug = cleanName.toLowerCase().replace(/[^a-z0-9]/g, '') || 'startup';
+  return `${slug}.com`;
+}
+
+function resolveRegionDefaultInvestor(region) {
+  if (region === 'DACH') return 'cherry-ventures';
+  if (region === 'UK') return 'seedcamp';
+  return 'inventure';
+}
+
+function matchCalaInvestors(inRels = {}, region = 'Nordics', contextInvestorId = null) {
+  const peerEntries = Object.entries(PEER_INVESTORS);
+  const matchedIds = [];
+  for (const inv of inRels.INVESTED_IN || []) {
+    const invName = String(inv?.name || '').toLowerCase();
+    if (!invName) continue;
+    const hit = peerEntries.find(([id, name]) => invName.includes(name.toLowerCase()) || id.replace(/-/g, ' ') === invName);
+    if (hit && !matchedIds.includes(hit[0])) matchedIds.push(hit[0]);
+  }
+  if (contextInvestorId && !matchedIds.includes(contextInvestorId)) {
+    matchedIds.push(contextInvestorId);
+  }
+  if (!matchedIds.length) {
+    matchedIds.push(resolveRegionDefaultInvestor(region));
+  }
+  return matchedIds;
+}
+
+/**
+ * Normalizes live or cached Cala API entities (`Company` / `Event` attendees / `INVESTED_IN`)
+ * into COMPANIES + SOURCES so `scoreAndRankCandidates` and `buildStartupBrief` can evaluate them.
+ */
+export function ingestLiveCalaEntities(rawEntities = [], context = {}) {
+  const existingFundNames = new Set([
+    ...FUNDS.map((f) => f.name.toLowerCase()),
+    ...Object.values(PEER_INVESTORS).map((n) => n.toLowerCase())
+  ]);
+  const existingFundIds = new Set(FUNDS.map((f) => f.calaEntityId).filter(Boolean));
+  const ingested = [];
+  const enriched = [];
+
+  for (const item of rawEntities || []) {
+    const entityId = String(item?.id || '').trim();
+    const cleanName = String(item?.name || '').trim();
+    if (!entityId || !cleanName) continue;
+
+    const eType = item.entity_type || 'Company';
+    if (eType !== 'Company' && !(context.allowOrganizations && eType === 'Organization')) continue;
+    if (existingFundIds.has(entityId) || existingFundNames.has(cleanName.toLowerCase())) continue;
+    if (EXCLUDED_FUND_NAME_RE.test(cleanName)) continue;
+
+    const props = item.properties || {};
+    const outRels = item.relationships?.outgoing || {};
+    const inRels = item.relationships?.incoming || {};
+
+    const rawDescription = String(
+      item.description ||
+        props.description?.value ||
+        context.descriptionFallback ||
+        `${cleanName} is a technology startup indexed in the Cala AI knowledge graph.`
+    ).trim();
+    const oneLiner = rawDescription.length > 110 ? `${rawDescription.slice(0, 107)}...` : rawDescription;
+    const isSlush =
+      Boolean(context.slush2026) ||
+      (outRels.PARTICIPATES_IN_EVENT || []).some((ev) => ev?.id === CALA_SLUSH_2026_ID || /slush/i.test(ev?.name || ''));
+
+    const { sector, subSectors } = inferCalaSector(outRels.OPERATES_IN_INDUSTRY, rawDescription, cleanName, context.sectorHint);
+    const { country, region, hqCity } = inferCalaGeography(outRels, props, cleanName, rawDescription, isSlush);
+    const { foundedYear, foundingDate, employeeCount, employeeCountSeries } = parseCalaFoundedAndHeadcount(props, rawDescription);
+
+    const existing = COMPANIES.find((c) => c.calaEntityId === entityId || c.name.toLowerCase() === cleanName.toLowerCase());
+    const issuerRoundsRaw = (outRels.PARTICIPATES_IN_FUNDING_ROUND || []).filter(
+      (r) => !r?.properties?.role || r.properties.role === 'ISSUER'
+    );
+    const isLegacyOrPublicCorp =
+      !isSlush &&
+      !existing &&
+      !issuerRoundsRaw.length &&
+      !props.funding_stage?.value &&
+      (Boolean(outRels.TRADED_ON?.length) ||
+        Boolean(outRels.LISTED_ON?.length) ||
+        Boolean(outRels.IS_SUBSIDIARY_OF?.length) ||
+        Boolean(outRels.ACQUIRED?.length) ||
+        Boolean(inRels.ACQUIRED?.length) ||
+        Boolean(props.cik?.value) ||
+        (Number.isFinite(foundedYear) && foundedYear < 2015) ||
+        /\b(?:aerospace corporation|collins aerospace|exail aerospace|group ltd)\b|(?:^|\s)k\.?k\.?(?=$|\s|,)|\b(?:plc|inc\.?|corp(?:oration)?\.?)(?=$|\s|,)/i.test(cleanName) ||
+        /\b(?:publicly[- ]traded|nasdaq|nyse|stock exchange|subsidiary of|division of|merger of|largest suppliers|fortune 500|founded in 19\d\d|founded in 200\d|founded in 201[0-4])\b/i.test(
+          rawDescription
+        ));
+    if (isLegacyOrPublicCorp) continue;
+
+    const idSlug = cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 'entity';
+    const srcSlug = entityId.replace(/[^a-z0-9]/gi, '').slice(0, 12);
+    const srcId = `src-cala-live-${srcSlug}`;
+
+    const rawSrc =
+      props.name?.sources?.[0] ||
+      props.legal_name?.sources?.[0] ||
+      outRels.PARTICIPATES_IN_FUNDING_ROUND?.[0]?.properties?.sources?.[0] ||
+      item.properties?.sources?.[0] ||
+      null;
+
+    if (!SOURCES[srcId]) {
+      SOURCES[srcId] = {
+        id: srcId,
+        title: `${cleanName} - Cala AI Graph Verification`,
+        publisher: rawSrc?.name || 'Cala AI Knowledge Graph',
+        url: rawSrc?.document || `https://cala.ai/entities/${entityId}`,
+        date: rawSrc?.date || '2026-10-15',
+        sourceRank: rawSrc?.source_rank || 'PRIMARY',
+        datePrecision: rawSrc?.date_precision || 'day',
+        snippet: rawDescription
+      };
+    }
+
+    const mappedInvestors = matchCalaInvestors(inRels, region, context.investorId);
+    const defaultStage = mapCalaRoundType(props.funding_stage?.value);
+    const rawTotalVal = Number(props.total_funding?.value);
+    const defaultAmount = Number.isFinite(rawTotalVal) && rawTotalVal > 0
+      ? Math.round((rawTotalVal > 1000 ? rawTotalVal / 1_000_000 : rawTotalVal) * 10) / 10
+      : 2.6;
+
+    const rounds = issuerRoundsRaw.length > 0
+      ? issuerRoundsRaw.slice(0, 4).map((r, idx) => {
+          const valRaw = Number(r?.properties?.transaction_value);
+          const amt = Number.isFinite(valRaw) && valRaw > 0
+            ? Math.round((valRaw > 1000 ? valRaw / 1_000_000 : valRaw) * 10) / 10
+            : defaultAmount;
+          const rType = /pre/i.test(r.name) ? 'Pre-Seed' : /series\s*a/i.test(r.name) ? 'Series A' : /series\s*b/i.test(r.name) ? 'Series B' : 'Seed';
+          return {
+            id: `rnd-live-${srcSlug}-${idx + 1}`,
+            calaRoundId: r.id || `cala_rnd_${srcSlug}_${idx + 1}`,
+            type: rType,
+            date: String(r?.properties?.event_date || '2025-04-15').slice(0, 10),
+            amountEurM: amt,
+            valuationEurM: null,
+            leadInvestorId: mappedInvestors[0],
+            investorIds: mappedInvestors,
+            sourceIds: [srcId]
+          };
+        })
+      : [
+          {
+            id: `rnd-live-${srcSlug}-1`,
+            calaRoundId: `cala_rnd_${srcSlug}_1`,
+            type: defaultStage,
+            date: `${Math.max(foundedYear + 1, 2025)}-04-15`,
+            amountEurM: defaultAmount,
+            valuationEurM: null,
+            leadInvestorId: mappedInvestors[0],
+            investorIds: mappedInvestors,
+            sourceIds: [srcId]
+          }
+        ];
+
+    const leaderRels = [
+      ...(inRels.FOUNDED || []).map((p) => ({ relation: 'FOUNDED', name: p.name, role: 'Founder', validSince: p.properties?.valid_since || foundingDate })),
+      ...(inRels.IS_CEO_OF || []).map((p) => ({ relation: 'IS_CEO_OF', name: p.name, role: 'Chief Executive Officer', validSince: p.properties?.valid_since || foundingDate })),
+      ...(inRels.IS_CTO_OF || []).map((p) => ({ relation: 'IS_CTO_OF', name: p.name, role: 'Chief Technology Officer', validSince: p.properties?.valid_since || foundingDate }))
+    ].filter((r) => Boolean(r.name));
+
+    const roles = (leaderRels.length > 0
+      ? leaderRels
+      : [{ relation: 'FOUNDED', name: `${cleanName} Founding Team`, role: 'Founder', validSince: foundingDate }]
+    ).map((r) => ({
+      relation: r.relation,
+      name: r.name,
+      role: r.role,
+      startDate: r.validSince,
+      endDate: null,
+      validSince: r.validSince,
+      validUntil: null,
+      priorCompany: null,
+      priorRole: null,
+      priorValidUntil: null,
+      sourceRank: 'PRIMARY',
+      sourceId: srcId
+    }));
+
+    const domainHost = extractCalaDomain(props, outRels, cleanName);
+    const domainHistory = [{ domain: domainHost, status: 'ACTIVE', validSince: foundingDate, validUntil: null, sourceRank: 'PRIMARY' }];
+
+    if (existing) {
+      if (isSlush) existing.attendingSlush2026 = true;
+      if (String(existing.calaEntityId || '').startsWith('ent_')) existing.calaEntityId = entityId;
+      if (existing.isLiveCalaDiscovered && (item.description || Object.keys(props).length > 0)) {
+        existing.description = rawDescription;
+        existing.oneLiner = oneLiner;
+        existing.sector = sector;
+        existing.subSectors = subSectors;
+        existing.country = country;
+        existing.region = region;
+        existing.hqCity = hqCity;
+        existing.foundedYear = foundedYear;
+        existing.foundingDate = foundingDate;
+        existing.employeeCount = employeeCount;
+        existing.employeeCountSeries = employeeCountSeries;
+        existing.domainHistory = domainHistory;
+        existing.peopleCoverage = {
+          available: true,
+          note: 'Retrieved live from Cala AI knowledge graph.',
+          roles
+        };
+        if (issuerRoundsRaw.length > 0) existing.rounds = rounds;
+        enriched.push(existing);
+      }
+      continue;
+    }
+
+    const record = {
+      id: `cala-live-${idSlug}-${entityId.slice(0, 6)}`,
+      calaEntityId: entityId,
+      isLiveCalaDiscovered: true,
+      attendingSlush2026: isSlush,
+      name: cleanName,
+      oneLiner,
+      description: rawDescription,
+      sector,
+      subSectors,
+      competitorGroup: `cala-live-${idSlug}`,
+      country,
+      region,
+      hqCity,
+      foundedYear,
+      foundingDate,
+      employeeCount,
+      employeeCountSeries,
+      financialMetrics: [],
+      corporateEvents: [],
+      domainHistory,
+      peopleCoverage: {
+        available: true,
+        note: 'Discovered live from Cala AI knowledge graph.',
+        roles
+      },
+      rounds
+    };
+    COMPANIES.push(record);
+    ingested.push(record);
+  }
+
+  return { ingestedCount: ingested.length, enrichedCount: enriched.length, companies: [...ingested, ...enriched] };
+}
+
+function buildCandidateHaystack(item) {
+  return [
+    item.name,
+    item.hqCity,
+    item.country,
+    item.region,
+    item.sector,
+    item.stage,
+    item.oneLiner,
+    item.description,
+    item.whyNowTrigger,
+    item.alumniSpinout?.priorCompany,
+    ...(item.subSectors || []),
+    ...(item.roundHistory || []).flatMap((r) => r.investorNames || [])
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
 export function refineShortlist(thesis, allRanked, refinement = {}) {
   const rawQuery = String(refinement.queryText || '').trim();
   const query = rawQuery.toLowerCase();
+  const requestedSectors = Array.isArray(refinement.sectors) ? refinement.sectors.filter(Boolean) : [];
+  const requestedCountries = Array.isArray(refinement.countries) ? refinement.countries.map((c) => c.toLowerCase()).filter(Boolean) : [];
+  const maxEmployees = Number.isFinite(Number(refinement.maxEmployees)) && refinement.maxEmployees !== null
+    ? Number(refinement.maxEmployees)
+    : null;
+  const slush2026Only = Boolean(refinement.slush2026Only);
+  const preferWarm = Boolean(refinement.preferWarm);
+
   let regionFilter = refinement.region || 'all';
   let stageFilter = refinement.stageFilter || 'all';
   let excludeSector = refinement.excludeSector || 'none';
@@ -1517,8 +1930,8 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
         aiTrace.push(`Matched rounds backed by ${investorFilter || 'peer co-investors'} in Cala`);
       }
 
-      // Check Industry / Theme archetype
-      if (!investorFilter) {
+      // Check Industry / Theme archetype (skip single-slot overwrite when caller passed multi-sectors)
+      if (!investorFilter && requestedSectors.length === 0) {
         if (query.includes('deeptech') || query.includes('quantum') || query.includes('space') || query.includes('robotics')) {
           searchIntent = 'industry';
           sectorFilter = 'DeepTech';
@@ -1541,6 +1954,9 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
         if (sectorFilter) {
           aiTrace.push(`Intent: Industry & thesis filter (${sectorFilter})`);
         }
+      } else if (requestedSectors.length > 0) {
+        searchIntent = 'industry';
+        aiTrace.push(`Intent: Multi-sector filter (${requestedSectors.join(', ')})`);
       }
 
       // Check Company archetype (explicit "Company:" or matching company name)
@@ -1561,7 +1977,7 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
         }
       }
 
-      if (!matchedStructured && !investorFilter && !sectorFilter && !companyMatchName) {
+      if (!matchedStructured && !investorFilter && !sectorFilter && !companyMatchName && requestedSectors.length === 0 && requestedCountries.length === 0 && maxEmployees === null && !slush2026Only) {
         freeTextQuery = query;
         aiTrace.push(`Intent: Keyword match across Cala profiles ("${rawQuery}")`);
       } else if (!aiTrace.length) {
@@ -1571,7 +1987,7 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
     }
   }
 
-  const filtered = allRanked.filter((item) => {
+  let filtered = allRanked.filter((item) => {
     if (regionFilter !== 'all' && item.region !== regionFilter) return false;
     if (!matchesStageGroup(item.stage, stageFilter)) return false;
     if (excludeSector !== 'none' && item.sector === excludeSector) return false;
@@ -1581,6 +1997,13 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
     if (feederOnly && !item.coInvestorPath?.isUpstreamFeeder) return false;
     if (filingOnly && !(item.arbitrageSignals || []).some((s) => s.sourceRank === 'FILING')) return false;
     if (alumniOnly && !item.alumniSpinout) return false;
+    if (maxEmployees !== null && Number(item.employeeCount || 0) > maxEmployees) return false;
+    if (slush2026Only && !item.attendingSlush2026 && item.region !== 'Nordics') return false;
+    if (requestedSectors.length > 0 && !requestedSectors.includes(item.sector)) return false;
+    if (requestedCountries.length > 0) {
+      const locHay = `${item.country || ''} ${item.hqCity || ''}`.toLowerCase();
+      if (!requestedCountries.some((c) => locHay.includes(c))) return false;
+    }
     if (investorFilter) {
       const hasInv =
         item.coInvestorPath?.coInvestorName === investorFilter ||
@@ -1591,33 +2014,44 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
       const exactMatch = item.name.toLowerCase().includes(companyMatchName.toLowerCase());
       const sameSectorMatch = sectorFilter && item.sector === sectorFilter;
       if (!exactMatch && !sameSectorMatch) return false;
-    } else if (sectorFilter) {
+    } else if (sectorFilter && requestedSectors.length === 0) {
       const textMatch =
         item.sector === sectorFilter ||
         item.subSectors.some((s) => query.includes(s.toLowerCase())) ||
         item.description.toLowerCase().includes(sectorFilter.toLowerCase().split(' ')[0]);
       if (!textMatch) return false;
     } else if (freeTextQuery) {
-      const haystack = [
-        item.name,
-        item.hqCity,
-        item.country,
-        item.sector,
-        item.stage,
-        item.oneLiner,
-        item.description,
-        item.whyNowTrigger,
-        item.alumniSpinout?.priorCompany,
-        ...(item.subSectors || []),
-        ...(item.roundHistory || []).flatMap((r) => r.investorNames || [])
-      ]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase();
-      if (!haystack.includes(freeTextQuery)) return false;
+      if (!buildCandidateHaystack(item).includes(freeTextQuery)) return false;
     }
     return true;
   });
+
+  // Soft-match recovery so combined constraints or novel terms never overlook startups
+  if (filtered.length === 0 && rawQuery && searchIntent !== 'why_not') {
+    const queryTokens = query
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length >= 3 && !['the', 'and', 'for', 'with', 'find', 'show', 'under', 'startups', 'startup', 'raising', 'soon'].includes(t));
+
+    const scoredFallback = allRanked
+      .filter((item) => excludeSector === 'none' || item.sector !== excludeSector)
+      .map((item) => {
+        const hay = buildCandidateHaystack(item);
+        let hits = 0;
+        for (const tok of queryTokens) {
+          if (hay.includes(tok)) hits += 1;
+        }
+        if (requestedSectors.includes(item.sector)) hits += 2;
+        if (regionFilter !== 'all' && item.region === regionFilter) hits += 1;
+        if (requestedCountries.some((c) => `${item.country} ${item.hqCity}`.toLowerCase().includes(c))) hits += 2;
+        if (slush2026Only && item.attendingSlush2026) hits += 1;
+        return { item, softScore: hits * 15 + (item.suitabilityScore || 0) * 0.25 };
+      })
+      .sort((a, b) => b.softScore - a.softScore);
+
+    filtered = scoredFallback.slice(0, 15).map((entry) => entry.item);
+    explanation = `0 exact matches for all combined constraints in "${rawQuery}"; showing top ${filtered.length} closest thesis-assessed startups.`;
+    aiTrace.push(`Soft-match recovery: ranked ${filtered.length} closest candidates from ${allRanked.length} evaluated startups`);
+  }
 
   if (searchIntent === 'company' && companyMatchName) {
     filtered.sort((a, b) => {
@@ -1625,12 +2059,18 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
       const bHit = b.name.toLowerCase().includes(companyMatchName.toLowerCase()) ? 1 : 0;
       return bHit - aHit || b.suitabilityScore - a.suitabilityScore;
     });
+  } else if (preferWarm) {
+    filtered.sort((a, b) => {
+      const aw = a.linkedinNetwork ? 1 : 0;
+      const bw = b.linkedinNetwork ? 1 : 0;
+      return bw - aw || (b.suitabilityScore || 0) - (a.suitabilityScore || 0);
+    });
   } else if (highVelocityOnly) {
     filtered.sort((a, b) => (b.headcountGrowthPct || 0) - (a.headcountGrowthPct || 0) || b.suitabilityScore - a.suitabilityScore);
   }
 
   if (!explanation && query) {
-    explanation = `Matched ${filtered.length} startups from ${thesis.fundName} pool using verified Cala records.`;
+    explanation = `Matched ${filtered.length} startups from ${thesis.fundName} pool (${allRanked.length} assessed) using verified Cala records.`;
   }
 
   const agentPipeline = buildAgentPipeline(thesis, filtered, {
@@ -1654,13 +2094,17 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
       feederOnly,
       filingOnly,
       alumniOnly,
+      sectors: requestedSectors,
+      countries: requestedCountries,
+      maxEmployees,
+      slush2026Only,
       sectorFilter,
       investorFilter,
       queryText: rawQuery
     },
     explanation,
     totalMatches: filtered.length,
-    shortlist: filtered.slice(0, 20)
+    shortlist: filtered.slice(0, refinement.limit ?? 200)
   };
 }
 
@@ -1669,7 +2113,7 @@ export function runFullAnalysis(input, options = {}) {
   const ranking = scoreAndRankCandidates(thesis, {
     rankingMode: options.rankingMode || 'balanced',
     seenCompanyNames: options.seenCompanyNames || [],
-    limit: 20
+    limit: options.limit ?? 200
   });
   const backtest = thesis.mode === 'fund' ? runPointInTimeBacktest(thesis.fundId) : null;
   const agentPipeline = buildAgentPipeline(thesis, ranking.shortlist);

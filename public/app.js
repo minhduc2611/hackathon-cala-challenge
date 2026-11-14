@@ -176,6 +176,7 @@ function getStartupCalaFieldProfile(candidate) {
   else employeeCountRange = [501, 1000];
 
   const isSlushAttendee =
+    Boolean(candidate.attendingSlush2026) ||
     SLUSH_2026_ATTENDEE_IDS.has(candidate.id) ||
     (["Finland", "Sweden", "Estonia", "Denmark", "Norway"].includes(candidate.country) && emp <= 80);
 
@@ -1042,6 +1043,12 @@ function syncCallListUI() {
   const slushBadge = document.getElementById("slushCountBadge");
   if (slushBadge) slushBadge.textContent = String(slushCount);
 
+  const liveDiscoveredCount = (state.DisplayedShortlist || []).filter(
+    (item) => item.isLiveCalaDiscovered
+  ).length;
+  const liveBadge = document.getElementById("liveDiscoveredBadge");
+  if (liveBadge) liveBadge.textContent = liveDiscoveredCount > 0 ? `${liveDiscoveredCount} live` : "+100";
+
   const slushBtn = document.getElementById("filterSlushBtn");
   if (slushBtn) {
     slushBtn.classList.toggle("is-active", Boolean(state.onlySlush2026));
@@ -1279,7 +1286,10 @@ function renderStartupGrid(shortlist) {
       let primarySignal = `${item.stage} · ${formatEur(item.lastRoundAmountEurM)}`;
       let signalClass = "";
 
-      if (state.role === "analyst") {
+      if (item.isLiveCalaDiscovered) {
+        primarySignal = `LIVE CALA · ${item.attendingSlush2026 ? "Slush 2026" : item.hqCity || item.country} · ${item.stage}`;
+        signalClass = "is-live-cala";
+      } else if (state.role === "analyst") {
         if (shortTrigger) {
           primarySignal = `Cala: ${shortTrigger}`;
           signalClass = "is-untapped";
@@ -1551,8 +1561,10 @@ function parseNaturalLanguageSearchQuery(rawQuery) {
     filingOnly: /\b(filing signal|filing arbitrage|companies house|share allotment|unannounced filing|facility)\b/i.test(q),
     alumniOnly: /\b(alumni founder|spinout|operator lineage|ex-iceye|ex-aiven|ex-iqm|ex-oura|ex-silo)\b/i.test(q),
     maxEmployees: null,
+    sectors: [],
     sector: null,
     stageFilter: null,
+    countries: [],
     country: null,
     region: null,
     isNaturalLanguage: false,
@@ -1569,18 +1581,24 @@ function parseNaturalLanguageSearchQuery(rawQuery) {
   }
 
   if (/\b(deeptech|deep tech|quantum|photonics|robotics|space|satellite|fusion)\b/i.test(q)) {
-    res.sector = "DeepTech";
-  } else if (/\b(fintech|payments|banking|treasury|credit)\b/i.test(q)) {
-    res.sector = "Fintech";
-  } else if (/\b(healthtech|health|medtech|clinical|diagnostics|bio)\b/i.test(q)) {
-    res.sector = "HealthTech";
-  } else if (/\b(climate|energy|grid|clean|carbon|solar|battery)\b/i.test(q)) {
-    res.sector = "Climate Tech";
-  } else if (/\b(b2b saas|saas|automation|workflow)\b/i.test(q)) {
-    res.sector = "B2B SaaS";
-  } else if (/\b(ai|ml|machine learning|llm|agent|ai & ml)\b/i.test(q)) {
-    res.sector = "AI & ML";
+    res.sectors.push("DeepTech");
   }
+  if (/\b(fintech|payments|banking|treasury|credit)\b/i.test(q) && !/\b(exclude fintech|no fintech)\b/i.test(q)) {
+    res.sectors.push("Fintech");
+  }
+  if (/\b(healthtech|health|medtech|clinical|diagnostics|bio)\b/i.test(q) && !/\b(exclude health|no health)\b/i.test(q)) {
+    res.sectors.push("HealthTech");
+  }
+  if (/\b(climate|energy|grid|clean|carbon|solar|battery)\b/i.test(q) && !/\b(exclude climate|no climate)\b/i.test(q)) {
+    res.sectors.push("Climate Tech");
+  }
+  if (/\b(b2b saas|saas|automation|workflow)\b/i.test(q) && !/\b(exclude saas|no saas)\b/i.test(q)) {
+    res.sectors.push("B2B SaaS");
+  }
+  if (/\b(ai|ml|machine learning|llm|agent|ai & ml)\b/i.test(q)) {
+    res.sectors.push("AI & ML");
+  }
+  res.sector = res.sectors[0] || null;
 
   if (/\bpre[- ]seed\b/i.test(q)) res.stageFilter = "pre_seed_seed";
   else if (/\bseries a\b/i.test(q)) res.stageFilter = "seed_series_a";
@@ -1588,11 +1606,12 @@ function parseNaturalLanguageSearchQuery(rawQuery) {
 
   const countryList = ["finland", "sweden", "denmark", "estonia", "germany", "uk", "united kingdom", "netherlands", "norway", "helsinki", "espoo", "oulu", "stockholm", "berlin", "munich", "london", "tallinn", "copenhagen"];
   for (const c of countryList) {
-    if (q.includes(c)) {
-      res.country = c === "uk" ? "united kingdom" : c;
-      break;
+    if (new RegExp(`\\b${c}\\b`, "i").test(q)) {
+      const normalized = c === "uk" ? "united kingdom" : c;
+      if (!res.countries.includes(normalized)) res.countries.push(normalized);
     }
   }
+  res.country = res.countries[0] || null;
   if (/\bnordic/i.test(q)) res.region = "Nordics";
   else if (/\bdach/i.test(q)) res.region = "DACH";
 
@@ -1604,8 +1623,8 @@ function parseNaturalLanguageSearchQuery(rawQuery) {
   if (res.filingOnly) res.constraintTags.push("Provenance: Registry filing");
   if (res.alumniOnly) res.constraintTags.push("Lineage: Scaleup alumni");
   if (res.preferWarm) res.constraintTags.push("Sort: Warmest Intro");
-  if (res.sector) res.constraintTags.push(`Sector: ${res.sector}`);
-  if (res.country) res.constraintTags.push(`Location: ${res.country}`);
+  if (res.sectors.length) res.constraintTags.push(`Sector: ${res.sectors.join(" | ")}`);
+  if (res.countries.length) res.constraintTags.push(`Location: ${res.countries.join(" | ")}`);
   if (res.region) res.constraintTags.push(`Region: ${res.region}`);
 
   const isMultiWordQuestion =
@@ -1619,7 +1638,10 @@ function buildAiCopilotSynthesis(queryText, parsed, items, backendRes) {
     return backendRes.explanation;
   }
   if (!items || !items.length) {
-    return `No Cala-indexed startups matched "${queryText}". Try relaxing one filter or trigger Live Cala Knowledge below.`;
+    return `No Cala-indexed startups matched "${queryText}". Try Discover Live Cala or Ask Knowledge below.`;
+  }
+  if (backendRes?.explanation && /0 exact matches/i.test(backendRes.explanation)) {
+    return backendRes.explanation;
   }
   const top = items.slice(0, 3);
   const topLead = top[0];
@@ -1628,7 +1650,8 @@ function buildAiCopilotSynthesis(queryText, parsed, items, backendRes) {
     topLead.coInvestorPath?.coInvestorName ||
     "Cala syndicate";
   const triggerNote = topLead.whyNowTrigger ? `, trigger: ${topLead.whyNowTrigger}` : "";
-  return `Matched ${items.length} startup${items.length === 1 ? "" : "s"}. Top match: ${topLead.name} (${topLead.suitabilityScore}/100) in ${topLead.hqCity} (${topLead.stage}, ${formatEur(topLead.lastRoundAmountEurM)}${triggerNote}, intro via ${bridge}).`;
+  const liveNote = backendRes?.liveDiscoveredCount > 0 ? ` (+${backendRes.liveDiscoveredCount} new from Live Cala AI)` : "";
+  return `Matched ${items.length} startup${items.length === 1 ? "" : "s"}${liveNote}. Top match: ${topLead.name} (${topLead.suitabilityScore}/100) in ${topLead.hqCity} (${topLead.stage}, ${formatEur(topLead.lastRoundAmountEurM)}${triggerNote}, intro via ${bridge}).`;
 }
 
 async function executeSearchRefinement(customQuery) {
@@ -1662,8 +1685,6 @@ async function executeSearchRefinement(customQuery) {
     resetBtn.hidden = !hasActiveFilter;
   }
 
-  const backendQueryText = parsed.isNaturalLanguage ? "" : queryText;
-
   const res = await fetchJson("/api/refine", {
     method: "POST",
     body: JSON.stringify({
@@ -1673,7 +1694,7 @@ async function executeSearchRefinement(customQuery) {
       rankingMode: mapScoringModeToApi(state.scoringMode),
       statedThesisOverride: state.statedThesisOverride || undefined,
       seenCompanyNames: getSeenCompanyNamesList(),
-      queryText: backendQueryText,
+      queryText,
       stageFilter,
       region,
       excludeSector: excludeSector || "none",
@@ -1682,32 +1703,21 @@ async function executeSearchRefinement(customQuery) {
       highVelocityOnly: parsed.highVelocityOnly,
       feederOnly: parsed.feederOnly,
       filingOnly: parsed.filingOnly,
-      alumniOnly: parsed.alumniOnly
+      alumniOnly: parsed.alumniOnly,
+      sectors: parsed.sectors,
+      countries: parsed.countries,
+      maxEmployees: parsed.maxEmployees,
+      slush2026Only: parsed.slush2026Only,
+      preferWarm: parsed.preferWarm,
+      discoverLive: Boolean(queryText.trim()) && !parsed.isWhyNot
     })
   });
 
-  let shortlist = res.shortlist || [];
-  if (parsed.isNaturalLanguage) {
-    shortlist = shortlist.filter((item) => {
-      const calaProf = getStartupCalaFieldProfile(item);
-      if (parsed.slush2026Only && !calaProf?.slush2026?.attending) return false;
-      if (parsed.sector && item.sector !== parsed.sector) return false;
-      if (parsed.maxEmployees !== null && Number(item.employeeCount || 0) > parsed.maxEmployees) return false;
-      if (parsed.country) {
-        const locHay = `${item.country || ""} ${item.hqCity || ""}`.toLowerCase();
-        if (!locHay.includes(parsed.country)) return false;
-      }
-      return true;
-    });
-    if (parsed.preferWarm) {
-      shortlist = [...shortlist].sort((a, b) => {
-        const aw = a.linkedinNetwork ? 1 : 0;
-        const bw = b.linkedinNetwork ? 1 : 0;
-        return bw - aw || (b.suitabilityScore || 0) - (a.suitabilityScore || 0);
-      });
-    }
+  if (res.calaBudget) {
+    updateTelemetryMasthead(res.calaBudget);
   }
 
+  const shortlist = res.shortlist || [];
   state.DisplayedShortlist = shortlist;
   registerKnownItems(state.DisplayedShortlist);
   renderStartupGrid(state.DisplayedShortlist);
@@ -3510,6 +3520,63 @@ async function verifyThesisFundInLiveCala({ silent = false } = {}) {
   }
 }
 
+async function triggerLiveCalaPoolExpansion() {
+  const btn = document.getElementById("expandUniverseCalaBtn");
+  const badge = document.getElementById("liveDiscoveredBadge");
+  if (btn) {
+    btn.disabled = true;
+    btn.classList.add("is-loading");
+  }
+  if (badge) badge.textContent = "...";
+
+  try {
+    const q = document.getElementById("aiSearchInput")?.value?.trim() || "";
+    const parsed = parseNaturalLanguageSearchQuery(q);
+    const res = await fetchJson("/api/cala-discover", {
+      method: "POST",
+      body: JSON.stringify({
+        mode: "ecosystem",
+        fundId: state.selectedFundId,
+        companyIds: state.selectedCompanyIds,
+        rankingMode: mapScoringModeToApi(state.scoringMode),
+        statedThesisOverride: state.statedThesisOverride || undefined,
+        seenCompanyNames: getSeenCompanyNamesList(),
+        queryText: q || undefined,
+        sectors: parsed.sectors,
+        countries: parsed.countries,
+        maxEmployees: parsed.maxEmployees,
+        slush2026Only: parsed.slush2026Only,
+        preferWarm: parsed.preferWarm
+      })
+    });
+
+    state.analysis = { ...(state.analysis || {}), ...res };
+    state.DisplayedShortlist = res.shortlist || [];
+    registerKnownItems(state.DisplayedShortlist);
+    renderStartupGrid(state.DisplayedShortlist);
+    if (res.backtest || res.thesis) {
+      renderThesisAndBacktest(state.analysis);
+    }
+    if (res.calaBudget) {
+      updateTelemetryMasthead(res.calaBudget);
+    }
+
+    const liveTotal = state.DisplayedShortlist.filter((s) => s.isLiveCalaDiscovered).length;
+    if (badge) badge.textContent = liveTotal > 0 ? `${liveTotal} live` : "Synced";
+    showUiToast(
+      `Discovered & scored ${res.discoveredCount ?? liveTotal} startups from Live Cala AI (${state.DisplayedShortlist.length} total ranked)`
+    );
+  } catch (err) {
+    if (badge) badge.textContent = "Retry";
+    showUiToast(`Live Cala discovery notice: ${err.message}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.remove("is-loading");
+    }
+  }
+}
+
 async function triggerLiveCalaVerification() {
   const candidate = state.allKnownItems.get(state.activeStartupId);
   if (!candidate) return;
@@ -4168,6 +4235,7 @@ function bindEvents() {
 
   document.getElementById("verifyLiveCalaBtn")?.addEventListener("click", triggerLiveCalaVerification);
   document.getElementById("modalHeaderLiveCalaBtn")?.addEventListener("click", triggerLiveCalaVerification);
+  document.getElementById("expandUniverseCalaBtn")?.addEventListener("click", triggerLiveCalaPoolExpansion);
   document.getElementById("searchLiveCalaBtn")?.addEventListener("click", () => {
     runSearchLiveCalaLookup();
   });

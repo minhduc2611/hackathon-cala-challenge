@@ -1426,6 +1426,23 @@ h2 {
   color: var(--lime-text);
 }
 
+.cala-discover-pill {
+  border-color: var(--lime-border);
+  background: var(--sky-bg);
+  color: var(--text-strong);
+}
+
+.cala-discover-pill:hover {
+  border-color: var(--sky);
+  background: var(--sky-bg);
+  color: var(--lime-text);
+}
+
+.cala-discover-pill.is-loading {
+  opacity: 0.72;
+  cursor: progress;
+}
+
 .call-list-compare-card {
   margin-bottom: 18px;
   padding: 20px;
@@ -1965,6 +1982,10 @@ body.has-drawer-open .startup-tile.is-selected {
 
 .tile-signal.is-untapped {
   color: var(--sky);
+}
+
+.tile-signal.is-live-cala {
+  color: var(--lime-text);
 }
 
 .tile-hover-bar {
