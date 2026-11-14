@@ -154,34 +154,40 @@ function getInitials(name) {
 
 function scoreBand(score) {
   const val = Number(score || 0);
-  if (val >= 72) return { cls: "s-hot", lab: "Call now" };
-  if (val >= 56) return { cls: "s-warm", lab: "Warm" };
-  return { cls: "s-cold", lab: "Track" };
+  if (val >= 72) return { cls: "s-hot", lab: "Call now", shortLab: "Call", col: "#34d399" };
+  if (val >= 56) return { cls: "s-warm", lab: "Warm", shortLab: "Warm", col: "#fbbf24" };
+  return { cls: "s-cold", lab: "Track", shortLab: "Track", col: "#94a3b8" };
 }
 
-function scoreRingHtml(score) {
-  const r = 40;
-  const circ = 2 * Math.PI * r;
+function buildIncompleteCircleScoreSvg(score, size = 54, subLabel = "", valueId = "") {
   const val = Math.max(0, Math.min(100, Math.round(Number(score || 0))));
-  const col = val >= 72 ? "#34d399" : val >= 56 ? "#fbbf24" : "#64748b";
+  const b = scoreBand(val);
+  const col = b.col;
+  const r = 24;
+  const circ = 2 * Math.PI * r;
+  const arcLen = circ * (250 / 360);
+  const fillLen = (arcLen * val) / 100;
+  const sizeClass = size >= 80 ? "is-lg" : size >= 60 ? "is-md" : "is-sm";
+
   return `
-    <div class="ring">
-      <svg width="92" height="92">
-        <circle cx="46" cy="46" r="${r}" fill="none" stroke="#1e293b" stroke-width="8"/>
-        <circle cx="46" cy="46" r="${r}" fill="none" stroke="${col}" stroke-width="8" stroke-linecap="round"
-          stroke-dasharray="${circ.toFixed(1)}" stroke-dashoffset="${(circ * (1 - val / 100)).toFixed(1)}"/>
+    <div class="incomplete-ring ${b.cls} ${sizeClass}" style="--ring-size: ${size}px; --ring-color: ${col}" data-score-gauge="incomplete-circle">
+      <svg width="${size}" height="${size}" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Fit score ${val} out of 100">
+        <circle cx="32" cy="32" r="${r}" fill="none" stroke="rgba(148, 163, 184, 0.2)" stroke-width="5.2" stroke-linecap="round"
+          stroke-dasharray="${arcLen.toFixed(2)} ${circ.toFixed(2)}" transform="rotate(145 32 32)" />
+        <circle cx="32" cy="32" r="${r}" fill="none" stroke="${col}" stroke-width="5.2" stroke-linecap="round"
+          stroke-dasharray="${fillLen.toFixed(2)} ${circ.toFixed(2)}" stroke-opacity="${val > 0 ? "1" : "0"}" transform="rotate(145 32 32)" />
       </svg>
-      <div class="c">
-        <div>
-          <b class="num-tabular">${val}</b>
-          <span>Fit score</span>
-        </div>
-      </div>
+      <span class="ir-val num-tabular"${valueId ? ` id="${escapeHtml(valueId)}"` : ""}>${val}</span>
+      ${subLabel ? `<span class="ir-sub">${escapeHtml(subLabel)}</span>` : ""}
     </div>
   `;
 }
 
-function buildStartupLogoSvg(name, sector, size = 36) {
+function scoreRingHtml(score) {
+  return `<div class="ring">${buildIncompleteCircleScoreSvg(score, 92, "Fit score")}</div>`;
+}
+
+function buildStartupLogoSvg(name, sector, size = 46) {
   const initials = getInitials(name);
   const theme = SECTOR_THEMES[sector] || {
     bg: "#111a2e",
@@ -205,10 +211,43 @@ function buildStartupLogoSvg(name, sector, size = 36) {
 
   return `
     <svg width="${size}" height="${size}" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${escapeHtml(name)} monogram">
-      <rect x="0.5" y="0.5" width="47" height="47" rx="9" fill="${theme.bg}" stroke="${theme.border}" />
+      <rect x="0.5" y="0.5" width="47" height="47" rx="11" fill="${theme.bg}" stroke="${theme.border}" />
       ${motif}
-      <text x="24" y="29" text-anchor="middle" fill="${theme.fg}" font-family="'Plus Jakarta Sans', sans-serif" font-weight="800" font-size="14" letter-spacing="0.03em">${escapeHtml(initials)}</text>
+      <text x="24" y="29" text-anchor="middle" fill="${theme.fg}" font-family="'Plus Jakarta Sans', sans-serif" font-weight="800" font-size="14.5" letter-spacing="0.03em">${escapeHtml(initials)}</text>
     </svg>
+  `;
+}
+
+function buildTileTopVisualHtml(item, score) {
+  const theme = SECTOR_THEMES[item.sector] || {
+    bg: "#111a2e",
+    fg: "#34d399",
+    border: "#273449",
+    shape: "orbit"
+  };
+  const b = scoreBand(score);
+  const logoSvg = buildStartupLogoSvg(item.name, item.sector, 46);
+  const gaugeSvg = buildIncompleteCircleScoreSvg(score, 54, b.shortLab);
+
+  let patternSvg = `<circle cx="140" cy="18" r="34" stroke="${theme.fg}" stroke-width="1" /><circle cx="140" cy="18" r="52" stroke="${theme.fg}" stroke-width="0.75" stroke-dasharray="4 3" />`;
+  if (theme.shape === "grid") {
+    patternSvg = `<path d="M90 8 H168 M90 26 H168 M90 44 H168 M112 2 V68 M136 2 V68 M160 2 V68" stroke="${theme.fg}" stroke-width="0.85" />`;
+  } else if (theme.shape === "prism") {
+    patternSvg = `<polygon points="132,6 168,66 96,66" stroke="${theme.fg}" stroke-width="1" /><polygon points="132,20 156,60 108,60" stroke="${theme.fg}" stroke-width="0.75" />`;
+  } else if (theme.shape === "bars") {
+    patternSvg = `<path d="M96 58 V38 M112 58 V28 M128 58 V18 M144 58 V34 M160 58 V22" stroke="${theme.fg}" stroke-width="2" stroke-linecap="round" />`;
+  }
+
+  return `
+    <div class="tile-top-stage" style="--stage-tint: ${theme.fg}; --stage-bg: ${theme.bg}">
+      <svg class="tile-top-backdrop" viewBox="0 0 180 76" fill="none" preserveAspectRatio="none" aria-hidden="true">
+        ${patternSvg}
+      </svg>
+      <div class="tile-top-row">
+        <div class="tile-logo" aria-hidden="true">${logoSvg}</div>
+        <div class="tile-score-ring">${gaugeSvg}</div>
+      </div>
+    </div>
   `;
 }
 
@@ -402,8 +441,8 @@ function syncInlineCalibrationStrip() {
   const gridHint = document.getElementById("gridRoleHint");
   if (gridHint) {
     gridHint.textContent = isInvestor
-      ? "Tap any startup for 5-second fit score & warmest intro route"
-      : "Tap any startup for Cala round audit, coverage gaps & network graph";
+      ? "Hover a card for intro signal & network jump; tap for full score"
+      : "Hover a card for Cala round signal; tap for audit & network graph";
   }
 
   const statFund = document.getElementById("statFundName");
@@ -454,6 +493,9 @@ function renderFundQuickPicks() {
   container.innerHTML = state.bootstrap.funds
     .map((fund) => {
       const selected = state.selectedFundId === fund.id;
+      const thesisRaw = String(fund.statedThesis || "").trim();
+      const thesisExcerpt = thesisRaw.length > 78 ? `${thesisRaw.slice(0, 75)}...` : thesisRaw;
+      const regionText = fund.region || fund.country;
       return `
         <button
           type="button"
@@ -462,6 +504,7 @@ function renderFundQuickPicks() {
         >
           <span class="fp-name">${escapeHtml(fund.name)}</span>
           <span class="fp-meta">${escapeHtml(fund.hqCity)}, ${escapeHtml(fund.country)} · ${escapeHtml(fund.teamSize)} partners</span>
+          <span class="fp-hover-detail">${escapeHtml(regionText)}${thesisExcerpt ? ` · ${escapeHtml(thesisExcerpt)}` : ""}</span>
         </button>
       `;
     })
@@ -627,30 +670,29 @@ function renderStartupGrid(shortlist) {
       }
 
       return `
-        <button
-          type="button"
+        <article
           class="startup-tile ${isSelected ? "is-selected" : ""}"
           role="listitem"
+          tabindex="0"
           data-startup-id="${escapeHtml(item.id)}"
+          aria-label="Open ${escapeHtml(item.name)}"
         >
-          <div class="tile-top">
-            <div class="tile-logo" aria-hidden="true">${logoSvg}</div>
-            <div class="score ${b.cls}">
-              <div class="num num-tabular">${score}</div>
-              <div class="lab">${escapeHtml(b.lab)}</div>
-            </div>
-          </div>
+          ${buildTileTopVisualHtml(item, score)}
 
           <div class="tile-body">
-            <div class="tile-name">${escapeHtml(item.name)}</div>
-            <div class="tile-meta">${escapeHtml(item.sector)} · ${escapeHtml(item.country)}</div>
+            <h3 class="tile-name">${escapeHtml(item.name)}</h3>
+            <div class="tile-hover-reveal">
+              <div class="tile-meta">${escapeHtml(item.sector)} · ${escapeHtml(item.country)}</div>
+              <div class="tile-foot">
+                <span class="tile-signal ${signalClass}">${escapeHtml(primarySignal)}</span>
+                <div class="tile-hover-actions">
+                  <button type="button" class="tile-net-jump" data-open-tab="network">Network &rarr;</button>
+                  <span class="tile-inspect-cue">Brief &rarr;</span>
+                </div>
+              </div>
+            </div>
           </div>
-
-          <div class="tile-foot">
-            <span class="tile-signal ${signalClass}">${escapeHtml(primarySignal)}</span>
-            <span class="tile-inspect-cue">Open &rarr;</span>
-          </div>
-        </button>
+        </article>
       `;
     })
     .join("");
@@ -868,12 +910,39 @@ async function loadStartupBriefData(companyId) {
 function getScoreBreakdownRows(item) {
   const sb = item?.scoreBreakdown;
   if (!sb) return [];
+  const coName = item?.coInvestorPath?.coInvestorName;
+  const roundAmt = formatEur(item?.lastRoundAmountEurM);
   return [
-    { label: "Sector fit", points: Number(sb.sector?.earned || 0).toFixed(1), maxPoints: sb.sector?.max || 30 },
-    { label: "Stage timing", points: Number(sb.stage?.earned || 0).toFixed(1), maxPoints: sb.stage?.max || 25 },
-    { label: "Co-investor overlap", points: Number(sb.coInvestor?.earned || 0).toFixed(1), maxPoints: sb.coInvestor?.max || 20 },
-    { label: "Geography match", points: Number(sb.geography?.earned || 0).toFixed(1), maxPoints: sb.geography?.max || 15 },
-    { label: "Round size fit", points: Number(sb.roundSize?.earned || 0).toFixed(1), maxPoints: sb.roundSize?.max || 10 }
+    {
+      label: "Sector fit",
+      points: Number(sb.sector?.earned || 0).toFixed(1),
+      maxPoints: sb.sector?.max || 30,
+      detail: `Cala-verified ${item?.sector || "sector"} conviction vs. fund check history`
+    },
+    {
+      label: "Stage timing",
+      points: Number(sb.stage?.earned || 0).toFixed(1),
+      maxPoints: sb.stage?.max || 25,
+      detail: `${item?.stage || "Current stage"} cadence toward ${item?.likelyNextStage || "next"} window`
+    },
+    {
+      label: "Co-investor overlap",
+      points: Number(sb.coInvestor?.earned || 0).toFixed(1),
+      maxPoints: sb.coInvestor?.max || 20,
+      detail: coName ? `Shared Cala rounds alongside ${coName}` : "Evaluated against benchmark syndicate graph"
+    },
+    {
+      label: "Geography match",
+      points: Number(sb.geography?.earned || 0).toFixed(1),
+      maxPoints: sb.geography?.max || 15,
+      detail: `${item?.hqCity || "Hub"}, ${item?.country || "EU"} domicile alignment`
+    },
+    {
+      label: "Round size fit",
+      points: Number(sb.roundSize?.earned || 0).toFixed(1),
+      maxPoints: sb.roundSize?.max || 10,
+      detail: `Last indexed check (${roundAmt}) vs. historical ticket range`
+    }
   ];
 }
 
@@ -1177,8 +1246,19 @@ async function openStartupInspector(companyId, options = {}) {
       rankIdx >= 0 ? `Rank #${rankIdx + 1} of ${state.DisplayedShortlist.length}` : "Connected peer";
     document.getElementById("drawerStartupName").textContent = candidate.name;
     document.getElementById("drawerStartupMeta").textContent = `${candidate.sector} · ${candidate.stage} · ${candidate.hqCity}, ${candidate.country}`;
-    document.getElementById("drawerScoreNumber").textContent = String(candidate.suitabilityScore ?? 0);
+
+    const scoreArcEl = document.getElementById("drawerScoreArc");
+    if (scoreArcEl) {
+      scoreArcEl.innerHTML = buildIncompleteCircleScoreSvg(
+        candidate.suitabilityScore ?? 0,
+        62,
+        "/100",
+        "drawerScoreNumber"
+      );
+    }
   }
+
+  switchDrawerTab(options.tab === "network" ? "network" : "brief");
 
   const liveOut = document.getElementById("liveCalaOutput");
   if (liveOut) {
@@ -1256,13 +1336,17 @@ function renderDrawerBriefPane(brief, candidate) {
       .map((f) => {
         const pct = Math.min(100, Math.round((Number(f.points) / f.maxPoints) * 100));
         return `
-          <div class="sb-row">
+          <div class="sb-row" tabindex="0">
             <div class="sb-top">
               <span class="sb-label">${escapeHtml(f.label)}</span>
               <span class="sb-pts num-tabular">${f.points} / ${f.maxPoints} pts</span>
             </div>
             <div class="sb-bar-track">
               <div class="sb-bar-fill" style="width: ${pct}%"></div>
+            </div>
+            <div class="sb-hover-detail">
+              <span class="sb-pct num-tabular">${pct}% of max weight</span>
+              <span>${escapeHtml(f.detail || "Verified via Cala round ledger")}</span>
             </div>
           </div>
         `;
@@ -1274,13 +1358,22 @@ function renderDrawerBriefPane(brief, candidate) {
   if (whyList) {
     whyList.innerHTML = (candidate.reasons || [])
       .map((r) => {
-        const cites = (r.sources || [])
+        const sources = r.sources || [];
+        const cites = sources
           .map(
             (src, idx) =>
               `<a href="${escapeHtml(src.url)}" target="_blank" rel="noopener noreferrer" class="citation-link" title="${escapeHtml(src.title)}">[${idx + 1} &#8599;]</a>`
           )
           .join(" ");
-        return `<li>${escapeHtml(r.text)} ${cites}</li>`;
+        const metaText = sources
+          .map((src) => `${src.publisher || src.title || "Source"} (${src.date || "Cala indexed"})`)
+          .join(" · ");
+        return `
+          <li class="evidence-item" tabindex="0">
+            <span>${escapeHtml(r.text)} ${cites}</span>
+            ${metaText ? `<span class="cite-hover-meta">Grounded via ${escapeHtml(metaText)}</span>` : ""}
+          </li>
+        `;
       })
       .join("");
   }
@@ -2052,11 +2145,26 @@ function bindEvents() {
     });
   });
 
-  document.getElementById("startupGrid")?.addEventListener("click", (e) => {
+  const startupGridEl = document.getElementById("startupGrid");
+  startupGridEl?.addEventListener("click", (e) => {
+    const netBtn = e.target.closest("[data-open-tab='network']");
     const tile = e.target.closest("[data-startup-id]");
     if (!tile) return;
     state.peerHistory = [];
-    openStartupInspector(tile.dataset.startupId, { keepHistory: true });
+    openStartupInspector(tile.dataset.startupId, {
+      keepHistory: true,
+      tab: netBtn ? "network" : "brief"
+    });
+  });
+
+  startupGridEl?.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    if (e.target.closest("button")) return;
+    const tile = e.target.closest("[data-startup-id]");
+    if (!tile) return;
+    e.preventDefault();
+    state.peerHistory = [];
+    openStartupInspector(tile.dataset.startupId, { keepHistory: true, tab: "brief" });
   });
 
   document.getElementById("drawerCloseBtn")?.addEventListener("click", closeStartupInspector);

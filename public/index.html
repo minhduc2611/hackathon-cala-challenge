@@ -534,8 +534,11 @@
       <div class="startup-grid" id="startupGrid" role="list"></div>
 
       <!-- MERGERO-STYLE "ALSO SCREENED, AND DELIBERATELY EXCLUDED" -->
-      <div class="card also" id="alsoScreenedCard">
-        <h4>Also screened, and deliberately excluded (existing portfolio &amp; direct conflicts)</h4>
+      <div class="card also" id="alsoScreenedCard" tabindex="0">
+        <h4>
+          <span>Also screened, and deliberately excluded (existing portfolio &amp; direct conflicts)</span>
+          <span class="hover-cue-pill">Hover to reveal</span>
+        </h4>
         <div id="alsoScreenedList"></div>
       </div>
     </section>
@@ -630,7 +633,7 @@
         </div>
 
         <div class="drawer-header-right">
-          <div class="drawer-score-box">
+          <div class="drawer-score-box" id="drawerScoreArc">
             <span class="drawer-score-num num-tabular" id="drawerScoreNumber">89</span>
             <span class="drawer-score-max">/100</span>
           </div>

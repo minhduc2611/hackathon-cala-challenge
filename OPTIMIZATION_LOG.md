@@ -56,3 +56,14 @@
   - Automated test suite duration: `134.8ms` -> `111.6ms` (`12/12` passing)
 - **Tests:** PASS (`12/12`, `111.6ms`)
 - **Decision:** KEEP
+
+### [2026-11-14 09:00] — Exp 4: Top-Panel Logo Stage, Incomplete-Circle Score Arc & Progressive Hover Disclosure
+- **Hypothesis:** Moving the `46x46` startup monogram crest into a cohesive `.tile-top-stage` banner on top of each card alongside an open `250°` incomplete-circle SVG score gauge (`buildIncompleteCircleScoreSvg`), enlarging `.tile-name` to `18px`, and moving secondary metadata behind smooth `@media (hover: hover)` disclosure (with `@media (hover: none), (max-width: 720px)` fallback) improves scannability across the 7-column grid and surfaces direct `Network ->` drawer jumping on hover.
+- **Files touched:** `public/app.js`, `public/index.html`, `public/styles.css`
+- **Before -> After:**
+  - Startup card title size: `14px` -> `18px` bold `#f8fafc` (`min-height: 44px`)
+  - Startup card logo size & position: `34x34` inline corner -> `46x46` featured in `.tile-top-stage` (`11%` radial tint + subtle sector motif)
+  - Score visualization: solid badge / closed circle -> unified `250°` incomplete-circle SVG arc (`54px` tile, `62px` drawer, `92px` deep-dive)
+  - Secondary details at rest (desktop hover devices): always exposed -> cleanly revealed on `:hover` / `:focus-within` across tiles, `#alsoScreenedCard`, Step 1 `.stat` / `.flow-step`, Step 3 `.fund-pick-card`, `.sb-row`, and `.evidence-item`
+- **Tests:** PASS (`12/12`, `111.7ms`), hygiene check `0` violations, Browser Check (`final_step_773.png`) verified at `1440x900` (`0` console/network errors, `8/8` Cala credits preserved)
+- **Decision:** KEEP
