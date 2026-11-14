@@ -12,6 +12,7 @@ import {
   ingestLiveCalaEntities,
   ingestRegistryEntities,
   refineShortlist,
+  resolveSources,
   runFullAnalysis,
   searchEntities
 } from './src/engine.mjs';
@@ -76,6 +77,25 @@ function summarizeLiveCalaEntity(entityData) {
   const props = entityData.properties || {};
   const outgoing = entityData.relationships?.outgoing || {};
   const incoming = entityData.relationships?.incoming || {};
+  const peopleEvidence = (person, relation, role) => {
+    const firstSource = person?.properties?.sources?.[0] || {};
+    return {
+      id: person?.id || null,
+      name: person?.name || 'Unnamed Cala person',
+      relation,
+      role,
+      validSince: person?.properties?.valid_since || person?.properties?.start_date || null,
+      validUntil: person?.properties?.valid_until || person?.properties?.end_date || null,
+      // This is deliberately read only from Cala relationship evidence.  Do not
+      // infer a prior employer from a title, name, or other display field.
+      priorCompany: person?.properties?.prior_company || null,
+      priorRole: person?.properties?.prior_role || null,
+      priorValidUntil: person?.properties?.prior_valid_until || null,
+      sourceId: person?.properties?.source_id || person?.properties?.sourceId || firstSource.id || firstSource.source_id || firstSource.sourceId || null,
+      sourceRank: sourceTierFor(firstSource, null),
+      sources: (person?.properties?.sources || []).slice(0, 3)
+    };
+  };
 
   const investedIn = (outgoing.INVESTED_IN || []).map((c) => ({
     id: c.id,
@@ -145,23 +165,57 @@ function summarizeLiveCalaEntity(entityData) {
   ];
 
   const leadership = [
-    ...(incoming.FOUNDED || []).map((p) => ({ id: p.id, name: p.name, relation: 'FOUNDED', role: 'Founder', validSince: p.properties?.valid_since || null })),
-    ...(incoming.IS_CEO_OF || []).map((p) => ({ id: p.id, name: p.name, relation: 'IS_CEO_OF', role: 'CEO', validSince: p.properties?.valid_since || null, validUntil: p.properties?.valid_until || null })),
-    ...(incoming.IS_CTO_OF || []).map((p) => ({ id: p.id, name: p.name, relation: 'IS_CTO_OF', role: 'CTO', validSince: p.properties?.valid_since || null, validUntil: p.properties?.valid_until || null })),
-    ...(incoming.IS_BOARD_MEMBER_OF || []).map((p) => ({ id: p.id, name: p.name, relation: 'IS_BOARD_MEMBER_OF', role: 'Board Member', validSince: p.properties?.valid_since || null })),
-    ...(incoming.IS_CONTROL_PERSON_OF || []).map((p) => ({ id: p.id, name: p.name, relation: 'IS_CONTROL_PERSON_OF', role: 'Control Person', validSince: p.properties?.valid_since || null })),
-    ...(incoming.IS_BENEFICIARY_OWNER_OF || []).map((p) => ({ id: p.id, name: p.name, relation: 'IS_BENEFICIARY_OWNER_OF', role: 'Beneficial Owner', validSince: p.properties?.valid_since || null }))
+    ...(incoming.FOUNDED || []).map((p) => peopleEvidence(p, 'FOUNDED', 'Founder')),
+    ...(incoming.IS_CEO_OF || []).map((p) => peopleEvidence(p, 'IS_CEO_OF', 'CEO')),
+    ...(incoming.IS_CTO_OF || []).map((p) => peopleEvidence(p, 'IS_CTO_OF', 'CTO')),
+    ...(incoming.IS_BOARD_MEMBER_OF || []).map((p) => peopleEvidence(p, 'IS_BOARD_MEMBER_OF', 'Board Member')),
+    ...(incoming.IS_CONTROL_PERSON_OF || []).map((p) => peopleEvidence(p, 'IS_CONTROL_PERSON_OF', 'Control Person')),
+    ...(incoming.IS_BENEFICIARY_OWNER_OF || []).map((p) => peopleEvidence(p, 'IS_BENEFICIARY_OWNER_OF', 'Beneficial Owner'))
   ];
 
-  const worksAt = (incoming.WORKS_AT || []).map((p) => ({
-    id: p.id,
-    name: p.name,
-    role: p.properties?.role || 'Team member'
-  }));
+  const worksAt = (incoming.WORKS_AT || []).map((p) => peopleEvidence(p, 'WORKS_AT', p.properties?.role || 'Team member'));
 
   const numericalObservations = Array.isArray(entityData.numerical_observations)
     ? entityData.numerical_observations.slice(0, 12)
     : [];
+
+  const supportedRelationshipTypes = new Set([
+    'PARTNERED_WITH',
+    'SUPPLIES',
+    'COMPETES_WITH',
+    'ACQUIRED',
+    'IS_SUBSIDIARY_OF',
+    'INVESTED_IN',
+    'FOUNDED',
+    'IS_CEO_OF',
+    'IS_CTO_OF',
+    'IS_BOARD_MEMBER_OF',
+    'WORKS_AT',
+    'PARTICIPATES_IN_FUNDING_ROUND',
+    'HAS_FUNDING_ROUND',
+    'PARTICIPATES_IN_CORPORATE_EVENT',
+    'PARTICIPATES_IN_EVENT'
+  ]);
+  const verifiedRelationships = [];
+  for (const [direction, relationMap] of Object.entries({ outgoing, incoming })) {
+    for (const [relation, targets] of Object.entries(relationMap || {})) {
+      if (!supportedRelationshipTypes.has(relation)) continue;
+      for (const target of targets || []) {
+        if (!target?.id || !target?.name) continue;
+        verifiedRelationships.push({
+          id: `${direction}:${relation}:${target.id}`,
+          direction,
+          relation,
+          entityId: target.id,
+          name: target.name,
+          entityType: target.entity_type || target.entityType || 'Entity',
+          role: target.properties?.role || null,
+          eventDate: target.properties?.event_date || target.properties?.valid_since || null,
+          sources: (target.properties?.sources || []).slice(0, 2)
+        });
+      }
+    }
+  }
 
   return {
     id: entityData.id,
@@ -193,8 +247,132 @@ function summarizeLiveCalaEntity(entityData) {
     eventsAttended: eventsAttended.slice(0, 25),
     leadership: leadership.slice(0, 10),
     worksAt: worksAt.slice(0, 8),
-    numericalObservations
+    numericalObservations,
+    verifiedRelationships
   };
+}
+
+function toLiveSearchEntity(entity) {
+  const entityId = String(entity?.id || '').trim();
+  const name = String(entity?.name || '').trim();
+  if (!entityId || !name) return null;
+  const entityType = entity.entity_type || entity.entityType || 'Entity';
+  const indexed = COMPANIES.find((company) => company.calaEntityId === entityId || normalizeEntityCoreName(company.name) === normalizeEntityCoreName(name));
+  const isFund = FUNDS.some((fund) => fund.calaEntityId === entityId || normalizeEntityCoreName(fund.name) === normalizeEntityCoreName(name));
+  return {
+    id: entityId,
+    calaEntityId: entityId,
+    name,
+    entityType,
+    entityCategory: indexed?.entityCategory || (isFund ? 'fund' : entityType === 'Organization' ? 'organization' : 'entity'),
+    isLiveCalaDiscovered: true,
+    sector: indexed?.sector || null,
+    country: indexed?.country || null,
+    hqCity: indexed?.hqCity || null,
+    description: entity.description || entity.properties?.description?.value || null
+  };
+}
+
+function hasKnownNumericValue(value) {
+  return value !== null && value !== undefined && String(value).trim() !== '' && Number.isFinite(Number(value));
+}
+
+function localCompanyAsEntity(company) {
+  if (!company) return null;
+  return {
+    id: company.calaEntityId || company.id,
+    name: company.name,
+    entity_type: company.entityCategory === 'established_corp' ? 'Organization' : 'Company',
+    description: company.description || company.oneLiner || null,
+    properties: {
+      website: company.website ? { value: company.website } : undefined,
+      founding_date: company.foundingDate ? { value: company.foundingDate } : undefined,
+      employee_count_range: hasKnownNumericValue(company.employeeCount) ? { value: Number(company.employeeCount) } : undefined
+    },
+    relationships: { outgoing: {}, incoming: {} }
+  };
+}
+
+const SOURCE_TIER_PRIORITY = { FILING: 4, PRIMARY: 3, PRESS: 2, AGGREGATOR: 1 };
+
+function sourceTierFor(rawSource = {}, fallback = null) {
+  const explicit = String(rawSource?.source_rank || rawSource?.sourceRank || '').toUpperCase();
+  if (SOURCE_TIER_PRIORITY[explicit]) return explicit;
+  const haystack = `${rawSource?.source || ''} ${rawSource?.publisher || ''} ${rawSource?.name || ''} ${rawSource?.url || ''}`.toLowerCase();
+  if (/(sec|edgar|companies[ _-]?house|prh|ytj|filing|registry|registrar|gleif|official)/.test(haystack)) return 'FILING';
+  if (/(press release|official|company|investor|portfolio|announcement|disclosure)/.test(haystack)) return 'PRIMARY';
+  if (/(techcrunch|sifted|financial times|venturebeat|press|news)/.test(haystack)) return 'PRESS';
+  return fallback;
+}
+
+function normalizeRawRelationshipGroups(entity = {}) {
+  const groups = { outgoing: {}, incoming: {} };
+  const relations = entity.relationships || {};
+  for (const direction of ['outgoing', 'incoming']) {
+    for (const [relation, targets] of Object.entries(relations[direction] || {})) {
+      groups[direction][relation] = (targets || [])
+        .filter((target) => target?.id || target?.name)
+        .map((target) => ({
+          id: target.id || null,
+          name: target.name || 'Unnamed Cala entity',
+          entityType: target.entity_type || target.entityType || 'Entity',
+          role: target.properties?.role || null,
+          validSince: target.properties?.valid_since || target.properties?.start_date || null,
+          validUntil: target.properties?.valid_until || target.properties?.end_date || null,
+          eventDate: target.properties?.event_date || target.properties?.valid_since || target.properties?.valid_until || null,
+          // Prior employment is shown only when it is carried by the verified
+          // Cala edge itself; no name/title based fallback is permitted here.
+          priorCompany: target.properties?.prior_company || null,
+          priorRole: target.properties?.prior_role || null,
+          priorValidUntil: target.properties?.prior_valid_until || null,
+          sourceId: target.properties?.source_id || target.properties?.sourceId || target.properties?.sources?.[0]?.id || target.properties?.sources?.[0]?.source_id || target.properties?.sources?.[0]?.sourceId || null,
+          sourceTier: sourceTierFor(target.properties?.sources?.[0], null),
+          sources: (target.properties?.sources || []).slice(0, 3)
+        }));
+    }
+  }
+  return groups;
+}
+
+function collectDossierSources(entity, indexedCompany = null) {
+  const sourceMap = new Map();
+  const addRaw = (source, fallbackTitle = 'Cala relationship record') => {
+    if (!source) return;
+    const key = source.url || source.document || source.name || source.source || fallbackTitle;
+    if (sourceMap.has(key)) return;
+    sourceMap.set(key, {
+      id: source.id || null,
+      title: source.name || fallbackTitle,
+      publisher: source.source || source.publisher || 'Cala AI Knowledge Graph',
+      url: source.url || source.document || null,
+      date: source.published_time || source.date || null,
+      sourceRank: sourceTierFor(source, null)
+    });
+  };
+  for (const prop of Object.values(entity.properties || {})) {
+    for (const source of prop?.sources || []) addRaw(source, `${entity.name || 'Cala entity'} property record`);
+  }
+  for (const direction of ['outgoing', 'incoming']) {
+    for (const targets of Object.values(entity.relationships?.[direction] || {})) {
+      for (const target of targets || []) {
+        for (const source of target?.properties?.sources || []) addRaw(source, `${entity.name || 'Cala entity'} relationship record`);
+      }
+    }
+  }
+  const indexedSourceIds = [
+    ...(indexedCompany?.rounds || []).flatMap((round) => round.sourceIds || []),
+    ...(indexedCompany?.employeeCountSeries || []).map((item) => item.sourceId),
+    ...(indexedCompany?.financialMetrics || []).map((item) => item.sourceId),
+    ...(indexedCompany?.corporateEvents || []).map((item) => item.sourceId),
+    ...(indexedCompany?.peopleCoverage?.roles || []).map((item) => item.sourceId)
+  ].filter(Boolean);
+  for (const sourceId of indexedSourceIds) {
+    const source = SOURCES[sourceId];
+    if (source) addRaw({ ...source, id: sourceId, sourceRank: source.sourceRank }, source.title);
+  }
+  return [...sourceMap.values()].sort(
+    (a, b) => (SOURCE_TIER_PRIORITY[b.sourceRank] || 0) - (SOURCE_TIER_PRIORITY[a.sourceRank] || 0) || String(a.title).localeCompare(String(b.title))
+  );
 }
 
 function getCachedAnalysis(payload) {
@@ -493,7 +671,11 @@ function collectConnectedTargetsFromPerson(personEntity) {
         priorRole: target.properties?.prior_role || (distinctPrior ? fallbackPriorRole : null),
         priorValidUntil: target.properties?.prior_valid_until || (distinctPrior ? fallbackPriorUntil : null),
         isMatchedPersonBridge: true,
-        sourceRank: relName === 'IS_CONTROL_PERSON_OF' || relName === 'IS_BENEFICIARY_OWNER_OF' ? 'FILING' : 'PRIMARY'
+        sourceId: target.properties?.source_id || target.properties?.sourceId || target.properties?.sources?.[0]?.id || target.properties?.sources?.[0]?.source_id || target.properties?.sources?.[0]?.sourceId || null,
+        sourceRank: sourceTierFor(
+          target.properties?.sources?.[0],
+          relName === 'IS_CONTROL_PERSON_OF' || relName === 'IS_BENEFICIARY_OWNER_OF' ? 'FILING' : null
+        )
       };
       const prevList = rolesByCompanyId.get(tId) || [];
       prevList.push(roleEntry);
@@ -520,6 +702,7 @@ async function discoverStartupsFromCala(calaClient, { queryText = '', mode = 'ec
   const matchedCompanyNames = new Set();
   const matchedPersons = [];
   const matchedOrganizations = [];
+  const matchedEntitiesById = new Map();
 
   if (mode === 'ecosystem' || /slush/i.test(cleanQ)) {
     try {
@@ -555,7 +738,7 @@ async function discoverStartupsFromCala(calaClient, { queryText = '', mode = 'ec
 
     const entitySearchPromise =
       searchTerm.length >= 2 && !isGenericEventWord
-        ? calaClient.calaEntitySearch(searchTerm, 15, ['Company', 'Organization', 'Person'])
+        ? calaClient.calaEntitySearch(searchTerm, 12, ['Company', 'Organization', 'Person'])
         : Promise.resolve(null);
     const ksSearchPromise =
       cleanQ.length >= 3 && !isGenericEventWord && typeof calaClient.calaKnowledgeSearch === 'function'
@@ -587,6 +770,7 @@ async function discoverStartupsFromCala(calaClient, { queryText = '', mode = 'ec
       const bStrong = isStrongEntityNameMatch(searchTerm, b.name) || isStrongEntityNameMatch(cleanQ, b.name) ? 1 : 0;
       return bStrong - aStrong;
     });
+    for (const entity of allMatched) matchedEntitiesById.set(entity.id, entity);
 
     const companyOrgHits = allMatched.filter((e) => !e.entity_type || e.entity_type === 'Company' || e.entity_type === 'Organization');
     const personHits = allMatched.filter((e) => e.entity_type === 'Person');
@@ -606,10 +790,11 @@ async function discoverStartupsFromCala(calaClient, { queryText = '', mode = 'ec
         enrichedCount += preIng.enrichedCount;
       }
 
-      // Deep hydrate combined top 8 unique Company/Organization IDs across directHits + knowledgeAnswer.entities
-      const topCompanyOrgIds = companyOrgHits.slice(0, 8).map((e) => e.id);
+      // Hydrate the top six direct matches so search results become useful
+      // entity anchors without over-consuming the live Cala budget.
+      const topCompanyOrgIds = companyOrgHits.slice(0, 6).map((e) => e.id);
       const deep = await deepHydrateCalaEntities(calaClient, topCompanyOrgIds, {
-        maxEntities: 8,
+        maxEntities: 6,
         allowOrganizations: true,
         allowUnfundedLive: true,
         resolveEntityContext: (entityData) => ({
@@ -619,7 +804,10 @@ async function discoverStartupsFromCala(calaClient, { queryText = '', mode = 'ec
       });
       discoveredCount += deep.discoveredCount;
       enrichedCount += deep.enrichedCount;
-      for (const h of deep.hydratedEntities) hydratedById.set(h.id, h);
+      for (const h of deep.hydratedEntities) {
+        hydratedById.set(h.id, h);
+        matchedEntitiesById.set(h.id, h);
+      }
       for (const co of deep.companies) {
         if (isStrongEntityNameMatch(searchTerm, co.name) || isStrongEntityNameMatch(cleanQ, co.name)) {
           matchedCompanyNames.add(co.name);
@@ -685,6 +873,7 @@ async function discoverStartupsFromCala(calaClient, { queryText = '', mode = 'ec
         const personData = outcome.value?.entityRes?.data;
         if (!personData?.id) continue;
         hydratedById.set(personData.id, personData);
+        matchedEntitiesById.set(personData.id, personData);
         matchedPersons.push(personData.name);
 
         const { connectedTargets, rolesByCompanyId, investorNamesByCompanyId } = collectConnectedTargetsFromPerson(personData);
@@ -757,17 +946,363 @@ async function discoverStartupsFromCala(calaClient, { queryText = '', mode = 'ec
     matchedCompanyNames: [...matchedCompanyNames],
     matchedPersons: [...new Set(matchedPersons)],
     matchedOrganizations: [...new Set(matchedOrganizations)],
-    hydratedEntityCount: hydratedById.size
+    hydratedEntityCount: hydratedById.size,
+    entities: [...matchedEntitiesById.values()]
   };
 }
 
 export function createAppServer(options = {}) {
   const calaClient = options.calaClient || createCalaClient({ maxLiveCalls: options.maxLiveCalls ?? 250 });
   const registryClient = options.registryClient || createRegistryClient();
+  const liveEntitiesById = new Map();
   const cachedReg = registryClient.getCachedCompanies();
   if (cachedReg.length > 0) {
     ingestRegistryEntities(cachedReg);
   }
+
+  const rememberLiveEntities = (entities = []) => {
+    for (const entity of entities || []) {
+      if (entity?.id && entity?.name) liveEntitiesById.set(String(entity.id), entity);
+    }
+  };
+
+  const hydrateLiveEntity = async (entityId) => {
+    const id = String(entityId || '').trim();
+    if (!id) return null;
+    const cached = liveEntitiesById.get(id);
+    if (cached?.relationships) return cached;
+    const retrieved = await retrieveEntityWithIntrospection(calaClient, id);
+    const entity = retrieved?.entityRes?.data || null;
+    if (entity?.id) rememberLiveEntities([entity]);
+    return entity;
+  };
+
+  const resolveEntityReference = async (rawReference) => {
+    if (rawReference && typeof rawReference === 'object' && rawReference.id && rawReference.name) {
+      const hasGraphPayload = Boolean(rawReference.relationships && typeof rawReference.relationships === 'object');
+      if (hasGraphPayload) {
+        rememberLiveEntities([rawReference]);
+        return rawReference;
+      }
+      rawReference = rawReference.calaEntityId || rawReference.id;
+    }
+    const raw = String(rawReference || '').trim();
+    if (!raw) return null;
+    const separator = raw.indexOf(':');
+    const id = separator >= 0 ? raw.slice(separator + 1).trim() : raw;
+    if (!id) return null;
+
+    let entity = liveEntitiesById.get(id) || null;
+    if (!entity) {
+      const local = COMPANIES.find((company) => company.id === id || company.calaEntityId === id);
+      if (local) entity = localCompanyAsEntity(local);
+    }
+    if (!entity) {
+      try {
+        entity = await hydrateLiveEntity(id);
+      } catch {
+        entity = null;
+      }
+    }
+    if (!entity?.id || !entity?.name) return null;
+    rememberLiveEntities([entity]);
+    return entity;
+  };
+
+  const resolveEntityMapRequest = async (body = {}) => {
+    const rawReferences = [
+      ...(Array.isArray(body.activeEntityRefs) ? body.activeEntityRefs : []),
+      ...(typeof body.activeEntityRefs === 'string' ? [body.activeEntityRefs] : []),
+      ...(Array.isArray(body.entityRefs) ? body.entityRefs : []),
+      ...(typeof body.entityRefs === 'string' ? [body.entityRefs] : []),
+      ...(Array.isArray(body.refs) ? body.refs : []),
+      ...(typeof body.refs === 'string' ? [body.refs] : []),
+      ...(Array.isArray(body.entities) ? body.entities : []),
+      ...(typeof body.entities === 'string' ? [body.entities] : []),
+      ...(body.entities && !Array.isArray(body.entities) && typeof body.entities === 'object' ? [body.entities] : []),
+      ...(body.entity && typeof body.entity === 'object' ? [body.entity] : []),
+      ...(Array.isArray(body.relatedEntities) ? body.relatedEntities : []),
+      ...(Array.isArray(body.relatedEntityIds) ? body.relatedEntityIds : []),
+      ...(Array.isArray(body.compareEntityIds) ? body.compareEntityIds : []),
+      ...(body.entityId || body.calaEntityId ? [body.entityId || body.calaEntityId] : [])
+    ];
+    const entitiesById = new Map();
+    for (const reference of rawReferences) {
+      if (entitiesById.size >= 4) break;
+      const entity = await resolveEntityReference(reference);
+      if (entity?.id && entity?.name) entitiesById.set(String(entity.id), entity);
+    }
+
+    if (entitiesById.size === 0) {
+      const entityName = String(body.entityName || body.query || '').trim();
+      if (entityName) {
+        let entity = [...liveEntitiesById.values()].find((candidate) => isStrongEntityNameMatch(entityName, candidate.name)) || null;
+        if (!entity) {
+          const local = COMPANIES.find((company) => isStrongEntityNameMatch(entityName, company.name));
+          if (local) entity = localCompanyAsEntity(local);
+        }
+        if (!entity) {
+          try {
+            const search = await calaClient.calaEntitySearch(entityName, 12, ['Company', 'Organization', 'Person']);
+            const matched = pickBestCalaEntity(search.data?.entities || [], 'Company', entityName);
+            if (matched) entity = await hydrateLiveEntity(matched.id);
+          } catch {
+            entity = null;
+          }
+        }
+        if (entity?.id && entity?.name) entitiesById.set(String(entity.id), entity);
+      }
+    }
+
+    const entities = [...entitiesById.values()];
+    if (!entities.length) {
+      const err = new Error('Entity mode requires one to four searchable Cala entities.');
+      err.statusCode = 404;
+      throw err;
+    }
+    rememberLiveEntities(entities);
+    return { entities, anchor: entities[0], relatedEntities: entities.slice(1) };
+  };
+
+  const buildEntityDossier = (entity, activeEntities = []) => {
+    const entityType = entity.entity_type || entity.entityType || 'Entity';
+    if (entityType === 'Company' || entityType === 'Organization') {
+      ingestLiveCalaEntities([entity], {
+        allowOrganizations: true,
+        allowGeneralCompanies: true,
+        allowUnfundedLive: true
+      });
+    }
+    const indexedCompany = COMPANIES.find((company) => company.calaEntityId === entity.id || normalizeEntityCoreName(company.name) === normalizeEntityCoreName(entity.name)) || null;
+    const profile = summarizeLiveCalaEntity(entity);
+    const relationshipGroups = normalizeRawRelationshipGroups(entity);
+    const allRelations = [
+      ...Object.entries(relationshipGroups.outgoing).flatMap(([relation, values]) => values.map((value) => ({ ...value, relation, direction: 'outgoing' }))),
+      ...Object.entries(relationshipGroups.incoming).flatMap(([relation, values]) => values.map((value) => ({ ...value, relation, direction: 'incoming' })))
+    ];
+    const entityKey = (value = {}) => {
+      if (value.id) return `id:${String(value.id)}`;
+      const name = normalizeEntityCoreName(value.name || '');
+      return name ? `name:${String(value.entityType || value.entity_type || 'Entity')}:${name}` : null;
+    };
+    const sameEntity = (a, b) => {
+      const aKey = entityKey(a);
+      const bKey = entityKey(b);
+      return Boolean(aKey && bKey && aKey === bKey);
+    };
+    const bestSourceTier = (...tiers) => tiers
+      .filter(Boolean)
+      .sort((a, b) => (SOURCE_TIER_PRIORITY[b] || 0) - (SOURCE_TIER_PRIORITY[a] || 0))[0] || null;
+    const mergeSources = (...sourceLists) => {
+      const byKey = new Map();
+      for (const source of sourceLists.flat().filter(Boolean)) {
+        const key = source.id || source.url || source.document || source.name || source.source;
+        if (key && !byKey.has(key)) byKey.set(key, source);
+      }
+      return [...byKey.values()].slice(0, 6);
+    };
+    const activeById = new Map((activeEntities || []).filter((item) => item?.id).map((item) => [String(item.id), item]));
+    const activeByName = new Map((activeEntities || []).filter((item) => item?.name).map((item) => [normalizeEntityCoreName(item.name), item]));
+    const verifiedConnections = [];
+    const connectionKeys = new Set();
+    const addConnection = (connection) => {
+      const key = connection.connectionType === 'shared_bridge'
+        ? `shared:${connection.entityId}:${connection.bridge?.id || normalizeEntityCoreName(connection.bridge?.name)}`
+        : `direct:${connection.entityId}:${connection.relation}:${connection.direction}`;
+      if (connectionKeys.has(key)) return;
+      connectionKeys.add(key);
+      verifiedConnections.push(connection);
+    };
+
+    // Direct joins are retained for compatibility, but every one is a literal
+    // Cala relationship, never a comparison edge inferred by the client.
+    for (const relation of allRelations) {
+      const active = activeById.get(String(relation.id || '')) || activeByName.get(normalizeEntityCoreName(relation.name));
+      if (!active || sameEntity(active, entity)) continue;
+      addConnection({
+        connectionType: 'direct',
+        entityId: String(active.id),
+        entityName: active.name,
+        relation: relation.relation,
+        direction: relation.direction,
+        role: relation.role,
+        eventDate: relation.eventDate,
+        sourceId: relation.sourceId || null,
+        sourceTier: relation.sourceTier || null,
+        sources: relation.sources || [],
+        pathEntityIds: [String(entity.id), String(active.id)],
+        path: [
+          { id: String(entity.id), name: entity.name, entityType },
+          { id: String(active.id), name: active.name, entityType: active.entity_type || active.entityType || 'Entity' }
+        ]
+      });
+    }
+
+    // Shared bridge paths expose the two verified Cala edges which connect this
+    // dossier subject to another active map entity.  A path is not promoted to
+    // a direct centre edge, so disconnected entities remain disconnected.
+    const ownRelationsByTarget = new Map();
+    for (const relation of allRelations) {
+      const key = entityKey(relation);
+      if (!key || sameEntity(relation, entity)) continue;
+      const list = ownRelationsByTarget.get(key) || [];
+      list.push(relation);
+      ownRelationsByTarget.set(key, list);
+    }
+    for (const active of activeEntities || []) {
+      if (!active?.id || sameEntity(active, entity)) continue;
+      const activeGroups = normalizeRawRelationshipGroups(active);
+      const activeRelations = [
+        ...Object.entries(activeGroups.outgoing).flatMap(([relation, values]) => values.map((value) => ({ ...value, relation, direction: 'outgoing' }))),
+        ...Object.entries(activeGroups.incoming).flatMap(([relation, values]) => values.map((value) => ({ ...value, relation, direction: 'incoming' })))
+      ];
+      for (const activeRelation of activeRelations) {
+        const ownMatches = ownRelationsByTarget.get(entityKey(activeRelation));
+        if (!ownMatches?.length || sameEntity(activeRelation, active) || sameEntity(activeRelation, entity)) continue;
+        for (const ownRelation of ownMatches) {
+          const bridge = {
+            id: ownRelation.id || activeRelation.id || null,
+            name: ownRelation.name || activeRelation.name,
+            entityType: ownRelation.entityType || activeRelation.entityType || 'Entity'
+          };
+          addConnection({
+            connectionType: 'shared_bridge',
+            entityId: String(active.id),
+            entityName: active.name,
+            relation: `${ownRelation.relation} / ${activeRelation.relation}`,
+            direction: `${ownRelation.direction} / ${activeRelation.direction}`,
+            role: ownRelation.role || activeRelation.role || null,
+            eventDate: ownRelation.eventDate || activeRelation.eventDate || null,
+            sourceId: ownRelation.sourceId || activeRelation.sourceId || null,
+            sourceTier: bestSourceTier(ownRelation.sourceTier, activeRelation.sourceTier),
+            sources: mergeSources(ownRelation.sources || [], activeRelation.sources || []),
+            bridge,
+            pathEntityIds: [String(entity.id), String(bridge.id || bridge.name), String(active.id)],
+            path: [
+              { id: String(entity.id), name: entity.name, entityType },
+              bridge,
+              { id: String(active.id), name: active.name, entityType: active.entity_type || active.entityType || 'Entity' }
+            ],
+            relationships: [
+              { relation: ownRelation.relation, direction: ownRelation.direction },
+              { relation: activeRelation.relation, direction: activeRelation.direction }
+            ]
+          });
+        }
+      }
+    }
+    const investorRelations = allRelations.filter((relation) => relation.relation === 'INVESTED_IN');
+    const portfolio = relationshipGroups.outgoing.INVESTED_IN || [];
+    const peopleByKey = new Map();
+    const addPerson = (person) => {
+      if (!person?.name) return;
+      // The hydrated Cala person id is not always repeated in the indexed
+      // relationship coverage, so use the evidenced display identity to merge
+      // the two representations rather than emitting duplicate people rows.
+      const key = `${normalizeEntityCoreName(person.name)}:${person.relation || 'WORKS_AT'}`;
+      const previous = peopleByKey.get(key) || {};
+      const merged = { ...previous };
+      for (const [field, value] of Object.entries(person)) {
+        if (value !== null && value !== undefined && value !== '') merged[field] = value;
+      }
+      merged.sources = mergeSources(previous.sources || [], person.sources || []);
+      peopleByKey.set(key, merged);
+    };
+    for (const person of [...(profile.leadership || []), ...(profile.worksAt || [])]) {
+      addPerson({
+        id: person.id || null,
+        name: person.name,
+        relation: person.relation || 'WORKS_AT',
+        role: person.role || null,
+        validSince: person.validSince || null,
+        validUntil: person.validUntil || null,
+        // Only relationship-backed previous employers are retained here.
+        priorCompany: person.priorCompany || null,
+        priorRole: person.priorRole || null,
+        priorValidUntil: person.priorValidUntil || null,
+        sourceRank: person.sourceRank || null,
+        sourceId: person.sourceId || null,
+        sources: person.sources || []
+      });
+    }
+    for (const role of indexedCompany?.peopleCoverage?.roles || []) {
+      addPerson({
+        id: role.personId || null,
+        name: role.name,
+        relation: role.relation || 'WORKS_AT',
+        role: role.role || null,
+        validSince: role.validSince || role.startDate || null,
+        validUntil: role.validUntil || role.endDate || null,
+        // Engine ingestion derives this only from a Cala person/company edge;
+        // no title/name fallback is used by the dossier.
+        priorCompany: role.priorCompany || null,
+        priorRole: role.priorRole || null,
+        priorValidUntil: role.priorValidUntil || null,
+        sourceRank: role.sourceRank || null,
+        sourceId: role.sourceId || null,
+        sources: resolveSources(role.sourceId ? [role.sourceId] : [])
+      });
+    }
+    const people = [...peopleByKey.values()];
+    const employeeCountSeries = indexedCompany?.employeeCountSeries || [];
+    const financialMetrics = indexedCompany?.financialMetrics || [];
+    const corporateEvents = indexedCompany?.corporateEvents || profile.corporateEvents || [];
+    const rounds = indexedCompany
+      ? (indexedCompany.rounds || []).map((round) => ({
+          id: round.id,
+          type: round.type,
+          date: round.date || null,
+          amountEurM: round.amountEurM ?? null,
+          investorNames: round.investorNames || (round.investorIds || []).map((id) => indexedCompany.liveInvestorsMap?.[id] || PEER_INVESTORS[id] || id),
+          sources: resolveSources(round.sourceIds || [])
+        }))
+      : [...(profile.issuerRounds || []), ...(profile.raisedRounds || [])];
+    const gaps = [
+      !profile.description ? { field: 'Description', status: 'Not found in Cala' } : null,
+      !profile.address ? { field: 'Headquarters address', status: 'Not found in Cala' } : null,
+      !hasKnownNumericValue(indexedCompany?.employeeCount) && !employeeCountSeries.length && !profile.employeeCountRange
+        ? { field: 'Employee count', status: 'Not found in Cala' }
+        : null,
+      !rounds.length ? { field: 'Funding rounds', status: 'Not found in Cala' } : null,
+      !people.length ? { field: 'Leadership and people', status: 'Not found in Cala' } : null,
+      !allRelations.length ? { field: 'Verified relationships', status: 'Not found in Cala' } : null
+    ].filter(Boolean);
+
+    return {
+      ref: `${entityType}:${entity.id}`,
+      identity: {
+        id: entity.id,
+        calaEntityId: entity.id,
+        entityType,
+        name: entity.name,
+        legalName: profile.legalName,
+        description: profile.description || 'Not found in Cala',
+        website: profile.website || 'Not found in Cala',
+        address: profile.address || 'Not found in Cala',
+        operationalStatus: profile.operationalStatus || 'Not found in Cala',
+        ownershipStatus: profile.ownershipStatus || 'Not found in Cala',
+        foundingDate: profile.foundingDate || indexedCompany?.foundingDate || null,
+        employeeCount: hasKnownNumericValue(indexedCompany?.employeeCount) ? Number(indexedCompany.employeeCount) : null,
+        employeeCountRange: profile.employeeCountRange || null
+      },
+      people,
+      rounds,
+      investors: investorRelations,
+      portfolio,
+      relationships: relationshipGroups,
+      rawRelationships: {
+        outgoing: entity.relationships?.outgoing || {},
+        incoming: entity.relationships?.incoming || {}
+      },
+      employeeCountSeries,
+      financialMetrics,
+      corporateEvents,
+      sources: collectDossierSources(entity, indexedCompany),
+      gaps,
+      verifiedConnections,
+      profile
+    };
+  };
 
   return http.createServer(async (req, res) => {
     try {
@@ -816,6 +1351,44 @@ export function createAppServer(options = {}) {
 
       if (req.method === 'GET' && pathname === '/api/cala-budget') {
         sendJson(res, 200, calaClient.getBudgetStatus());
+        return;
+      }
+
+      if (req.method === 'GET' && pathname === '/api/entity-dossier') {
+        const ref = reqUrl.searchParams.get('ref') || '';
+        const entity = await resolveEntityReference(ref);
+        if (!entity) {
+          sendJson(res, 404, { error: 'Entity reference was not found in Cala.' });
+          return;
+        }
+        const mapReferenceValues = [
+          ...reqUrl.searchParams.getAll('activeRef'),
+          ...String(reqUrl.searchParams.get('mapEntityIds') || '').split(',').map((value) => value.trim()).filter(Boolean),
+          ...String(reqUrl.searchParams.get('activeEntityRefs') || '').split(',').map((value) => value.trim()).filter(Boolean)
+        ];
+        const mapEntitiesRaw = reqUrl.searchParams.get('mapEntities');
+        if (mapEntitiesRaw) {
+          try {
+            const parsed = JSON.parse(mapEntitiesRaw);
+            if (Array.isArray(parsed)) mapReferenceValues.push(...parsed);
+          } catch {
+            // A malformed optional map context should not prevent the dossier.
+          }
+        }
+        const activeEntities = [];
+        const seenActiveIds = new Set();
+        for (const rawReference of mapReferenceValues) {
+          const active = await resolveEntityReference(rawReference);
+          if (!active?.id || seenActiveIds.has(String(active.id))) continue;
+          seenActiveIds.add(String(active.id));
+          activeEntities.push(active);
+        }
+        if (!seenActiveIds.has(String(entity.id))) activeEntities.push(entity);
+        const dossier = buildEntityDossier(entity, activeEntities);
+        sendJson(res, 200, {
+          ...dossier,
+          calaBudget: calaClient.getBudgetStatus()
+        });
         return;
       }
 
@@ -895,12 +1468,72 @@ export function createAppServer(options = {}) {
 
       if (req.method === 'GET' && pathname === '/api/search') {
         const q = reqUrl.searchParams.get('q') || '';
-        sendJson(res, 200, searchEntities(q));
+        const localResults = searchEntities(q);
+        const shouldDiscoverLive = ['1', 'true', 'yes'].includes(String(reqUrl.searchParams.get('live') || '').toLowerCase());
+        if (!shouldDiscoverLive || !String(q).trim()) {
+          sendJson(res, 200, { ...localResults, entities: [] });
+          return;
+        }
+
+        let discovery = null;
+        try {
+          discovery = await discoverStartupsFromCala(calaClient, { queryText: q, mode: 'query' });
+          rememberLiveEntities(discovery.entities || []);
+          if (discovery.discoveredCount > 0 || discovery.enrichedCount > 0) analysisCache.clear();
+        } catch {
+          discovery = { entities: [], discoveredCount: 0, enrichedCount: 0, hydratedEntityCount: 0 };
+        }
+
+        const liveEntities = (discovery.entities || []).map(toLiveSearchEntity).filter(Boolean);
+        const knownCompanyIds = new Set((localResults.companies || []).map((company) => String(company.calaEntityId || company.id)));
+        const mergedCompanies = [
+          ...(localResults.companies || []),
+          ...liveEntities
+            .filter((entity) => ['Company', 'Organization'].includes(entity.entityType) && !knownCompanyIds.has(String(entity.calaEntityId)))
+            .map((entity) => ({
+              id: entity.id,
+              calaEntityId: entity.calaEntityId,
+              name: entity.name,
+              sector: entity.sector || 'Not found in Cala',
+              country: entity.country || 'Not found in Cala',
+              entityType: entity.entityType,
+              entityCategory: entity.entityCategory,
+              isLiveCalaDiscovered: true
+            }))
+        ];
+        sendJson(res, 200, {
+          ...localResults,
+          companies: mergedCompanies,
+          entities: liveEntities,
+          liveEntities,
+          live: {
+            requested: true,
+            discoveredCount: discovery.discoveredCount || 0,
+            enrichedCount: discovery.enrichedCount || 0,
+            hydratedEntityCount: discovery.hydratedEntityCount || 0
+          }
+        });
         return;
       }
 
       if (req.method === 'POST' && pathname === '/api/analyze') {
         const body = await readJsonBody(req);
+        if (body.mode === 'entity') {
+          const { entities, anchor, relatedEntities } = await resolveEntityMapRequest(body);
+          const result = runFullAnalysis(
+            { mode: 'entity', entities, entity: anchor, relatedEntities },
+            { hideMegaHubs: body.hideMegaHubs }
+          );
+          const { allRanked, ...publicPayload } = result;
+          sendJson(res, 200, {
+            ...publicPayload,
+            entityProfile: summarizeLiveCalaEntity(anchor),
+            focalEntities: entities.map(toLiveSearchEntity).filter(Boolean),
+            comparedEntities: relatedEntities.map(toLiveSearchEntity).filter(Boolean),
+            calaBudget: calaClient.getBudgetStatus()
+          });
+          return;
+        }
         const result = getCachedAnalysis(body);
         const { allRanked, ...publicPayload } = result;
         sendJson(res, 200, {
