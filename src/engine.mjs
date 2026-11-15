@@ -4389,7 +4389,8 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
               target.properties?.round_type?.value ||
               formatTimingContainerLabel(target.name);
             const title = [roundTypeVal, amount].filter(Boolean).join(' · ');
-            const { sourceRank } = registerEntityMapSource(assignedFocal, rawTarget);
+            const registeredSource = registerEntityMapSource(assignedFocal, rawTarget);
+            const hasOriginSource = Boolean(origin);
             recordTimingCatalyst(focalId, {
               id: String(target.id),
               kind: isFundingRoundEntity(target) ? 'funding_round' : 'corporate_event',
@@ -4397,7 +4398,11 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
               date: date ? String(date).slice(0, 10) : null,
               amount: amount || null,
               role: roundRole || null,
-              sourceRank,
+              sourceRank: registeredSource.sourceRank,
+              sourceId: hasOriginSource ? registeredSource.sourceId : null,
+              sourceIds: hasOriginSource ? registeredSource.sourceIds : [],
+              evidenceSources: hasOriginSource ? registeredSource.evidenceSources : [],
+              sourceCount: hasOriginSource ? registeredSource.sourceCount : 0,
               url: origin?.document || origin?.url || null
             });
             continue;
@@ -4736,8 +4741,9 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
     let promotedTiming = 0;
     for (const evt of timingEventsByEntity[focalId]) {
       if (promotedTiming >= 2) break;
-      const evtLabel = String(evt.label || '').trim();
-      if (!evtLabel || !evt.date) continue;
+      const evtLabel = String(evt.label || evt.title || evt.name || '').trim();
+      const eventSourceIds = [...new Set([...(Array.isArray(evt.sourceIds) ? evt.sourceIds : []), evt.sourceId].filter(Boolean))];
+      if (!evtLabel || !evt.date || eventSourceIds.length === 0) continue;
       const normKey = evtLabel.toLowerCase().slice(0, 36);
       if (seenTimingTitles.has(normKey)) continue;
       seenTimingTitles.add(normKey);
@@ -4756,7 +4762,10 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
           date: evt.date,
           topSourceRank: evt.sourceRank || 'PRESS',
           focalEntityIds: [focalId],
-          sourceIds: evt.sourceId ? [evt.sourceId] : []
+          sourceId: evt.sourceId || eventSourceIds[0],
+          sourceIds: eventSourceIds,
+          evidenceSources: evt.evidenceSources || [],
+          sourceCount: evt.sourceCount || eventSourceIds.length
         });
       }
       const evtEdgeId = `edge:${focalId}:TIMING:${evtNodeId}`;
@@ -4771,7 +4780,10 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
           contributionGroup: 'timing',
           isTimingCatalyst: true,
           topSourceRank: evt.sourceRank || 'PRESS',
-          sourceIds: evt.sourceId ? [evt.sourceId] : [],
+          sourceId: evt.sourceId || eventSourceIds[0],
+          sourceIds: eventSourceIds,
+          evidenceSources: evt.evidenceSources || [],
+          sourceCount: evt.sourceCount || eventSourceIds.length,
           focalEntityId: focalId,
           whyMatters: `Verified dated milestone (${evt.date}) indicating active operational or financing timing.`
         });

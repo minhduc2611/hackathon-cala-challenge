@@ -634,3 +634,61 @@ test('short prefix live search merges cached prominent entities above legal-shel
     removeLiveRecords(new Set(['cala-anthropic-test', 'noise-1', 'noise-2', 'noise-3']));
   }
 });
+
+test('buildEntityBridgeMap promotes title-only dated Timing events with registered citations', () => {
+  const focal = {
+    id: 'focal-timing-test',
+    name: 'Northstar',
+    entity_type: 'Company',
+    properties: {},
+    relationships: {
+      outgoing: {
+        PARTICIPATES_IN_FUNDING_ROUND: [
+          {
+            id: 'round-series-b-test',
+            name: 'Funding Round',
+            entity_type: 'FundingRound',
+            properties: {
+              role: 'ISSUER',
+              round_label: { value: 'Series B' },
+              event_date: '2026-04-12',
+              sources: [{
+                name: 'Northstar Series B announcement',
+                source: 'Northstar IR',
+                document: 'https://northstar.example/series-b',
+                published_time: '2026-04-12',
+                source_rank: 'PRIMARY'
+              }]
+            }
+          },
+          {
+            id: 'undated-timing-test',
+            name: 'Undated milestone',
+            entity_type: 'CorporateEvent',
+            properties: { sources: [{ name: 'Undated source', document: 'https://northstar.example/undated' }] }
+          },
+          {
+            id: 'uncited-timing-test',
+            name: 'Uncited milestone',
+            entity_type: 'CorporateEvent',
+            properties: { event_date: '2026-04-10' }
+          }
+        ]
+      },
+      incoming: {}
+    }
+  };
+
+  const bridgeMap = buildEntityBridgeMap([focal], [], { multiCenter: true });
+  const timingNode = bridgeMap.nodes.find((node) => node.kind === 'event' && node.fullTitle === 'Series B');
+  const timingEdge = bridgeMap.edges.find((edge) => edge.isTimingCatalyst && edge.to === timingNode?.id);
+  assert.ok(timingNode, 'A dated event with source evidence should become a visible timing node');
+  assert.ok(timingEdge, 'The visible timing node should have a map edge');
+  assert.ok(timingNode.sourceId);
+  assert.deepEqual(timingNode.sourceIds, [timingNode.sourceId]);
+  assert.equal(timingNode.evidenceSources[0].title, 'Northstar Series B announcement');
+  assert.deepEqual(timingEdge.sourceIds, timingNode.sourceIds);
+  assert.deepEqual(timingEdge.evidenceSources, timingNode.evidenceSources);
+  assert.ok(!bridgeMap.nodes.some((node) => node.fullTitle === 'Undated milestone'));
+  assert.ok(!bridgeMap.nodes.some((node) => node.fullTitle === 'Uncited milestone'));
+});

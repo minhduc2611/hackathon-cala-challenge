@@ -4,6 +4,18 @@
  * + 6-Tab Verified Cala Entity Dossier (zero synthetic VC shortlist flows)
  */
 
+import {
+  DEFAULT_LINK_DISTANCE_FACTOR,
+  countMapNodeOverlaps,
+  createMapPhysics,
+  expandMapLayout,
+  recomputeMapLayoutBounds,
+  resolveMapNodeCollisions,
+  setMapNodeHome,
+  setMapNodeVelocity,
+  stepMapPhysics
+} from "./mapPhysics.js";
+
 const THEME_STORAGE_KEY = "rte_theme_v2";
 const MAP_STATE_STORAGE_KEY = "rte_entity_map_v2";
 const MISSING = "Not found in Cala";
@@ -86,6 +98,7 @@ const state = {
   drafts: [],
   resolvingDrafts: new Map(),
   bridgeMap: null,
+  analysis: null,
   entityProfile: null,
   entityProfiles: {},
   focalEntities: [],
@@ -103,11 +116,25 @@ const state = {
   mapPanX: 0,
   mapPanY: 0,
   mapLayoutNodes: null,
+  mapPhysics: null,
+  mapPhysicsRafId: null,
+  mapPhysicsLastFrame: 0,
+  mapNodeDrag: null,
+  mapNodeClickSuppressUntil: 0,
   pointerPan: null,
   compareBoxOpen: false,
   legendPopoverOpen: false,
   decisionSummaryOpen: false,
-  actionableOnly: false,
+  decisionSelectedFactor: "access",
+  decisionAnalysisStarted: false,
+  decisionDetailView: false,
+  decisionPanelExpanded: false,
+  decisionAnalysisStatus: "idle",
+  decisionAnalysisResult: null,
+  decisionAnalysisError: "",
+  decisionAnalysisKey: null,
+  decisionAnalysisPendingKey: null,
+  decisionAnalysisRequestId: 0,
   filtersPanelOpen: false,
   suggestItems: [],
   suggestTimer: null,
@@ -450,10 +477,6 @@ function setWorkspaceMode(mode) {
     if (toggleBtn) toggleBtn.setAttribute("aria-expanded", "false");
     hideMapTooltip();
   }
-  const resetBtn = $("#aiSearchResetBtn");
-  if (resetBtn) {
-    resetBtn.hidden = !($("#aiSearchInput")?.value || "").trim() && !state.drafts.length;
-  }
 }
 
 // ---------- Tier, Contribution Group & Provenance Helpers ----------
@@ -691,7 +714,7 @@ function estimateNodeBoxMetrics(node, kind, isShared = false, customSize = 22) {
   const labelLen = shortStr.length;
 
   if (kind === "anchor") {
-    return { orbR: 28, bridgeSize: 56, halfW: 58, topPad: 34, bottomPad: 40 };
+    return { orbR: 28, bridgeSize: 56, halfW: 128, topPad: 36, bottomPad: 96 };
   }
   if (kind === "group_hub") {
     const clampedSize = Math.min(34, Math.max(22, Math.round(Number(customSize) || 26)));
@@ -699,9 +722,9 @@ function estimateNodeBoxMetrics(node, kind, isShared = false, customSize = 22) {
     return {
       orbR,
       bridgeSize: clampedSize,
-      halfW: 58,
+      halfW: 90,
       topPad: orbR + 6,
-      bottomPad: orbR + 40
+      bottomPad: orbR + 66
     };
   }
   const orbSize = Math.min(28, Math.max(14, Math.round(Number(customSize) || (isShared ? 26 : 20))));
@@ -709,9 +732,9 @@ function estimateNodeBoxMetrics(node, kind, isShared = false, customSize = 22) {
   return {
     orbR,
     bridgeSize: orbSize,
-    halfW: Math.min(86, Math.max(46, labelLen * 3.6 + 16)),
-    topPad: orbR + 8,
-    bottomPad: orbR + 34
+    halfW: Math.min(102, Math.max(52, labelLen * 3.6 + 22)),
+    topPad: orbR + 8 + (isShared ? 22 : 0),
+    bottomPad: orbR + 52
   };
 }
 
@@ -1306,9 +1329,7 @@ function layoutBridgeMapNodes(bridgeMap) {
   // MODE B: Free Multi-Entity Explorer Layout (2..20 focal hubs + centroid shared bridges + grouped satellite branches)
   const rawNonAnchors = allNodes.filter((n) => n.kind !== "anchor" && !n.isFocalEntity);
   const rawNodeById = new Map([...anchorNodes, ...rawNonAnchors].map((n) => [n.id, n]));
-  const activeEdges = state.actionableOnly
-    ? allEdges.filter((e) => deriveEdgeVerdict(e, rawNodeById.get(e.to)).key !== "context")
-    : allEdges;
+  const activeEdges = allEdges;
   const activeNodeIds = new Set(anchorNodes.map((a) => a.id));
   for (const e of activeEdges) {
     activeNodeIds.add(e.from);
@@ -1618,10 +1639,10 @@ function buildConstellationSvgDefs() {
   return `<defs>${markers}${grads}</defs>`;
 }
 
-function buildMapEdgeSvgMarkup(edge, posMap) {
+function buildMapEdgePathData(edge, posMap) {
   const p1 = posMap.get(edge.from);
   const p2 = posMap.get(edge.to);
-  if (!p1 || !p2) return "";
+  if (!p1 || !p2) return null;
 
   const dx = p2.x - p1.x;
   const dy = p2.y - p1.y;
@@ -1655,7 +1676,12 @@ function buildMapEdgeSvgMarkup(edge, posMap) {
   const cx = (sx + ex) / 2 + nx * curvature;
   const cy = (sy + ey) / 2 + ny * curvature;
 
-  const d = `M ${sx.toFixed(1)} ${sy.toFixed(1)} Q ${cx.toFixed(1)} ${cy.toFixed(1)} ${ex.toFixed(1)} ${ey.toFixed(1)}`;
+  return `M ${sx.toFixed(1)} ${sy.toFixed(1)} Q ${cx.toFixed(1)} ${cy.toFixed(1)} ${ex.toFixed(1)} ${ey.toFixed(1)}`;
+}
+
+function buildMapEdgeSvgMarkup(edge, posMap) {
+  const d = buildMapEdgePathData(edge, posMap);
+  if (!d) return "";
   const rank = String(edge.topSourceRank || "AGGREGATOR").toUpperCase();
   const isSolid = rank === "FILING" || rank === "PRIMARY";
   const cg = getNodeContributionGroup(edge);
@@ -1945,6 +1971,83 @@ function focusNodeOnMap(nodeId) {
   applyMapViewportTransform();
 }
 
+function stopMapPhysics() {
+  if (state.mapPhysicsRafId !== null) {
+    cancelAnimationFrame(state.mapPhysicsRafId);
+  }
+  for (const element of state.mapLayoutNodes?.nodeElements?.values?.() || []) {
+    element.classList.remove("is-physics-running");
+  }
+  state.mapPhysicsRafId = null;
+  state.mapPhysicsLastFrame = 0;
+  state.mapPhysics = null;
+  state.mapNodeDrag = null;
+}
+
+function stabilizeMapLayoutForPhysics(layout, physics) {
+  let overlapCount = countMapNodeOverlaps(layout, physics.collisionGap);
+  for (let pass = 0; overlapCount > 0 && pass < 8; pass += 1) {
+    resolveMapNodeCollisions(layout, physics);
+    overlapCount = countMapNodeOverlaps(layout, physics.collisionGap);
+  }
+  for (const [id, node] of physics.nodes) {
+    const pos = layout.posMap.get(id);
+    node.homeX = pos.x;
+    node.homeY = pos.y;
+  }
+  for (const link of physics.links) {
+    const from = layout.posMap.get(link.from);
+    const to = layout.posMap.get(link.to);
+    link.restLength = Math.max(24, Math.hypot(to.x - from.x, to.y - from.y));
+  }
+  layout.renderPositions = new Map(
+    [...layout.posMap.entries()].map(([id, pos]) => [id, { x: pos.x, y: pos.y }])
+  );
+  recomputeMapLayoutBounds(layout, 68);
+}
+
+function renderMapPhysicsVisuals(layout = state.mapLayoutNodes) {
+  if (!layout?.posMap) return;
+  for (const [id, pos] of layout.posMap) {
+    const element = layout.nodeElements?.get(id);
+    const origin = layout.renderPositions?.get(id);
+    if (!element || !origin) continue;
+    element.style.setProperty("--physics-dx", `${(pos.x - origin.x).toFixed(2)}px`);
+    element.style.setProperty("--physics-dy", `${(pos.y - origin.y).toFixed(2)}px`);
+  }
+  for (const edge of layout.displayEdges || []) {
+    const d = buildMapEdgePathData(edge, layout.posMap);
+    if (!d) continue;
+    for (const path of layout.edgePathElements?.get(edge.id) || []) path.setAttribute("d", d);
+  }
+}
+
+function scheduleMapPhysicsFrame() {
+  if (state.mapPhysicsRafId !== null || !state.mapPhysics || !state.mapLayoutNodes) return;
+  for (const element of state.mapLayoutNodes.nodeElements?.values?.() || []) {
+    element.classList.add("is-physics-running");
+  }
+  state.mapPhysicsRafId = requestAnimationFrame((now) => {
+    state.mapPhysicsRafId = null;
+    const layout = state.mapLayoutNodes;
+    const physics = state.mapPhysics;
+    if (!layout || !physics) return;
+    const elapsed = state.mapPhysicsLastFrame ? now - state.mapPhysicsLastFrame : 1000 / 60;
+    state.mapPhysicsLastFrame = now;
+    const stillMoving = stepMapPhysics(layout, physics, elapsed / (1000 / 60));
+    renderMapPhysicsVisuals(layout);
+    recomputeMapLayoutBounds(layout, 68);
+    if (stillMoving) {
+      scheduleMapPhysicsFrame();
+    } else {
+      state.mapPhysicsLastFrame = 0;
+      for (const element of layout.nodeElements?.values?.() || []) {
+        element.classList.remove("is-physics-running");
+      }
+    }
+  });
+}
+
 // ---------- Main Constellation Rendering ----------
 
 function renderConstellationMap(bridgeMapInput = undefined, options = {}) {
@@ -1955,13 +2058,30 @@ function renderConstellationMap(bridgeMapInput = undefined, options = {}) {
   if (!svgEl || !nodesLayer) return;
 
   if (!effMap || !asList(effMap.nodes).length) {
+    stopMapPhysics();
     svgEl.innerHTML = "";
     nodesLayer.innerHTML = "";
-    if (emptyEl) emptyEl.hidden = state.pinnedEntities.length === 0;
+    state.mapLayoutNodes = null;
+    const emptyMap = state.workspaceMode === "map" && state.pinnedEntities.length === 0;
+    if (emptyEl) {
+      emptyEl.hidden = state.workspaceMode !== "map";
+      $("#constellationEmptyKicker").textContent = emptyMap ? "Map ready" : "No verified Cala paths in view";
+      $("#constellationEmptyTitle").textContent = emptyMap ? "Your map is clear" : "Adjust filters or explore another entity";
+      $("#constellationEmptyDesc").textContent = emptyMap
+        ? "Search above or use + Add to put another entity on the map."
+        : "Only verified Cala relationships with evidence are drawn. Reset active filters or search a new entity above.";
+      const resetFiltersBtn = $("#emptyResetFiltersBtn");
+      if (resetFiltersBtn) resetFiltersBtn.hidden = emptyMap;
+    }
+    renderDecisionSummaryWidget();
     return;
   }
 
+  stopMapPhysics();
   const layout = layoutBridgeMapNodes(effMap);
+  expandMapLayout(layout, DEFAULT_LINK_DISTANCE_FACTOR);
+  state.mapPhysics = createMapPhysics(layout);
+  stabilizeMapLayoutForPhysics(layout, state.mapPhysics);
   state.mapLayoutNodes = layout;
 
   const displayNodes = layout.displayNodes || [];
@@ -1972,6 +2092,11 @@ function renderConstellationMap(bridgeMapInput = undefined, options = {}) {
 
   if (emptyEl) {
     emptyEl.hidden = edges.length > 0 || outerNodes.length > 0;
+    $("#constellationEmptyKicker").textContent = "No verified Cala paths in view";
+    $("#constellationEmptyTitle").textContent = "Adjust filters or explore another entity";
+    $("#constellationEmptyDesc").textContent = "Only verified Cala relationships with evidence are drawn. Reset active filters or search a new entity above.";
+    const resetFiltersBtn = $("#emptyResetFiltersBtn");
+    if (resetFiltersBtn) resetFiltersBtn.hidden = false;
   }
 
   const backBtnEl = $("#mapDrilldownBackBtn");
@@ -1989,48 +2114,29 @@ function renderConstellationMap(bridgeMapInput = undefined, options = {}) {
   const defsMarkup = buildConstellationSvgDefs();
   let guidesMarkup = "";
   if (layout.mode === "polar") {
-    const isLight = getActiveTheme() === "light";
     const isDrill = layout.treeMode === "drilldown";
-    const outerRadius = isDrill ? 468 : 362;
+    const spacing = layout.linkDistanceFactor || 1;
+    const outerRadius = (isDrill ? 468 : 362) * spacing;
     const orbitRadii = isDrill
       ? [
-          { r: 156, cls: "orbit-guide-ring" },
-          { r: 290, cls: "orbit-guide-ring is-dashed" },
-          { r: 428, cls: "orbit-guide-ring" }
+          { r: 156 * spacing, cls: "orbit-guide-ring" },
+          { r: 290 * spacing, cls: "orbit-guide-ring is-dashed" },
+          { r: 428 * spacing, cls: "orbit-guide-ring" }
         ]
       : [
-          { r: 158, cls: "orbit-guide-ring" },
-          { r: 304, cls: "orbit-guide-ring is-dashed" }
+          { r: 158 * spacing, cls: "orbit-guide-ring" },
+          { r: 304 * spacing, cls: "orbit-guide-ring is-dashed" }
         ];
 
-    const qArcs = (layout.sectorMetaForSvg || [])
-      .map((q) => {
-        const arcColor = getContributionColorHex(q.group);
-        const wedgeD = describeSvgSectorWedge(CONSTELLATION_CX, CONSTELLATION_CY, 56, outerRadius, q.slotStart + 2, q.slotEnd - 2);
-        const arcD = describeSvgArc(CONSTELLATION_CX, CONSTELLATION_CY, outerRadius - 4, q.minDeg, q.maxDeg);
-        const weightRatio = Math.max(0, Math.min(1, ((q.visualWeight || 0.6) - 0.6) / 1.05));
-        const isDimmedSector = isDrill && q.group !== layout.focusedGroupKey;
-        const haloOpacity = isDimmedSector ? 0.08 : ((isLight ? 0.22 : 0.28) + weightRatio * (isLight ? 0.36 : 0.48));
-        const arcOpacity = isDimmedSector ? 0.08 : (0.22 + weightRatio * 0.34);
-        return `
-          <path class="sector-halo-wedge ${q.isStrongest && !isDimmedSector ? "is-strongest" : ""}" d="${wedgeD}" fill="url(#halo-grad-${q.group})" style="fill-opacity:${haloOpacity.toFixed(2)};" />
-          <path class="sector-guide-arc ${q.isStrongest && !isDimmedSector ? "is-strongest" : ""}" d="${arcD}" stroke="${arcColor}" style="stroke-opacity:${arcOpacity.toFixed(2)};" />
-        `;
-      })
-      .join("");
-
     guidesMarkup = `
-      ${qArcs}
       ${orbitRadii.map((rg) => `<circle class="${rg.cls}" cx="${CONSTELLATION_CX}" cy="${CONSTELLATION_CY}" r="${rg.r}" />`).join("")}
     `;
   } else {
-    const sharedCount = outerNodes.filter((n) => n.isSharedOverlap).length;
-    const ringR = Math.round(layout.anchorRingRadius || 360);
+    const spacing = layout.linkDistanceFactor || 1;
+    const ringR = Math.round((layout.anchorRingRadius || 360) * spacing);
     if (anchorNodes.length === 2) {
       guidesMarkup = `
-        <ellipse class="compare-overlap-lens" cx="${CONSTELLATION_CX}" cy="${CONSTELLATION_CY}" rx="195" ry="155" />
-        <text class="compare-overlap-label" x="${CONSTELLATION_CX}" y="${CONSTELLATION_CY - 168}" text-anchor="middle">SHARED BRIDGES · ${sharedCount}</text>
-        <circle class="orbit-guide-ring is-dashed" cx="${CONSTELLATION_CX}" cy="${CONSTELLATION_CY}" r="435" />
+        <circle class="orbit-guide-ring is-dashed" cx="${CONSTELLATION_CX}" cy="${CONSTELLATION_CY}" r="${435 * spacing}" />
       `;
     } else {
       const innerR = Math.round(ringR * 0.48);
@@ -2059,7 +2165,7 @@ function renderConstellationMap(bridgeMapInput = undefined, options = {}) {
     nodesHtml += `
       <button
         type="button"
-        class="map-node node-anchor-orb ${isMultiHub ? "is-compare-anchor" : ""} ${isSel ? "is-selected" : ""}"
+        class="map-node is-physics-enabled node-anchor-orb ${isMultiHub ? "is-compare-anchor" : ""} ${isSel ? "is-selected" : ""}"
         data-node-kind="anchor"
         data-node-id="${escapeHtml(aNode.id)}"
         aria-label="${escapeHtml(fullLabel)}"
@@ -2092,7 +2198,7 @@ function renderConstellationMap(bridgeMapInput = undefined, options = {}) {
     nodesHtml += `
       <button
         type="button"
-        class="map-node node-group-hub ${hub.isExpandedHub ? "is-expanded-hub is-selected" : ""} ${hub.isGroupDimmed ? "is-group-dimmed" : ""} ${hub.isStrongest ? "is-strongest" : ""}"
+        class="map-node is-physics-enabled node-group-hub ${hub.isExpandedHub ? "is-expanded-hub is-selected" : ""} ${hub.isGroupDimmed ? "is-group-dimmed" : ""} ${hub.isStrongest ? "is-strongest" : ""}"
         data-node-kind="group_hub"
         data-node-id="${escapeHtml(hub.id)}"
         data-group-key="${escapeHtml(cg)}"
@@ -2137,13 +2243,14 @@ function renderConstellationMap(bridgeMapInput = undefined, options = {}) {
     nodesHtml += `
       <button
         type="button"
-        class="map-node node-startup-orb ${tierClass} ${ent.isSharedOverlap ? "is-shared-overlap" : ""} ${isSel ? "is-selected" : ""}"
+        class="map-node is-physics-enabled node-startup-orb ${tierClass} ${ent.isSharedOverlap ? "is-shared-overlap" : ""} ${isSel ? "is-selected" : ""}"
         data-node-kind="entity"
         data-node-id="${escapeHtml(ent.id)}"
         data-contribution-group="${escapeHtml(cg)}"
-        aria-label="${escapeHtml(readable)}"
+        aria-label="${escapeHtml(ent.isSharedOverlap ? `Shared bridge: ${readable}` : readable)}"
         style="left:${p.x.toFixed(1)}px; top:${p.y.toFixed(1)}px; --orb-color:${colHex}; --orb-glow:${colGlow}; --orb-core-edge:${colEdge}; --entity-orb-size:${orbSize}px;"
       >
+        ${ent.isSharedOverlap ? `<span class="orb-shared-bridge-badge" aria-hidden="true">↔ Shared</span>` : ""}
         <span class="orb-core-wrap">
           <span class="orb-halo-ring" aria-hidden="true"></span>
           <span class="orb-core-dot" aria-hidden="true"></span>
@@ -2159,6 +2266,16 @@ function renderConstellationMap(bridgeMapInput = undefined, options = {}) {
   }
 
   nodesLayer.innerHTML = nodesHtml;
+  layout.nodeElements = new Map(
+    [...nodesLayer.querySelectorAll(".map-node[data-node-id]")].map((element) => [element.dataset.nodeId, element])
+  );
+  layout.edgePathElements = new Map();
+  for (const path of svgEl.querySelectorAll("[data-edge-id]")) {
+    const edgeId = path.dataset.edgeId;
+    if (!layout.edgePathElements.has(edgeId)) layout.edgePathElements.set(edgeId, []);
+    layout.edgePathElements.get(edgeId).push(path);
+  }
+  renderMapPhysicsVisuals(layout);
   applyPathLaserIsolation();
   renderDecisionSummaryWidget();
   if (options.fit !== false) {
@@ -2374,8 +2491,6 @@ function buildFourFactorDecisionSummary(bridgeMap) {
   const nodes = asList(bridgeMap?.nodes);
   const edges = asList(bridgeMap?.edges);
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
-  const timingMap = bridgeMap?.timingEventsByEntity || {};
-  const timingEventCount = Object.values(timingMap).reduce((sum, arr) => sum + asList(arr).length, 0);
 
   const byGroup = { access: [], lineage: [], timing: [], caution: [] };
   for (const e of edges) {
@@ -2403,13 +2518,16 @@ function buildFourFactorDecisionSummary(bridgeMap) {
   const lineageEdges = byGroup.lineage;
   const lineageShared = lineageEdges.filter((e) => e.isSharedBridge).length;
   const timingEdges = byGroup.timing;
-  const totalTiming = Math.max(timingEdges.length, timingEventCount);
-  const latestTimingDate = [...timingEdges.map((e) => e.date), ...Object.values(timingMap).flat().map((x) => x?.date)]
+  const totalTiming = timingEdges.length;
+  const latestTimingDate = timingEdges.map((e) => e.date)
     .filter(Boolean)
     .sort()
     .pop();
   const cautionEdges = byGroup.caution;
-
+  const idsFrom = (items) => [...new Set(asList(items).flatMap((item) => [
+    ...asList(item?.sourceIds),
+    item?.sourceId
+  ]).filter(Boolean))].slice(0, 4);
   const factors = [
     {
       group: "access",
@@ -2421,7 +2539,11 @@ function buildFourFactorDecisionSummary(bridgeMap) {
         ? `Shared syndicate bridges (${topNames(accessEdges).join(", ") || accessShared}) unlock warm intros.`
         : accessEdges.length > 0
         ? `Direct backers/partners (${topNames(accessEdges).join(", ") || accessEdges.length}) aid outreach.`
-        : "No direct investor or partner paths verified in Cala."
+        : "No direct investor or partner paths verified in Cala.",
+      investmentImpact: accessEdges.length > 0
+        ? "Improves warm access; it does not establish company quality."
+        : "No mapped access edge to change the decision.",
+      sourceIds: idsFrom(accessEdges)
     },
     {
       group: "lineage",
@@ -2433,7 +2555,11 @@ function buildFourFactorDecisionSummary(bridgeMap) {
         ? `Shared founder/exec ties (${topNames(lineageEdges).join(", ") || lineageShared}) give direct reference edge.`
         : lineageEdges.length > 0
         ? `Verified leadership (${topNames(lineageEdges).join(", ") || lineageEdges.length}) supports team diligence.`
-        : "No founder or executive lineage links indexed in Cala."
+        : "No founder or executive lineage links indexed in Cala.",
+      investmentImpact: lineageEdges.length > 0
+        ? "Supports team diligence and references; execution still needs proof."
+        : "Team conviction remains open on this map.",
+      sourceIds: idsFrom(lineageEdges)
     },
     {
       group: "timing",
@@ -2443,7 +2569,11 @@ function buildFourFactorDecisionSummary(bridgeMap) {
       effectClass: totalTiming > 0 ? "is-beneficial" : "is-neutral",
       line: totalTiming > 0
         ? `${totalTiming} dated milestones${latestTimingDate ? ` (latest ${latestTimingDate})` : ""} show active momentum.`
-        : "No dated funding rounds or milestones verified in Cala."
+        : "No dated funding rounds or milestones verified in Cala.",
+      investmentImpact: totalTiming > 0
+        ? "Adds a catalyst to diligence; confirm it is current before advancing."
+        : "No mapped catalyst to change timing conviction.",
+      sourceIds: idsFrom(timingEdges)
     },
     {
       group: "caution",
@@ -2453,7 +2583,11 @@ function buildFourFactorDecisionSummary(bridgeMap) {
       effectClass: cautionEdges.length > 0 ? "is-caution" : "is-beneficial",
       line: cautionEdges.length > 0
         ? `${topNames(cautionEdges).join(", ") || `${cautionEdges.length} risk signal(s)`} - check competitive/IP conflict.`
-        : "No direct competitor or conflict flags surfaced in Cala."
+        : "No direct competitor or conflict flags surfaced in Cala.",
+      investmentImpact: cautionEdges.length > 0
+        ? "Raises diligence risk; investigate before advancing."
+        : "No mapped conflict surfaced; this does not rule out risk.",
+      sourceIds: idsFrom(cautionEdges)
     }
   ];
 
@@ -2466,7 +2600,14 @@ function buildFourFactorDecisionSummary(bridgeMap) {
     ? { label: "Beneficial Signals", cls: "is-beneficial" }
     : { label: "Limited Coverage", cls: "is-neutral" };
 
-  return { overall, factors };
+  const investmentEffect = overall.cls === "is-mixed"
+    ? "Advance only with targeted diligence: actionable signals coexist with risks."
+    : overall.cls === "is-caution"
+    ? "Resolve the mapped risk before advancing the investment decision."
+    : overall.cls === "is-beneficial"
+    ? "Use the signals to guide outreach; they do not establish investment merit."
+    : "The map lacks enough evidence to shift the investment decision.";
+  return { overall, factors, investmentEffect };
 }
 
 function renderDecisionSummaryWidget() {
@@ -2475,20 +2616,18 @@ function renderDecisionSummaryWidget() {
   const pillLabel = $("#decisionPillLabel");
   const overallBadge = $("#decisionOverallBadge");
   const factorList = $("#decisionFactorList");
-  const actionableBtn = $("#decisionActionableToggleBtn");
   const pop = $("#decisionSummaryPopover");
   if (!pillBtn || !factorList) return;
-
-  if (actionableBtn) {
-    actionableBtn.setAttribute("aria-pressed", String(Boolean(state.actionableOnly)));
-    actionableBtn.classList.toggle("is-active", Boolean(state.actionableOnly));
-  }
 
   const bridgeMap = state.bridgeMap;
   if (!bridgeMap || !asList(bridgeMap.nodes).length) {
     pillBtn.disabled = true;
     if (pillLabel) pillLabel.textContent = "Decision · 4 Factors";
     if (pop) pop.hidden = true;
+    $("#decisionAiOutput")?.setAttribute("hidden", "");
+    $("#decisionAiPrompt")?.removeAttribute("hidden");
+    pop?.classList.remove("has-ai-results");
+    setDecisionPanelExpanded(false);
     return;
   }
   pillBtn.disabled = false;
@@ -2504,11 +2643,29 @@ function renderDecisionSummaryWidget() {
     overallBadge.className = `decision-verdict-badge ${summary.overall.cls}`;
     overallBadge.textContent = summary.overall.label;
   }
+  if (!summary.factors.some((factor) => factor.group === state.decisionSelectedFactor)) {
+    state.decisionSelectedFactor = summary.factors[0]?.group || "access";
+  }
+  const selectedFactor = summary.factors.find((factor) => factor.group === state.decisionSelectedFactor);
+  const title = $(".decision-pop-title");
+  if (title) title.textContent = state.decisionDetailView ? `${selectedFactor?.label || "Factor"} analysis` : "4-Factor Decision";
+  factorList.hidden = state.decisionDetailView;
+  $("#decisionAiPrompt")?.toggleAttribute("hidden", state.decisionDetailView);
+  pop?.classList.toggle("is-expanded", state.decisionPanelExpanded);
 
   factorList.innerHTML = summary.factors
     .map(
       (f) => `
-      <button type="button" class="decision-factor-row" data-factor-group="${escapeHtml(f.group)}">
+      <button
+        type="button"
+        class="decision-factor-row ${state.decisionSelectedFactor === f.group ? "is-selected" : ""}"
+        role="tab"
+        id="decisionFactorTab-${escapeHtml(f.group)}"
+        aria-controls="decisionAiOutput"
+        aria-selected="${state.decisionSelectedFactor === f.group}"
+        tabindex="${state.decisionSelectedFactor === f.group ? "0" : "-1"}"
+        data-factor-group="${escapeHtml(f.group)}"
+      >
         <div class="decision-factor-top">
           <span class="decision-factor-name">
             <span class="fam-dot" style="background:${getContributionColorHex(f.group)}"></span>
@@ -2521,56 +2678,432 @@ function renderDecisionSummaryWidget() {
     `
     )
     .join("");
+  renderDecisionFactorAnalysis(summary);
 }
 
-async function runFourFactorClaudeInsight() {
-  const outEl = $("#decisionAiOutput");
-  const btnEl = $("#decisionRunClaudeBtn");
-  if (!outEl || !state.bridgeMap) return;
+function setDecisionPanelExpanded(expanded) {
+  const pop = $("#decisionSummaryPopover");
+  const hud = $("#mapDecisionHud");
+  const toggle = $("#decisionSummaryToggleBtn");
+  if (!pop) return;
+  state.decisionPanelExpanded = Boolean(expanded);
+  pop.classList.toggle("is-expanded", state.decisionPanelExpanded);
+  pop.setAttribute("aria-modal", String(state.decisionPanelExpanded));
+  document.body.classList.toggle("has-expanded-decision", state.decisionPanelExpanded);
+  if (state.decisionPanelExpanded) {
+    document.body.append(pop);
+  } else if (hud && pop.parentElement !== hud) {
+    hud.insertBefore(pop, toggle || null);
+  }
+}
 
-  const summary = buildFourFactorDecisionSummary(state.bridgeMap);
-  const focalNames = asList(state.bridgeMap.focalEntities).map((f) => f.name).filter(Boolean);
+function fourFactorClaudeCacheKey(summary, bridgeMap) {
+  const focalNames = asList(bridgeMap?.focalEntities).map((f) => f.name).filter(Boolean);
   const title = focalNames.length ? `${focalNames.join(" + ")} · 4-Factor Investment Decision` : "4-Factor Investment Decision";
-  const srcObj = state.bridgeMap.sources || {};
-  const allSources = Object.values(srcObj)
-    .filter((s) => s && s.id)
-    .slice(0, 8);
-  const topIds = allSources.slice(0, 3).map((s) => s.id);
-  const cacheKey = `4factor:${title}:${state.actionableOnly}:${summary.factors.map((f) => `${f.group}:${f.count}`).join(",")}`;
+  const cacheKey = `4factor:${title}:${JSON.stringify(summary.factors.map((factor) => ({
+    group: factor.group,
+    count: factor.count,
+    effect: factor.effect,
+    line: factor.line,
+    investmentImpact: factor.investmentImpact,
+    sourceIds: factor.sourceIds,
+    records: getDecisionFactorEvidence(bridgeMap, factor).records.slice(0, 6)
+  })))}`;
+  return { title, cacheKey };
+}
 
-  const renderResult = (res) => {
-    const srcById = new Map(allSources.map((s) => [s.id, s]));
-    const modeLabel = res.controlPlaneMode === "anthropic-connection-analyst" ? "Claude AI · Grounded" : "Deterministic Cala Brief";
-    const bullets = asList(res.insights)
-      .map((b) => {
-        const cites = asList(b.sourceIds)
-          .map((id) => srcById.get(id))
-          .filter(Boolean)
-          .map((s) => `<span class="ai-cite-pill">${escapeHtml(s.publisher || s.title || s.id)}</span>`)
-          .join("");
-        return `<li>${escapeHtml(b.text)} ${cites}</li>`;
-      })
-      .join("");
-    outEl.hidden = false;
-    outEl.innerHTML = `
-      <div class="decision-ai-card">
-        <div class="decision-ai-head"><span>${escapeHtml(modeLabel)}</span></div>
-        <p class="decision-ai-summary">${escapeHtml(res.summary || "")}</p>
-        ${bullets ? `<ul class="decision-ai-bullets">${bullets}</ul>` : ""}
-        ${res.question ? `<p class="decision-ai-q"><strong>Next Check:</strong> ${escapeHtml(res.question)}</p>` : ""}
-      </div>
-    `;
+function getDecisionFactorEvidence(bridgeMap, factor) {
+  const nodes = new Map(asList(bridgeMap?.nodes).map((node) => [node.id, node]));
+  const isFocal = (id) => Boolean(nodes.get(id)?.isFocalEntity || nodes.get(id)?.kind === "anchor");
+  const sourceList = state.analysis?.sources || bridgeMap?.sources || {};
+  const sources = Array.isArray(sourceList) ? sourceList : Object.values(sourceList);
+  const sourceIdOf = (source) => source?.id || source?.sourceId || source?.source_id || null;
+  const sourceById = new Map(sources.filter(sourceIdOf).map((source) => {
+    const id = String(sourceIdOf(source));
+    return [id, { ...source, id }];
+  }));
+  const readSourceIds = (item) => [...new Set([
+    ...asList(item?.sourceIds),
+    item?.sourceId,
+    ...asList(item?.evidenceSources).map(sourceIdOf)
+  ].filter(Boolean))];
+  const edges = asList(bridgeMap?.edges)
+    .filter((edge) => !edge.id?.startsWith("tree-spoke-") && deriveContributionGroupFrontend(edge) === factor.group);
+  const records = edges.map((edge) => {
+    const fromNode = nodes.get(edge.from);
+    const toNode = nodes.get(edge.to);
+    const fromName = cleanText(fromNode?.label || fromNode?.name || edge.from);
+    const toName = cleanText(toNode?.label || toNode?.name || edge.to);
+    const pathNames = isFocal(edge.from) ? `${fromName} → ${toName}`
+      : isFocal(edge.to) ? `${toName} → ${fromName}`
+      : `${fromName} ↔ ${toName}`;
+    const relation = cleanText(edge.label || edge.relation || edge.relationType || edge.bridgeFamily || "Verified Cala path");
+    const sourceIds = readSourceIds(edge);
+    for (const source of asList(edge.evidenceSources)) {
+      const id = sourceIdOf(source);
+      if (id && !sourceById.has(String(id))) sourceById.set(String(id), { ...source, id: String(id) });
+    }
+    return {
+      type: cleanText(edge.relationType || edge.relation || edge.bridgeFamily || relation),
+      path: pathNames,
+      relation,
+      detail: cleanText(edge.detail || edge.whyMatters || edge.description),
+      date: cleanText(edge.date || edge.asOfDate),
+      sourceIds
+    };
+  });
+
+  const sourceIds = [...new Set([
+    ...factor.sourceIds,
+    ...records.flatMap((record) => record.sourceIds)
+  ])];
+  const entityNames = new Set(records.flatMap((record) => record.path.split(/\s(?:→|↔)\s/)).filter(Boolean));
+  const buckets = new Map();
+  for (const record of records) {
+    const label = record.type.replace(/_/g, " ").replace(/\s+/g, " ").trim() || "Mapped path";
+    buckets.set(label, (buckets.get(label) || 0) + 1);
+  }
+  const breakdown = [...buckets.entries()]
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+    .slice(0, 4);
+  return {
+    records,
+    sources: sourceIds.map((id) => sourceById.get(id)).filter(Boolean),
+    sourceIds,
+    entityCount: entityNames.size,
+    breakdown
   };
+}
 
-  if (state.aiInsightCache.has(cacheKey)) {
-    renderResult(state.aiInsightCache.get(cacheKey));
+function renderDecisionFactorAnalysis(summary = buildFourFactorDecisionSummary(state.bridgeMap)) {
+  const outEl = $("#decisionAiOutput");
+  const promptEl = $("#decisionAiPrompt");
+  const pop = $("#decisionSummaryPopover");
+  if (!outEl || !summary) return;
+  const factor = summary.factors.find((item) => item.group === state.decisionSelectedFactor);
+  if (!factor || !state.decisionDetailView) {
+    outEl.hidden = true;
+    if (promptEl) promptEl.hidden = false;
+    pop?.classList.remove("has-ai-results");
     return;
   }
 
   outEl.hidden = false;
-  outEl.innerHTML = `<div class="decision-ai-loading">Analyzing 4 decision factors with Claude AI...</div>`;
-  if (btnEl) btnEl.disabled = true;
+  outEl.setAttribute("aria-live", "polite");
+  if (promptEl) promptEl.hidden = true;
+  pop?.classList.add("has-ai-results");
 
+  if (state.decisionAnalysisStatus === "loading") {
+    outEl.removeAttribute("aria-labelledby");
+    outEl.setAttribute("aria-label", `${factor.label} analysis is loading`);
+    outEl.innerHTML = `
+      <div class="decision-ai-navigation">
+        <button type="button" class="decision-ai-back" data-decision-back="true">← All factors</button>
+        <button type="button" class="decision-ai-expand" data-decision-expand="true" aria-pressed="${state.decisionPanelExpanded}">${state.decisionPanelExpanded ? "Return to map" : "Expand"}</button>
+      </div>
+      <div class="decision-ai-card decision-ai-loading-card">
+        <div class="decision-ai-head">
+          <span>CLAUDE AI · ANALYZING</span>
+          <span class="decision-ai-step">${summary.factors.findIndex((item) => item.group === factor.group) + 1} / 4</span>
+        </div>
+        <div class="decision-ai-loading-state" role="status" aria-live="polite">
+          <span class="decision-ai-loading-indicator" aria-hidden="true"></span>
+          <strong>Analyzing the ${escapeHtml(factor.label.toLowerCase())} network signal</strong>
+          <span>Assessing its effect on the investment decision…</span>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  outEl.removeAttribute("aria-label");
+  outEl.setAttribute("aria-labelledby", "decisionAiSelectedHeading");
+  const res = state.decisionAnalysisResult;
+  const factorSummaries = new Map(asList(res?.factorSummaries).map((item) => [item.group, item]));
+  const factorAnalyses = new Map(asList(res?.factorAnalyses).map((item) => [item.group, item]));
+  const factorInsight = factorSummaries.get(factor.group);
+  const factorAnalysis = factorAnalyses.get(factor.group);
+  const claudeAnalyzed = state.decisionAnalysisStatus === "ready" && res?.controlPlaneMode === "anthropic-connection-analyst";
+  const candidateEffect = cleanText(factorAnalysis?.decisionEffect?.text || factorInsight?.text);
+  const mapEffect = cleanText(factorInsight?.text || factor.impact || factor.line || factor.investmentImpact);
+  const effectSource = factorAnalysis?.decisionEffectSource;
+  const heuristicClaudeEffect = Boolean(candidateEffect && candidateEffect !== mapEffect && candidateEffect !== cleanText(factor.investmentImpact));
+  const hasClaudeFactorEffect = claudeAnalyzed && effectSource !== "map-fallback" && effectSource !== "fallback" &&
+    (effectSource === "anthropic" || (!effectSource && heuristicClaudeEffect));
+  const decisionImpact = hasClaudeFactorEffect ? candidateEffect : mapEffect;
+  const showDecisionEffect = state.decisionAnalysisStatus === "ready" && Boolean(decisionImpact);
+  const sourceIdsForFactor = new Set(factor.sourceIds);
+  const factorInsights = asList(res?.insights).filter((item) =>
+    asList(item.sourceIds).some((id) => sourceIdsForFactor.has(id))
+  );
+  const evidenceData = getDecisionFactorEvidence(state.bridgeMap, factor);
+  const transmittedFactor = asList(res?.analysisInput?.decisionFactors).find((item) => item.group === factor.group);
+  const submittedRecords = transmittedFactor?.records || evidenceData.records.slice(0, 6);
+  const submittedSourceIds = transmittedFactor?.sourceIds || [...new Set([
+    ...factor.sourceIds,
+    ...submittedRecords.flatMap((record) => record.sourceIds || [])
+  ])];
+  const sourceObjects = [
+    ...(Array.isArray(state.analysis?.sources) ? state.analysis.sources : Object.values(state.analysis?.sources || {})),
+    ...(Array.isArray(state.bridgeMap?.sources) ? state.bridgeMap.sources : Object.values(state.bridgeMap?.sources || {})),
+    ...evidenceData.sources,
+    ...asList(res?.analysisInput?.sources)
+  ];
+  const sourceById = new Map(sourceObjects.map((source) => {
+    const id = source?.id || source?.sourceId || source?.source_id;
+    return id ? [String(id), { ...source, id: String(id) }] : null;
+  }).filter(Boolean));
+  const renderCitations = (sourceIds) => asList(sourceIds)
+    .map((id) => {
+      const source = sourceById.get(String(id));
+      // Titles distinguish the actual evidence records; the publisher is often
+      // just the same generic "Cala" label for every citation.
+      const label = source?.title || source?.publisher || (source ? source.id : `Cala source ${id}`);
+      return `<span class="ai-cite-pill">${escapeHtml(label)}</span>`;
+    })
+    .join("");
+  const submittedBuckets = new Map();
+  for (const record of submittedRecords) {
+    const label = cleanText(record.type).replace(/_/g, " ") || "Mapped path";
+    submittedBuckets.set(label, (submittedBuckets.get(label) || 0) + 1);
+  }
+  const submittedBreakdown = [...submittedBuckets.entries()].map(([label, count]) => ({ label, count }));
+  const signalMax = Math.max(1, ...submittedBreakdown.map((item) => item.count));
+  const signalBars = submittedBreakdown.length
+    ? submittedBreakdown.map((item) => `
+      <div class="decision-ai-bar-row">
+        <span title="${escapeHtml(item.label)}">${escapeHtml(item.label)}</span>
+        <div class="decision-ai-bar-track"><i style="width:${Math.max(8, Math.round((item.count / signalMax) * 100))}%"></i></div>
+        <b>${item.count}</b>
+      </div>
+    `).join("")
+    : `<div class="decision-ai-no-chart">No categorized Cala records for this factor.</div>`;
+  const sourceCards = submittedSourceIds.map((id) => sourceById.get(String(id)) || { id, title: `Cala source ${id}` }).map((source) => {
+    const title = cleanText(source.title || source.publisher || source.id);
+    const publisher = cleanText(source.publisher || source.source || "");
+    const rank = cleanText(source.sourceRank || source.source_rank || "");
+    const date = cleanText(source.date || source.asOfDate || "");
+    const url = cleanText(source.url || source.document || "");
+    const externalUrl = /^https?:\/\//i.test(url) ? url : "";
+    return `<article class="decision-ai-source-card">
+      <div><strong>${escapeHtml(title)}</strong><span>${escapeHtml([publisher, rank, date].filter(Boolean).join(" · ") || `Source ID ${source.id}`)}</span></div>
+      ${externalUrl ? `<a href="${escapeHtml(externalUrl)}" target="_blank" rel="noopener noreferrer">Open source</a>` : ""}
+    </article>`;
+  }).join("");
+  const evidenceRows = submittedRecords.map((record) => `
+    <article class="decision-ai-evidence-row">
+      <div class="decision-ai-record-head">
+        <strong>${escapeHtml(record.path)}</strong>
+        <span>${escapeHtml(record.type.replace(/_/g, " "))}</span>
+      </div>
+      <p>${escapeHtml(record.detail || record.relation)}</p>
+      <div class="decision-ai-record-meta">
+        ${record.date ? `<time>${escapeHtml(record.date)}</time>` : "<span>Undated</span>"}
+        <span>${escapeHtml(record.relation)}</span>
+        ${renderCitations(record.sourceIds)}
+      </div>
+    </article>
+  `).join("");
+  const statusLabel = state.decisionAnalysisStatus === "loading"
+    ? "CLAUDE AI · ANALYZING"
+    : hasClaudeFactorEffect
+    ? "CLAUDE ANALYSIS"
+    : state.decisionAnalysisStatus === "ready"
+    ? "MAP-BASED FALLBACK"
+    : state.decisionAnalysisStatus === "error"
+    ? "CLAUDE UNAVAILABLE"
+    : "MAP-BASED READ";
+  const decisionEffectSourceIds = asList(factorAnalysis?.decisionEffect?.sourceIds);
+  const factorCitations = renderCitations(decisionEffectSourceIds.length ? decisionEffectSourceIds : factorInsight?.sourceIds);
+  const reasoningRows = (claudeAnalyzed ? asList(factorAnalysis?.reasoning) : []).slice(0, 3).map((item) => `
+    <li>${escapeHtml(item.text)}</li>
+  `).join("");
+  const analysisLogic = reasoningRows
+    ? `<section class="decision-ai-reasoning"><span class="decision-ai-section-label">Why this network signal matters</span><ul class="decision-ai-bullets">${reasoningRows}</ul></section>`
+    : "";
+  const factorNextCheck = cleanText(factorAnalysis?.nextCheck || GROUP_DECISION_QUESTIONS[factor.group]);
+  const fallbackLimitation = submittedRecords.length
+    ? "These mapped relationships establish network connections only; they do not prove product quality, commercial traction, or investment merit."
+    : "No mapped Cala records were submitted for this factor, so this view cannot establish whether the signal is present or absent outside the map.";
+  const factorLimitation = cleanText(factorAnalysis?.limitation || fallbackLimitation);
+  const crossInsightRows = factorInsights.map((item) => `
+    <li>${escapeHtml(item.text)} ${renderCitations(item.sourceIds)}</li>
+  `).join("");
+  const evidenceDisclosure = claudeAnalyzed ? `
+    <details class="decision-ai-evidence-disclosure">
+      <summary>
+        <span><strong>Evidence & sources</strong><small>Inspect the Cala records behind this analysis</small></span>
+        <span class="decision-ai-evidence-count">${submittedRecords.length} records · ${submittedSourceIds.length} sources</span>
+      </summary>
+      <div class="decision-ai-evidence-content">
+        <p class="decision-ai-transparency">${hasClaudeFactorEffect
+          ? "These exact mapped relationships and source references were included in Claude's analysis."
+          : "Claude did not return a source-grounded effect for this factor, so the map baseline is shown. Inspect the submitted records below."}</p>
+        <section class="decision-ai-detail-block" aria-label="Analysis details">
+          <div class="decision-ai-detail-heading">Reasoning and diligence</div>
+          ${analysisLogic || `<p class="decision-ai-no-reasoning">Claude did not return separate reasoning points for this factor. Review the cited network records below.</p>`}
+          <div class="decision-ai-limitation"><strong>What this evidence cannot prove</strong><p>${escapeHtml(factorLimitation)}</p></div>
+          <div class="decision-ai-next-check"><span class="decision-ai-section-label">Next diligence step</span><p>${escapeHtml(factorNextCheck)}</p></div>
+        </section>
+        <div class="decision-ai-input-summary"><strong>Network signal</strong><span>${escapeHtml(factor.line)}</span></div>
+        <div class="decision-ai-metrics" aria-label="Cala evidence metrics">
+          <div><span>Signals</span><strong>${factor.count.toLocaleString()}</strong></div>
+          <div><span>Records sent</span><strong>${submittedRecords.length.toLocaleString()}</strong></div>
+          <div><span>Sources sent</span><strong>${submittedSourceIds.length.toLocaleString()}</strong></div>
+        </div>
+        <section class="decision-ai-breakdown" aria-label="Factor evidence by record type">
+          <div class="decision-ai-section-label">Record mix</div>
+          ${signalBars}
+        </section>
+        <div class="decision-ai-cited-sources"><strong>${hasClaudeFactorEffect ? "Sources cited for this effect" : "Cala source references"}</strong>${factorCitations || `<span class="decision-ai-no-chart">No factor-level citations were returned.</span>`}</div>
+        <div class="decision-ai-sources-used">
+          <strong>Source references sent</strong>
+          ${sourceCards || `<span class="decision-ai-no-chart">No source IDs were attached to this factor input.</span>`}
+        </div>
+        ${crossInsightRows ? `<div class="decision-ai-further"><strong>Related cross-factor signal</strong><ul class="decision-ai-bullets">${crossInsightRows}</ul></div>` : ""}
+        <div class="decision-ai-evidence-list">
+          <div class="decision-ai-record-list-head"><strong>Records in analysis request</strong><span>${submittedRecords.length} of ${evidenceData.records.length}</span></div>
+          ${evidenceRows || `<div class="decision-ai-no-chart">No individual relationship records were supplied for this factor.</div>`}
+        </div>
+      </div>
+    </details>
+  ` : "";
+  const canRetryClaude = Boolean(res?.anthropicConfigured && res?.fallbackReason &&
+    !/no mapped citations|not configured/i.test(res.fallbackReason));
+  const retryButton = `<button type="button" class="decision-ai-retry" data-decision-retry="true">Retry Claude analysis</button>`;
+  const fallbackNote = res?.fallbackReason
+    ? `<div class="decision-ai-fallback" role="status"><span>${escapeHtml(res.fallbackReason)}</span>${canRetryClaude ? retryButton : ""}</div>`
+    : "";
+  const analysisMessage = state.decisionAnalysisStatus === "loading"
+    ? `<p class="decision-ai-loading" role="status">Claude is assessing how this connection signal affects the investment decision.</p>`
+    : state.decisionAnalysisStatus === "error"
+    ? `<div class="decision-ai-fallback" role="alert"><span>Claude analysis unavailable: ${escapeHtml(state.decisionAnalysisError)} No effect summary is shown until an analysis response is available.</span>${retryButton}</div>`
+    : fallbackNote;
+
+  outEl.innerHTML = `
+    <div class="decision-ai-navigation">
+      <button type="button" class="decision-ai-back" data-decision-back="true">← All factors</button>
+      <button type="button" class="decision-ai-expand" data-decision-expand="true" aria-pressed="${state.decisionPanelExpanded}">${state.decisionPanelExpanded ? "Return to map" : "Expand"}</button>
+    </div>
+    <div class="decision-ai-card">
+      <div class="decision-ai-head">
+        <span>${statusLabel}</span>
+        <span class="decision-ai-step">${summary.factors.findIndex((item) => item.group === factor.group) + 1} / 4</span>
+      </div>
+      <section class="decision-ai-factor-panel" aria-label="${escapeHtml(factor.label)} analysis">
+        <div class="decision-ai-factor-head">
+          <div><span class="decision-ai-section-label">Selected factor</span><strong id="decisionAiSelectedHeading">${escapeHtml(factor.label)}</strong></div>
+          <span class="decision-effect-pill ${escapeHtml(factor.effectClass)}">${escapeHtml(factor.effect)}</span>
+        </div>
+        ${showDecisionEffect ? `<div class="decision-ai-impact-block ${hasClaudeFactorEffect ? "" : "is-fallback"}">
+          <span class="decision-ai-section-label">${hasClaudeFactorEffect ? "Effect on investment decision" : "Map-based fallback · no Claude effect for this factor"}</span><p>${escapeHtml(decisionImpact)}</p>
+        </div>` : ""}
+        ${analysisMessage}
+      </section>
+      ${evidenceDisclosure}
+    </div>
+  `;
+}
+
+async function runFourFactorClaudeInsight(factorGroup = state.decisionSelectedFactor) {
+  if (!state.bridgeMap) return;
+  const summary = buildFourFactorDecisionSummary(state.bridgeMap);
+  if (summary.factors.some((factor) => factor.group === factorGroup)) {
+    state.decisionSelectedFactor = factorGroup;
+  }
+  state.decisionAnalysisStarted = true;
+  state.decisionDetailView = true;
+  const { title, cacheKey } = fourFactorClaudeCacheKey(summary, state.bridgeMap);
+  if (state.decisionAnalysisKey !== cacheKey) {
+    state.decisionAnalysisRequestId += 1;
+    state.decisionAnalysisKey = cacheKey;
+    state.decisionAnalysisPendingKey = null;
+    state.decisionAnalysisResult = null;
+    state.decisionAnalysisStatus = "idle";
+    state.decisionAnalysisError = "";
+  }
+  const cached = state.aiInsightCache.get(cacheKey);
+  if (cached?.controlPlaneMode === "anthropic-connection-analyst") {
+    state.decisionAnalysisResult = cached;
+    state.decisionAnalysisStatus = "ready";
+    state.decisionAnalysisError = "";
+    renderDecisionSummaryWidget();
+    return;
+  }
+  if (cached) state.aiInsightCache.delete(cacheKey);
+  if (state.decisionAnalysisPendingKey === cacheKey) {
+    state.decisionAnalysisStatus = "loading";
+    state.decisionAnalysisResult = null;
+    state.decisionAnalysisError = "";
+    renderDecisionSummaryWidget();
+    return;
+  }
+
+  const requestId = ++state.decisionAnalysisRequestId;
+  state.decisionAnalysisKey = cacheKey;
+  state.decisionAnalysisPendingKey = cacheKey;
+  state.decisionAnalysisStatus = "loading";
+  state.decisionAnalysisResult = null;
+  state.decisionAnalysisError = "";
+  renderDecisionSummaryWidget();
+  requestAnimationFrame(() => $("#decisionAiOutput")?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
+
+  const sourceObjects = [
+    ...(Array.isArray(state.analysis?.sources) ? state.analysis.sources : Object.values(state.analysis?.sources || {})),
+    ...(Array.isArray(state.bridgeMap?.sources) ? state.bridgeMap.sources : Object.values(state.bridgeMap?.sources || {})),
+    ...summary.factors.flatMap((factor) => getDecisionFactorEvidence(state.bridgeMap, factor).sources)
+  ];
+  const sourceById = new Map(sourceObjects.map((source) => {
+    const id = source?.id || source?.sourceId || source?.source_id;
+    return id ? [String(id), { ...source, id: String(id) }] : null;
+  }).filter(Boolean));
+  const factorEvidence = summary.factors.map((factor) => {
+    const data = getDecisionFactorEvidence(state.bridgeMap, factor);
+    return { factor, records: data.records.slice(0, 6) };
+  });
+  const sourceIdsToSend = new Set();
+  for (const { factor, records } of factorEvidence) {
+    let selectedForFactor = 0;
+    const candidateIds = [...records.flatMap((record) => record.sourceIds), ...factor.sourceIds];
+    for (const id of [...new Set(candidateIds)]) {
+      if (selectedForFactor >= 8 || sourceIdsToSend.size >= 32) break;
+      if (!sourceById.has(String(id))) continue;
+      const before = sourceIdsToSend.size;
+      if (id && sourceById.has(String(id))) sourceIdsToSend.add(String(id));
+      if (sourceIdsToSend.size > before) selectedForFactor += 1;
+    }
+  }
+  const allSources = [...sourceIdsToSend].map((id) => ({
+    id,
+    title: sourceById.get(id)?.title || sourceById.get(id)?.publisher || `Cala source ${id}`,
+    publisher: sourceById.get(id)?.publisher || sourceById.get(id)?.source || "Cala Knowledge Graph",
+    sourceRank: sourceById.get(id)?.sourceRank || sourceById.get(id)?.source_rank || "AGGREGATOR",
+    date: sourceById.get(id)?.date || sourceById.get(id)?.asOfDate || null
+  }));
+  const serializedFactors = factorEvidence.map(({ factor, records }) => ({
+    group: factor.group,
+    label: factor.label,
+    effect: factor.effect,
+    impact: factor.investmentImpact,
+    evidence: factor.line,
+    sourceIds: [...new Set([...factor.sourceIds, ...records.flatMap((record) => record.sourceIds)])]
+      .filter((id) => sourceIdsToSend.has(String(id)))
+      .map(String),
+    records: records.map((record, index) => ({
+      id: `${factor.group}-${index + 1}`,
+      type: record.type,
+      path: record.path,
+      relation: record.relation,
+      detail: record.detail,
+      date: record.date,
+      sourceIds: record.sourceIds.filter((id) => sourceIdsToSend.has(String(id))).map(String)
+    }))
+  }));
+  const evidenceFacts = serializedFactors.flatMap((factor) => factor.records.map((record) => ({
+    text: `${factor.label}: ${record.path} — ${record.relation}${record.date ? ` (${record.date})` : ""}. ${record.detail || ""}`.trim(),
+    sourceIds: record.sourceIds
+  })));
   try {
     const res = await fetchJson("/api/connection-insight", {
       method: "POST",
@@ -2579,20 +3112,33 @@ async function runFourFactorClaudeInsight() {
         title,
         hopType: "4-Factor Summary",
         relation: "DECISION_SYNTHESIS",
-        whyMatters: `Overall verdict: ${summary.overall.label}.`,
-        facts: summary.factors.map((f) => ({
-          text: `${f.label} (${f.effect}): ${f.line}`,
-          sourceIds: topIds
-        })),
+        whyMatters: summary.investmentEffect,
+        facts: evidenceFacts,
+        decisionFactors: serializedFactors,
         sources: allSources
       })
     });
-    state.aiInsightCache.set(cacheKey, res);
-    renderResult(res);
+    res.analysisInput = { decisionFactors: serializedFactors, sources: allSources };
+    if (res.controlPlaneMode === "anthropic-connection-analyst") {
+      state.aiInsightCache.set(cacheKey, res);
+    } else {
+      state.aiInsightCache.delete(cacheKey);
+    }
+    if (state.decisionAnalysisRequestId === requestId && state.decisionAnalysisKey === cacheKey) {
+      state.decisionAnalysisResult = res;
+      state.decisionAnalysisStatus = "ready";
+      renderDecisionFactorAnalysis(summary);
+    }
   } catch (err) {
-    outEl.innerHTML = `<div class="decision-ai-loading">Unable to run Claude insight: ${escapeHtml(err.message)}</div>`;
+    if (state.decisionAnalysisRequestId === requestId && state.decisionAnalysisKey === cacheKey) {
+      state.decisionAnalysisStatus = "error";
+      state.decisionAnalysisError = err?.message || "Unknown analysis error";
+      renderDecisionFactorAnalysis(summary);
+    }
   } finally {
-    if (btnEl) btnEl.disabled = false;
+    if (state.decisionAnalysisRequestId === requestId && state.decisionAnalysisPendingKey === cacheKey) {
+      state.decisionAnalysisPendingKey = null;
+    }
   }
 }
 
@@ -2834,11 +3380,16 @@ function buildNodeTooltipHtml(node) {
     date: node.date || bestEdge?.date
   });
   const datePart = node.date || bestEdge?.date;
+  const isSharedBridge = Boolean(node.isSharedOverlap || node.isSharedBridge || hubNames.length > 1);
+  const sharedBridgeNote = isSharedBridge
+    ? `<div class="tip-shared-bridge"><strong>Shared bridge</strong> Connects verified paths across ${escapeHtml(hubNames.length > 1 ? hubNames.join(" and ") : "mapped entities")}.</div>`
+    : "";
 
   return `
     <div class="tip-header">
       <strong>${escapeHtml(formatReadableEntityLabel(nameOf(node), node.date))} · ${escapeHtml(typeBadge(node))}</strong>
     </div>
+    ${sharedBridgeNote}
     <div class="tip-spec-row"><span class="tip-k">Relationship:</span> ${escapeHtml(relSummary)}</div>
     <div class="tip-spec-row"><span class="tip-k">Why it matters:</span> ${escapeHtml(whyMatters)}</div>
     <div class="tip-spec-row"><span class="tip-k">Source Tier:</span> ${escapeHtml(rank)}${datePart ? ` · ${escapeHtml(datePart)}` : ""}</div>
@@ -3402,7 +3953,7 @@ async function runEntityMapAnalysis(entityRefs, options = {}) {
   const submitBtn = $("#aiSearchSubmitBtn");
   if (submitBtn) {
     submitBtn.disabled = true;
-    submitBtn.textContent = "Mapping...";
+    submitBtn.textContent = "Searching Cala...";
   }
   updateLiveStatusPill(options.loadingMessage || `Mapping ${refs.map((r) => r.name).join(" + ")} in Cala...`);
   setStatus(`Building Cala map for ${refs.map((r) => r.name).join(", ")}...`);
@@ -3431,6 +3982,23 @@ async function runEntityMapAnalysis(entityRefs, options = {}) {
     state.entityProfile = result.entityProfile || null;
     state.entityProfiles = result.bridgeMap?.entityProfiles || {};
     state.bridgeMap = result.bridgeMap || null;
+    state.analysis = result;
+    state.decisionSelectedFactor = "access";
+    state.decisionAnalysisRequestId += 1;
+    state.decisionAnalysisStarted = false;
+    state.decisionDetailView = false;
+    setDecisionPanelExpanded(false);
+    state.decisionAnalysisStatus = "idle";
+    state.decisionAnalysisResult = null;
+    state.decisionAnalysisError = "";
+    state.decisionAnalysisKey = null;
+    state.decisionAnalysisPendingKey = null;
+    const priorDecisionOutput = $("#decisionAiOutput");
+    if (priorDecisionOutput) {
+      priorDecisionOutput.hidden = true;
+      priorDecisionOutput.innerHTML = "";
+    }
+    $("#decisionSummaryPopover")?.classList.remove("has-ai-results");
     state.expandedGroupKey = null;
     state.selectedNodeId = null;
     state.selectedEdgeId = null;
@@ -3457,7 +4025,7 @@ async function runEntityMapAnalysis(entityRefs, options = {}) {
     updateLiveStatusPill(null);
     if (submitBtn) {
       submitBtn.disabled = false;
-      submitBtn.textContent = "Add to Map";
+      submitBtn.textContent = "Cala Search";
     }
   }
 }
@@ -3599,23 +4167,37 @@ async function addEntityToMap(entity) {
 async function removePinnedEntity(entityId) {
   const remaining = state.pinnedEntities.filter((p) => p.id !== entityId && p.key !== entityId);
   if (!remaining.length) {
-    clearMapToHero();
+    clearMapToEmpty();
     return;
   }
   await runEntityMapAnalysis(remaining, { fit: true, discoverLive: false });
 }
 
-function clearMapToHero() {
+function resetMapView({ stayOnMap = false } = {}) {
   state.pinnedEntities = [];
   state.bridgeMap = null;
+  state.analysis = null;
+  state.decisionAnalysisRequestId += 1;
+  state.decisionAnalysisStarted = false;
+  state.decisionDetailView = false;
+  setDecisionPanelExpanded(false);
+  state.decisionAnalysisStatus = "idle";
+  state.decisionAnalysisResult = null;
+  state.decisionAnalysisError = "";
+  state.decisionAnalysisKey = null;
+  state.decisionAnalysisPendingKey = null;
+  state.focalEntities = [];
+  state.comparedEntities = [];
   state.entityProfile = null;
   state.entityProfiles = {};
+  state.mapLayoutNodes = null;
   state.expandedGroupKey = null;
   state.selectedNodeId = null;
   state.selectedEdgeId = null;
   state.hoveredNodeId = null;
   state.hoveredEdgeId = null;
   state.compareBoxOpen = false;
+  state.decisionSummaryOpen = false;
   closeSuggestPopup();
   closeCompareSuggest();
   const sInput = $("#aiSearchInput");
@@ -3629,8 +4211,22 @@ function clearMapToHero() {
   }
   if (layer) layer.innerHTML = "";
   syncClearFocusButton();
-  setWorkspaceMode("hero");
-  setStatus("Search any entity above or click a quick pick to map Cala paths.");
+  setWorkspaceMode(stayOnMap ? "map" : "hero");
+  renderExploredEntitiesBox();
+  syncConstellationControls();
+  renderConstellationMap(null);
+  renderDecisionSummaryWidget();
+  setStatus(stayOnMap
+    ? "Map is clear. Search above or use + Add to map another entity."
+    : "Search any entity above or click a quick pick to map Cala paths.");
+}
+
+function clearMapToEmpty() {
+  resetMapView({ stayOnMap: true });
+}
+
+function clearMapToHero() {
+  resetMapView();
 }
 
 // ---------- Entity Dossier Modal (6 Evidence Tabs, Strict Cala Provenance) ----------
@@ -4703,13 +5299,9 @@ function bindSearchAndCommandEvents() {
   const form = $("#aiSearchForm");
   const input = $("#aiSearchInput");
   const suggest = $("#searchSuggestPopup");
-  const resetBtn = $("#aiSearchResetBtn");
 
   input?.addEventListener("input", () => {
     const val = input.value;
-    if (resetBtn) {
-      resetBtn.hidden = !val.trim();
-    }
     clearTimeout(state.suggestTimer);
     const cleaned = cleanText(val);
     if (cleaned.length < 2 || cleaned.includes(",")) {
@@ -4752,15 +5344,6 @@ function bindSearchAndCommandEvents() {
     }
   });
 
-  resetBtn?.addEventListener("click", () => {
-    if (input) {
-      input.value = "";
-      input.focus();
-    }
-    closeSuggestPopup();
-    if (resetBtn) resetBtn.hidden = true;
-  });
-
   document.querySelectorAll(".starter-pill-btn[data-entity-query]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const q = btn.dataset.entityQuery;
@@ -4786,12 +5369,6 @@ function bindSearchAndCommandEvents() {
     }
   });
 
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "/" && !e.target.closest("input, textarea, [contenteditable]")) {
-      e.preventDefault();
-      input?.focus();
-    }
-  });
 }
 
 function bindFilterAndHudEvents() {
@@ -4943,6 +5520,7 @@ function bindFilterAndHudEvents() {
     state.decisionSummaryOpen = !state.decisionSummaryOpen;
     const pop = $("#decisionSummaryPopover");
     if (pop) pop.hidden = !state.decisionSummaryOpen;
+    if (!state.decisionSummaryOpen) setDecisionPanelExpanded(false);
     $("#decisionSummaryToggleBtn")?.setAttribute("aria-expanded", String(state.decisionSummaryOpen));
     if (state.decisionSummaryOpen) renderDecisionSummaryWidget();
   });
@@ -4950,32 +5528,66 @@ function bindFilterAndHudEvents() {
     state.decisionSummaryOpen = false;
     const pop = $("#decisionSummaryPopover");
     if (pop) pop.hidden = true;
+    setDecisionPanelExpanded(false);
     $("#decisionSummaryToggleBtn")?.setAttribute("aria-expanded", "false");
   });
-  $("#decisionActionableToggleBtn")?.addEventListener("click", () => {
-    state.actionableOnly = !state.actionableOnly;
-    renderConstellationMap(undefined, { fit: false });
+  $("#decisionAiOutput")?.addEventListener("click", (e) => {
+    if (e.target.closest("[data-decision-retry]")) {
+      runFourFactorClaudeInsight(state.decisionSelectedFactor);
+      return;
+    }
+    if (e.target.closest("[data-decision-back]")) {
+      state.decisionDetailView = false;
+      state.decisionAnalysisStarted = false;
+      setDecisionPanelExpanded(false);
+      renderDecisionSummaryWidget();
+      $("#decisionFactorTab-" + CSS.escape(state.decisionSelectedFactor))?.focus();
+      return;
+    }
+    if (e.target.closest("[data-decision-expand]")) {
+      setDecisionPanelExpanded(!state.decisionPanelExpanded);
+      renderDecisionSummaryWidget();
+      $("[data-decision-expand]")?.focus();
+    }
   });
-  $("#decisionRunClaudeBtn")?.addEventListener("click", () => {
-    runFourFactorClaudeInsight();
+  $("#decisionSummaryPopover")?.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    if (state.decisionPanelExpanded) {
+      setDecisionPanelExpanded(false);
+      renderDecisionSummaryWidget();
+      $("[data-decision-expand]")?.focus();
+    } else if (state.decisionDetailView) {
+      state.decisionDetailView = false;
+      state.decisionAnalysisStarted = false;
+      renderDecisionSummaryWidget();
+      $("#decisionFactorTab-" + CSS.escape(state.decisionSelectedFactor))?.focus();
+    } else {
+      state.decisionSummaryOpen = false;
+      $("#decisionSummaryPopover").hidden = true;
+      $("#decisionSummaryToggleBtn")?.setAttribute("aria-expanded", "false");
+    }
   });
-  $("#decisionFactorList")?.addEventListener("click", (e) => {
+  const decisionFactorList = $("#decisionFactorList");
+  decisionFactorList?.addEventListener("click", (e) => {
     const row = e.target.closest("[data-factor-group]");
     if (!row) return;
     const grp = row.dataset.factorGroup;
-    const layout = state.mapLayoutNodes;
-    if (layout?.mode === "explorer") {
-      const hubNode = (layout.displayNodes || []).find((n) => n.kind === "group_hub" && n.groupKey === grp);
-      if (hubNode) {
-        state.selectedNodeId = state.selectedNodeId === hubNode.id ? null : hubNode.id;
-        state.selectedEdgeId = null;
-        applyPathLaserIsolation();
-      }
-      return;
-    }
-    state.expandedGroupKey = state.expandedGroupKey === grp ? null : grp;
-    syncConstellationControls();
-    renderConstellationMap(undefined, { fit: true });
+    runFourFactorClaudeInsight(grp);
+  });
+  decisionFactorList?.addEventListener("keydown", (e) => {
+    const tab = e.target.closest("[data-factor-group]");
+    if (!tab || !["ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) return;
+    const tabs = [...decisionFactorList.querySelectorAll("[data-factor-group]")];
+    const currentIndex = tabs.indexOf(tab);
+    const nextIndex = e.key === "Home"
+      ? 0
+      : e.key === "End"
+      ? tabs.length - 1
+      : (currentIndex + (e.key === "ArrowDown" ? 1 : -1) + tabs.length) % tabs.length;
+    e.preventDefault();
+    tabs[nextIndex]?.focus();
+    tabs[nextIndex]?.click();
   });
 
   // Top-right Zoom Controls
@@ -5006,6 +5618,108 @@ function bindCanvasAndMapInteractions() {
   const nodesLayer = $("#constellationNodesLayer");
   if (!canvas || !svgEl || !nodesLayer) return;
 
+  nodesLayer.addEventListener("pointerdown", (e) => {
+    const btn = e.target.closest(".map-node.is-physics-enabled[data-node-id]");
+    const layout = state.mapLayoutNodes;
+    const physics = state.mapPhysics;
+    if (!btn || !layout || !physics || !layout.posMap.has(btn.dataset.nodeId)) return;
+    const canvasRect = canvas.getBoundingClientRect();
+    const worldX = (e.clientX - canvasRect.left - state.mapPanX) / state.mapZoom;
+    const worldY = (e.clientY - canvasRect.top - state.mapPanY) / state.mapZoom;
+    const pos = layout.posMap.get(btn.dataset.nodeId);
+    const now = performance.now();
+    state.mapNodeDrag = {
+      id: btn.dataset.nodeId,
+      pointerId: e.pointerId,
+      button: btn,
+      offsetX: worldX - pos.x,
+      offsetY: worldY - pos.y,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      lastWorldX: worldX,
+      lastWorldY: worldY,
+      lastTime: now,
+      moved: false
+    };
+    physics.draggedNodeId = btn.dataset.nodeId;
+    physics.frameCount = 0;
+    setMapNodeVelocity(physics, btn.dataset.nodeId, 0, 0, physics.maxSpeed);
+    if (state.mapPhysicsRafId !== null) cancelAnimationFrame(state.mapPhysicsRafId);
+    state.mapPhysicsRafId = null;
+    for (const element of layout.nodeElements?.values?.() || []) {
+      element.classList.remove("is-physics-running");
+    }
+    state.mapPhysicsLastFrame = 0;
+    hideMapTooltip();
+    try {
+      btn.setPointerCapture(e.pointerId);
+    } catch (_) {}
+  });
+
+  nodesLayer.addEventListener("pointermove", (e) => {
+    const drag = state.mapNodeDrag;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    const clientDistance = Math.hypot(e.clientX - drag.startClientX, e.clientY - drag.startClientY);
+    if (!drag.moved && clientDistance < 4) return;
+    drag.moved = true;
+    drag.button.classList.add("is-physics-dragging");
+    e.preventDefault();
+    const canvasRect = canvas.getBoundingClientRect();
+    const worldX = (e.clientX - canvasRect.left - state.mapPanX) / state.mapZoom;
+    const worldY = (e.clientY - canvasRect.top - state.mapPanY) / state.mapZoom;
+    const now = performance.now();
+    const elapsedFrames = Math.max(1, (now - drag.lastTime) / (1000 / 60));
+    const instantVx = (worldX - drag.lastWorldX) / elapsedFrames;
+    const instantVy = (worldY - drag.lastWorldY) / elapsedFrames;
+    const physics = state.mapPhysics;
+    const nodeState = physics?.nodes.get(drag.id);
+    if (nodeState) {
+      setMapNodeVelocity(
+        physics,
+        drag.id,
+        nodeState.vx * 0.35 + instantVx * 0.65,
+        nodeState.vy * 0.35 + instantVy * 0.65,
+        physics.maxSpeed
+      );
+    }
+    const pos = state.mapLayoutNodes?.posMap.get(drag.id);
+    if (pos) {
+      pos.x = worldX - drag.offsetX;
+      pos.y = worldY - drag.offsetY;
+      resolveMapNodeCollisions(state.mapLayoutNodes, physics);
+      renderMapPhysicsVisuals(state.mapLayoutNodes);
+      recomputeMapLayoutBounds(state.mapLayoutNodes, 68);
+    }
+    drag.lastWorldX = worldX;
+    drag.lastWorldY = worldY;
+    drag.lastTime = now;
+    scheduleMapPhysicsFrame();
+  });
+
+  const finishMapNodeDrag = (e) => {
+    const drag = state.mapNodeDrag;
+    if (!drag || (e && drag.pointerId !== e.pointerId)) return;
+    state.mapNodeDrag = null;
+    drag.button.classList.remove("is-physics-dragging");
+    const physics = state.mapPhysics;
+    const pos = state.mapLayoutNodes?.posMap.get(drag.id);
+    if (physics) {
+      physics.draggedNodeId = null;
+      physics.frameCount = 0;
+      if (pos) setMapNodeHome(state.mapLayoutNodes, physics, drag.id);
+      state.mapPhysicsLastFrame = 0;
+      scheduleMapPhysicsFrame();
+    }
+    if (drag.moved) {
+      state.mapNodeClickSuppressUntil = performance.now() + 360;
+      recomputeMapLayoutBounds(state.mapLayoutNodes, 68);
+    }
+  };
+
+  nodesLayer.addEventListener("pointerup", finishMapNodeDrag);
+  nodesLayer.addEventListener("pointercancel", finishMapNodeDrag);
+  nodesLayer.addEventListener("lostpointercapture", finishMapNodeDrag);
+
   // Hover & Click on Nodes
   nodesLayer.addEventListener("pointerover", (e) => {
     const btn = e.target.closest("[data-node-id]");
@@ -5018,6 +5732,7 @@ function bindCanvasAndMapInteractions() {
   });
 
   nodesLayer.addEventListener("pointermove", (e) => {
+    if (state.mapNodeDrag?.pointerId === e.pointerId) return;
     const btn = e.target.closest("[data-node-id]");
     if (!btn) return;
     const node = state.mapLayoutNodes?.nodeById?.get(btn.dataset.nodeId);
@@ -5036,6 +5751,7 @@ function bindCanvasAndMapInteractions() {
   nodesLayer.addEventListener("click", async (e) => {
     const btn = e.target.closest("[data-node-id]");
     if (!btn) return;
+    if (e.detail !== 0 && performance.now() < state.mapNodeClickSuppressUntil) return;
     const node = state.mapLayoutNodes?.nodeById?.get(btn.dataset.nodeId);
     if (!node) return;
     hideMapTooltip();
@@ -5130,9 +5846,68 @@ function bindCanvasAndMapInteractions() {
   });
 
   // Trackpad Pan & Pinch-Zoom + Mouse Drag Pan
+  const decisionPopover = $("#decisionSummaryPopover");
+  let decisionMiddleScroll = null;
+  decisionPopover?.addEventListener(
+    "wheel",
+    (e) => {
+      // Route a mouse wheel directly to the analysis panel instead of letting
+      // the map's canvas wheel handler consume it for viewport panning.
+      e.stopPropagation();
+      if (e.ctrlKey || e.metaKey) return;
+      const unit = e.deltaMode === WheelEvent.DOM_DELTA_LINE
+        ? 16
+        : e.deltaMode === WheelEvent.DOM_DELTA_PAGE
+          ? decisionPopover.clientHeight
+          : 1;
+      const deltaY = e.deltaY || (e.shiftKey ? e.deltaX : 0);
+      if (decisionPopover.scrollHeight <= decisionPopover.clientHeight + 1 || !deltaY) return;
+      e.preventDefault();
+      decisionPopover.scrollTop += deltaY * unit;
+    },
+    { passive: false }
+  );
+  decisionPopover?.addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    if (e.button !== 1) return;
+    if (e.target.closest?.("a")) return;
+    // The canvas normally captures pointers to pan the map. Keep a middle-button
+    // drag inside the decision panel so analysts can scroll its long evidence view.
+    e.preventDefault();
+    decisionMiddleScroll = { pointerId: e.pointerId, y: e.clientY };
+    decisionPopover.classList.add("is-middle-scrolling");
+    try {
+      decisionPopover.setPointerCapture(e.pointerId);
+    } catch (_) {}
+  });
+  decisionPopover?.addEventListener("pointermove", (e) => {
+    if (!decisionMiddleScroll || decisionMiddleScroll.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    decisionPopover.scrollTop += decisionMiddleScroll.y - e.clientY;
+    decisionMiddleScroll.y = e.clientY;
+  });
+  const finishDecisionMiddleScroll = (e) => {
+    if (!decisionMiddleScroll || (e?.pointerId != null && decisionMiddleScroll.pointerId !== e.pointerId)) return;
+    const pointerId = decisionMiddleScroll.pointerId;
+    decisionMiddleScroll = null;
+    decisionPopover.classList.remove("is-middle-scrolling");
+    try {
+      if (decisionPopover.hasPointerCapture(pointerId)) decisionPopover.releasePointerCapture(pointerId);
+    } catch (_) {}
+  };
+  decisionPopover?.addEventListener("pointerup", finishDecisionMiddleScroll);
+  decisionPopover?.addEventListener("pointercancel", finishDecisionMiddleScroll);
+  decisionPopover?.addEventListener("auxclick", (e) => {
+    if (e.button !== 1) return;
+    e.stopPropagation();
+    if (e.target.closest?.("a")) return;
+    e.preventDefault();
+  });
+
   canvas.addEventListener(
     "wheel",
     (e) => {
+      if (e.target.closest?.(".decision-summary-popover, .map-legend-popover")) return;
       e.preventDefault();
       if (e.ctrlKey || e.metaKey) {
         const rect = canvas.getBoundingClientRect();
@@ -5153,7 +5928,7 @@ function bindCanvasAndMapInteractions() {
   );
 
   canvas.addEventListener("pointerdown", (e) => {
-    if (e.target.closest(".map-node, [data-edge-id], .edge-hit-target, button, input, aside, .map-zoom-controls, .map-minimal-hud, .map-top-center-bar")) {
+    if (e.target.closest(".map-node, [data-edge-id], .edge-hit-target, button, input, aside, .map-zoom-controls, .map-minimal-hud, .map-top-center-bar, .decision-summary-popover, .map-legend-popover, .map-bottom-left-overlay, .map-bottom-right-overlay")) {
       return;
     }
     state.pointerPan = { x: e.clientX, y: e.clientY, panX: state.mapPanX, panY: state.mapPanY };

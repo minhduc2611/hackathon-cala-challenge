@@ -435,7 +435,8 @@ async function serveStatic(res, reqPathname) {
     const content = await fs.readFile(resolved);
     res.writeHead(200, {
       'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
-      'Content-Length': content.length
+      'Content-Length': content.length,
+      'Cache-Control': 'no-store'
     });
     res.end(content);
   } catch {

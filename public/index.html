@@ -72,7 +72,7 @@
             Map <em>verified entities</em> and documented Cala relationships.
           </h1>
           <p class="hero-sub-tagline" id="searchHeroSub">
-            Search startups, public companies, venture funds, or people. Every search adds directly to your live explorer map with verified Cala paths.
+            Search Cala for startups, public companies, venture funds, or people, then explore verified relationships on the map.
           </p>
         </div>
 
@@ -99,15 +99,11 @@
               type="text"
               id="aiSearchInput"
               class="floating-search-input"
-              placeholder="Add company, investor, fund, or person to the map (e.g. Nvidia, OpenAI, Sequoia)..."
+              placeholder="Search Cala for a company, investor, fund, or person (e.g. Nvidia, OpenAI, Sequoia)..."
               autocomplete="off"
             />
-            <kbd class="search-kbd-hint" id="searchKbdHint" aria-hidden="true">/</kbd>
-            <button type="button" class="search-reset-pill" id="aiSearchResetBtn" aria-label="Clear search query" hidden>
-              Clear
-            </button>
             <button type="submit" class="floating-search-btn" id="aiSearchSubmitBtn">
-              Add to Map
+              Cala Search
             </button>
             <div
               id="searchSuggestPopup"
@@ -358,15 +354,12 @@
                   <span class="decision-verdict-badge is-neutral" id="decisionOverallBadge">Ready</span>
                 </div>
                 <div class="decision-pop-actions">
-                  <button type="button" class="btn sm" id="decisionActionableToggleBtn" aria-pressed="false" title="Hide neutral geographic/context links">Actionable only</button>
                   <button type="button" class="legend-pop-close" id="decisionSummaryCloseBtn" aria-label="Close decision summary">x</button>
                 </div>
               </div>
-              <div class="decision-factor-list" id="decisionFactorList"></div>
-              <div class="decision-ai-footer">
-                <button type="button" class="btn sm primary decision-ai-btn" id="decisionRunClaudeBtn">Analyze 4 Factors with Claude AI</button>
-                <div class="decision-ai-output" id="decisionAiOutput" hidden></div>
-              </div>
+              <div class="decision-factor-list" id="decisionFactorList" role="tablist" aria-label="Decision factors" aria-orientation="vertical"></div>
+              <div class="decision-ai-prompt" id="decisionAiPrompt">Choose a factor to see its Claude analysis.</div>
+              <div class="decision-ai-output" id="decisionAiOutput" role="tabpanel" hidden></div>
             </div>
             <button
               type="button"
