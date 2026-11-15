@@ -89,3 +89,11 @@
   - Live `POST /api/connection-insight`: cold Claude API call `200 OK` in `1745.1ms` (`controlPlaneMode: "anthropic-connection-analyst"`), cached repeat `4.80ms` (`fromCache: true`).
   - `npm test`: `48/48` pass (`12,065.3ms`).
 - **Decision:** KEEP
+
+
+### Exp 7: Frontend async search race guard & dossier keyboard tab navigation
+- **Files:** `public/app.js`
+- **Hypothesis:** Rapid consecutive submissions in `handleEntitySearchSubmit` could resolve out of order after `await resolveQueryTermsToEntities()`, and `[data-dossier-tab]` tabs lacked `ArrowLeft`/`ArrowRight` keyboard switching.
+- **Changes:** Added `state.searchSubmitSeq` monotonic guard inside `handleEntitySearchSubmit`, and added `ArrowLeft`/`ArrowRight` keyboard tab switching + focus management in `bindDossierEvents`.
+- **Measurements:** `node --check public/app.js` clean, `0` UI invariant violations (`<details>`, em-dash, green tokens), `npm test`: `48/48` pass (`12,867.1ms`).
+- **Decision:** KEEP

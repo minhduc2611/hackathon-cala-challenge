@@ -110,6 +110,7 @@ const state = {
   suggestItems: [],
   suggestTimer: null,
   suggestSeq: 0,
+  searchSubmitSeq: 0,
   compareSuggestItems: [],
   compareSearchTimer: null,
   compareSeq: 0,
@@ -3136,7 +3137,9 @@ async function handleEntitySearchSubmit(rawQuery, options = {}) {
     return;
   }
 
+  const submitSeq = ++state.searchSubmitSeq;
   const refs = await resolveQueryTermsToEntities(terms);
+  if (submitSeq !== state.searchSubmitSeq) return;
   if (!refs.length) {
     setStatus(`No Cala entities found for "${terms}".`, true);
     showToast(`No Cala entity found matching "${terms}".`, true);
@@ -4805,11 +4808,22 @@ function bindDossierEvents() {
     await addEntityToMap({ ...node, ...data });
   });
 
-  document.querySelectorAll("[data-dossier-tab]").forEach((tab) => {
+  const dossierTabs = [...document.querySelectorAll("[data-dossier-tab]")];
+  dossierTabs.forEach((tab, index) => {
     tab.addEventListener("click", () => {
       if (!state.dossier) return;
       state.dossier.tab = tab.dataset.dossierTab;
       renderDossier({ resetScroll: true });
+    });
+    tab.addEventListener("keydown", (e) => {
+      if (!state.dossier || (e.key !== "ArrowRight" && e.key !== "ArrowLeft")) return;
+      e.preventDefault();
+      const delta = e.key === "ArrowRight" ? 1 : -1;
+      const nextTab = dossierTabs[(index + delta + dossierTabs.length) % dossierTabs.length];
+      if (!nextTab) return;
+      state.dossier.tab = nextTab.dataset.dossierTab;
+      renderDossier({ resetScroll: true });
+      nextTab.focus();
     });
   });
 
