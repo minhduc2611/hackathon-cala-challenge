@@ -2494,6 +2494,7 @@ function collectEdgeCitations(edgesList = [], options = {}) {
         date > existing.date
       ) {
         byKey.set(key, {
+          id: cleanText(src.id),
           title: title || publisher || "Cala relationship record",
           publisher: publisher || "Cala Knowledge Graph",
           url,
@@ -2509,12 +2510,12 @@ function collectEdgeCitations(edgesList = [], options = {}) {
       (TOOLTIP_TIER_WEIGHT[b.sourceRank] || 0) - (TOOLTIP_TIER_WEIGHT[a.sourceRank] || 0) ||
       String(b.date || "").localeCompare(String(a.date || ""))
   );
-  const totalCount = Math.max(maxReportedCount, citations.length);
+  const totalCount = citations.length;
   return {
     citations: limit > 0 ? citations.slice(0, limit) : citations,
     allCount: citations.length,
     totalCount,
-    hasExternalRecords: maxReportedCount > 0 || citations.some((c) => !/^Cala Knowledge Graph$/i.test(c.publisher))
+    hasExternalRecords: citations.some((c) => !/^Cala Knowledge Graph$/i.test(c.publisher))
   };
 }
 
@@ -2656,6 +2657,23 @@ function buildEdgeContextMeta(edge) {
       ? edge.role
       : "";
   const peers = asList(edge.syndicatePeers);
+  const rawRelations = [...new Set(siblings.map((s) => cleanText(s.relation)).filter(Boolean))];
+  const hopTypeLabel = edge.isRoundExpanded
+    ? "2-hop via FundingRound"
+    : edge.isSharedBridge
+      ? "Shared cross-hub bridge"
+      : "Direct 1-hop Cala relation";
+  const linkCitationCheck = collectEdgeCitations(siblings, { limit: 1 });
+  const linkGaps = [];
+  if (!cleanText(edge.date || edge.roundDate)) linkGaps.push("Event date");
+  if ((rawRelations.includes("INVESTED_IN") || edge.isRoundExpanded) && !edge.roundAmount) {
+    linkGaps.push("Round size / check amount");
+  }
+  if ((rawRelations.includes("INVESTED_IN") || edge.isRoundExpanded) && !anyLead && !cleanText(edge.role)) {
+    linkGaps.push("Lead vs. participant role");
+  }
+  if (!linkCitationCheck.hasExternalRecords) linkGaps.push("External article URL");
+
   const targetForImplication = fromName === sharedBridgeNodeName ? fromName : toName;
   const whyMatters = explainEdgeDecisionImplication(group, edge, {
     hubNames: allHubNames,
@@ -2693,8 +2711,38 @@ function buildEdgeContextMeta(edge) {
     roundSummary,
     roleDisplay,
     peers,
+    rawRelations,
+    hopTypeLabel,
+    linkGaps,
     whyMatters
   };
+}
+
+function formatCleanCitationTitle(title, publisher, url) {
+  const pubLower = String(publisher || "").trim().toLowerCase();
+  const rawTitle = cleanText(title);
+  const titleLower = rawTitle.toLowerCase();
+  const isGeneric =
+    !titleLower ||
+    pubLower === titleLower ||
+    (titleLower.length >= 2 && pubLower.includes(titleLower)) ||
+    /^home\s*\||^index\s*\|/i.test(rawTitle);
+  if (!isGeneric) {
+    return rawTitle.length > 68 ? `${rawTitle.slice(0, 65)}...` : rawTitle;
+  }
+  if (url && /^https?:\/\//i.test(url)) {
+    try {
+      const slug = new URL(url).pathname.split("/").filter(Boolean).pop() || "";
+      const words = slug.replace(/[-_]+/g, " ").replace(/\.[a-z0-9]{2,5}$/i, "").trim();
+      if (words.length >= 6 && !/^[a-f0-9-]{16,}$/i.test(words)) {
+        const pretty = words.charAt(0).toUpperCase() + words.slice(1);
+        return pretty.length > 68 ? `${pretty.slice(0, 65)}...` : pretty;
+      }
+    } catch {
+      // Ignore malformed URLs cleanly.
+    }
+  }
+  return "";
 }
 
 function buildEdgeTooltipHtml(edge) {
@@ -2732,11 +2780,15 @@ function buildEdgeTooltipHtml(edge) {
     roundSummary,
     roleDisplay,
     peers,
+    rawRelations,
+    linkGaps,
     whyMatters
   } = ctx;
 
   const primaryLabel = edge.label || (isModeATreeEdge ? `${cgMeta.headerLabel} Connection` : "Verified Connection");
   const statusPills = [
+    `<span class="tip-pill is-hop">${escapeHtml(edge.isRoundExpanded ? "2-hop · FundingRound" : "1-hop · Direct")}</span>`,
+    rawRelations[0] ? `<span class="tip-pill is-rel">${escapeHtml(rawRelations[0])}</span>` : "",
     anyLead ? `<span class="tip-pill is-lead">Lead Investor</span>` : "",
     edge.isSharedBridge ? `<span class="tip-pill is-bridge">Shared Bridge</span>` : "",
     siblings.length > 1 ? `<span class="tip-pill is-multi">${siblings.length} linked roles</span>` : ""
@@ -2806,17 +2858,7 @@ function buildEdgeTooltipHtml(edge) {
         <ul class="tip-source-list">
           ${citations
             .map((src) => {
-              const pubLower = String(src.publisher || "").trim().toLowerCase();
-              const titleLower = String(src.title || "").trim().toLowerCase();
-              const redundantTitle =
-                !titleLower ||
-                pubLower === titleLower ||
-                (titleLower.length >= 2 && pubLower.includes(titleLower));
-              const displayTitle = redundantTitle
-                ? ""
-                : src.title.length > 68
-                  ? `${src.title.slice(0, 65)}...`
-                  : src.title;
+              const displayTitle = formatCleanCitationTitle(src.title, src.publisher, src.url);
               return `
                 <li class="tip-source-item">
                   <span class="tip-tier-mini" data-tier="${escapeHtml(src.sourceRank)}">${escapeHtml(src.sourceRank)}</span>
@@ -2834,6 +2876,10 @@ function buildEdgeTooltipHtml(edge) {
   } else {
     sourcesHtml = `<div class="tip-spec-row"><span class="tip-k">Source Provenance:</span> ${escapeHtml(rank)} · Cala Knowledge Graph (entity-level record${dateLabel ? `, ${escapeHtml(dateLabel)}` : ""})</div>`;
   }
+
+  const gapLineHtml = linkGaps.length
+    ? `<div class="tip-spec-row tip-gap-line"><span class="tip-k">Unindexed in Cala:</span> ${escapeHtml(linkGaps.join(", "))}</div>`
+    : "";
 
   const routeTypeText =
     fromType && toType && fromType !== "Group"
@@ -2859,6 +2905,7 @@ function buildEdgeTooltipHtml(edge) {
     ${sharedBridgeHtml}
     <div class="tip-spec-row"><span class="tip-k">Why it matters:</span> ${escapeHtml(whyMatters)}</div>
     ${sourcesHtml}
+    ${gapLineHtml}
     <div class="tip-hint">Click curve to inspect connection & verified Cala citations</div>
   `;
 }
@@ -3440,7 +3487,11 @@ function renderConnectionInspectorBody(dossier) {
     sharedBridgeNode,
     sharedBridgeNodeName,
     allHubNames,
-    otherFocalNames
+    otherFocalNames,
+    rawRelations,
+    hopTypeLabel,
+    linkGaps,
+    arrowSymbol
   } = ctx;
 
   const { citations, totalCount, hasExternalRecords } = collectEdgeCitations(siblings, { limit: 40 });
@@ -3472,12 +3523,18 @@ function renderConnectionInspectorBody(dossier) {
         .join("")}</div>`
     : `<p class="dossier-empty">${escapeHtml(`${fromName} connected to ${toName}`)}</p>`;
 
-  const dealParts = [];
+  const dealParts = [
+    { k: "Graph Path", v: hopTypeLabel },
+    { k: "Cala Relation", v: rawRelations.length ? `${rawRelations.join(", ")} (${fromName} ${arrowSymbol} ${toName})` : "Verified entity link" }
+  ];
   if (hasActualRound && roundSummary) dealParts.push({ k: "Round", v: roundSummary });
   else if (edge.date || edge.roundDate) dealParts.push({ k: "Observed Date", v: edge.date || edge.roundDate });
   if (roleDisplay) dealParts.push({ k: "Role", v: roleDisplay });
   if (edge.isSharedBridge && sharedBridgeNodeName && otherFocalNames.length) {
     dealParts.push({ k: "Shared Bridge", v: `${sharedBridgeNodeName} links ${allHubNames.join(" <-> ")}` });
+  }
+  if (linkGaps.length) {
+    dealParts.push({ k: "Unindexed in Cala", v: linkGaps.join(", ") });
   }
 
   const coInvestorsHtml = peers.length
@@ -3499,31 +3556,27 @@ function renderConnectionInspectorBody(dossier) {
     `
     : "";
 
-  const dealSectionHtml =
-    dealParts.length || peers.length
-      ? `
-      <section class="dossier-section">
-        <h3>Deal &amp; Network Context</h3>
-        ${dealParts.length ? `<div class="fact-grid">${dealParts.map((d) => factCardHtml(d.k, d.v)).join("")}</div>` : ""}
-        ${sharedBridgeNode?.id && edge.isSharedBridge ? `<div class="inline-chip-row" style="margin-top:8px;"><button type="button" class="inline-chip" data-inspect-entity-id="${escapeHtml(sharedBridgeNode.id)}">Open Shared Hub: ${escapeHtml(sharedBridgeNodeName)}</button></div>` : ""}
-        ${coInvestorsHtml}
-      </section>
-    `
-      : "";
+  const dealSectionHtml = `
+    <section class="dossier-section">
+      <h3>Provenance, Deal Context &amp; Gaps</h3>
+      <div class="fact-grid">${dealParts.map((d) => factCardHtml(d.k, d.v)).join("")}</div>
+      ${sharedBridgeNode?.id && edge.isSharedBridge ? `<div class="inline-chip-row" style="margin-top:8px;"><button type="button" class="inline-chip" data-inspect-entity-id="${escapeHtml(sharedBridgeNode.id)}">Open Shared Hub: ${escapeHtml(sharedBridgeNodeName)}</button></div>` : ""}
+      ${coInvestorsHtml}
+    </section>
+  `;
 
   const citationsHtml =
     citations.length && hasExternalRecords
       ? `<ul class="data-list">${citations
           .map((src) => {
             const safeUrl = /^https?:\/\//i.test(src.url || "") ? src.url : "";
-            const titleText = src.title && src.title.toLowerCase() !== String(src.publisher || "").toLowerCase()
-              ? src.title
-              : src.publisher || src.title;
+            const prettyTitle = formatCleanCitationTitle(src.title, src.publisher, src.url);
+            const titleText = prettyTitle || src.publisher || src.title;
             return `
               <li>
                 <div>
                   ${safeUrl ? `<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noreferrer">${escapeHtml(titleText)}</a>` : `<strong>${escapeHtml(titleText)}</strong>`}
-                  <div style="color:var(--muted);font-size:12px;margin-top:2px;">${escapeHtml([src.publisher, src.date || "Undated"].filter(Boolean).join(" · "))}</div>
+                  <div style="color:var(--muted);font-size:12px;margin-top:2px;">${escapeHtml([src.publisher, src.date || "Undated", src.id ? `Record ${src.id.slice(0, 22)}` : ""].filter(Boolean).join(" · "))}</div>
                 </div>
                 <span class="source-tier" data-tier="${escapeHtml(src.sourceRank)}">${escapeHtml(src.sourceRank)}</span>
               </li>

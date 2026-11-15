@@ -49,3 +49,12 @@
   - `GET /api/entity-dossier` UUID latency: `6.63 ms` -> **`5.57 ms`**
   - `npm test`: `47/47` passing (`11,556.6 ms`)
 - **Decision:** KEEP
+
+### Exp 3 (2026-11-15 02:24) — Transparent Link/Connection Display & Citation Deduplication
+- **Goal:** Fix duplicate `sourceIds` / `evidenceSources` truncation collisions in `registerEntityMapSource`, format generic URL/title citations cleanly, and surface 1-hop vs 2-hop (`FundingRound`) path provenance, raw Cala relation direction, deal context, and unindexed Cala data gaps in hover tooltips & Connection Inspector.
+- **Files:** `src/engine.mjs`, `public/app.js`, `public/styles.css`
+- **Before -> After:**
+  - Duplicate source IDs from 64-char prefix collisions: eliminated via normalized URL dedup + `-i` index outside `.slice(0, 58)`
+  - Connection transparency: hover tooltips & Connection Inspector now expose `1-hop Direct` vs `2-hop FundingRound`, raw relation (`INVESTED_IN`, etc.), deduplicated unique citations + record IDs, and explicit `Unindexed in Cala` gaps
+  - `npm test`: `47/47` passing (`11,299.0 ms`)
+- **Decision:** KEEP

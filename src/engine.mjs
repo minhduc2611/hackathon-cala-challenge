@@ -3970,9 +3970,10 @@ function registerEntityMapSource(anchor, relation, fallbackRank = null) {
   for (const origin of rawOrigins) {
     const rank = inferCalaOriginRank(origin, origin?.source_rank || fallbackRank);
     const originDate = origin?.published_time ? String(origin.published_time).slice(0, 10) : (origin?.date ? String(origin.date).slice(0, 10) : null);
-    const originUrl = origin?.url || origin?.document || '';
-    const originTitle = origin?.name || `${anchor?.name || 'Cala entity'} relationship record`;
-    const key = `${String(originUrl).trim().toLowerCase()}|${String(originTitle).trim().toLowerCase()}`;
+    const originUrl = String(origin?.url || origin?.document || '').trim();
+    const originTitle = String(origin?.name || `${anchor?.name || 'Cala entity'} relationship record`).trim();
+    const urlNorm = originUrl ? originUrl.replace(/\/+$/, '').toLowerCase() : '';
+    const key = urlNorm || originTitle.toLowerCase();
     const existing = dedupedOrigins.get(key);
     if (
       !existing ||
@@ -4008,11 +4009,14 @@ function registerEntityMapSource(anchor, relation, fallbackRank = null) {
     }];
 
   const registeredIds = [];
+  const seenRegisteredIds = new Set();
   const evidenceSources = [];
   for (let i = 0; i < candidates.length; i += 1) {
     const item = candidates[i];
-    const sourceSlug = slugifyBridgeId(`${entityId}-${relationId}-${item.origin?.document || item.origin?.url || item.title}-${i}`).slice(0, 64);
-    const sourceId = `src-cala-map-${sourceSlug}`;
+    const baseSlug = slugifyBridgeId(`${entityId}-${relationId}-${item.origin?.document || item.origin?.url || item.title}`).slice(0, 58);
+    const sourceId = `src-cala-map-${baseSlug}-${i}`;
+    if (seenRegisteredIds.has(sourceId)) continue;
+    seenRegisteredIds.add(sourceId);
     if (!SOURCES[sourceId]) {
       SOURCES[sourceId] = {
         id: sourceId,
@@ -4026,7 +4030,7 @@ function registerEntityMapSource(anchor, relation, fallbackRank = null) {
       };
     }
     registeredIds.push(sourceId);
-    if (i < 4) {
+    if (evidenceSources.length < 4) {
       evidenceSources.push({
         id: sourceId,
         title: SOURCES[sourceId].title,
