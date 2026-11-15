@@ -97,3 +97,11 @@
 - **Changes:** Added `state.searchSubmitSeq` monotonic guard inside `handleEntitySearchSubmit`, and added `ArrowLeft`/`ArrowRight` keyboard tab switching + focus management in `bindDossierEvents`.
 - **Measurements:** `node --check public/app.js` clean, `0` UI invariant violations (`<details>`, em-dash, green tokens), `npm test`: `48/48` pass (`12,867.1ms`).
 - **Decision:** KEEP
+
+
+### Exp 8: HTTP integration test coverage for `POST /api/connection-insight`
+- **Files:** `test/api.test.mjs`
+- **Hypothesis:** `POST /api/connection-insight` lacked an end-to-end HTTP server test covering `400` validation and `200` grounded response structure.
+- **Changes:** Added `POST /api/connection-insight validates packet and returns grounded response` in `test/api.test.mjs`.
+- **Measurements:** `npm test` 3x runs: `13,462.2ms`, `11,926.2ms`, `12,587.1ms` (`12,587.1ms` median), `49/49` pass (`0` failures, `0` skipped).
+- **Decision:** KEEP

@@ -654,3 +654,46 @@ test('POST /api/refine with discoverLive queries Company+Organization+Person, ex
     await new Promise((resolve) => serverOffline.close(resolve));
   }
 });
+
+test('POST /api/connection-insight validates packet and returns grounded response', async () => {
+  const prevKey = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = '';
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rte-api-insight-'));
+  const server = createAppServer({
+    calaClient: createCalaClient({ apiKey: '', cacheFile: path.join(tmpDir, 'cala.json') }),
+    registryClient: createRegistryClient({ cachePath: path.join(tmpDir, 'reg.json') })
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const badRes = await fetch(`${url}/api/connection-insight`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    assert.equal(badRes.status, 400);
+
+    const okRes = await fetch(`${url}/api/connection-insight`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'connection',
+        title: 'Sequoia Capital -> OpenAI',
+        hopType: '1-hop direct',
+        relation: 'INVESTED_IN',
+        whyMatters: 'Direct backer of OpenAI.',
+        facts: [{ text: 'Sequoia Capital invested in OpenAI', sourceIds: ['src-api-1'] }],
+        sources: [{ id: 'src-api-1', title: 'OpenAI Investor Record', publisher: 'Cala', sourceRank: 'PRIMARY' }]
+      })
+    });
+    assert.equal(okRes.status, 200);
+    const data = await okRes.json();
+    assert.equal(data.controlPlaneMode, 'deterministic-fallback');
+    assert.equal(data.anthropicConfigured, false);
+    assert.ok(Array.isArray(data.insights) && data.insights.length === 1);
+    assert.deepEqual(data.insights[0].sourceIds, ['src-api-1']);
+  } finally {
+    process.env.ANTHROPIC_API_KEY = prevKey || '';
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
