@@ -2140,7 +2140,7 @@ if (isEntrypoint) {
   hydrateEntitiesFromDiskCache();
   const port = Number(process.env.PORT) || 4173;
   const server = createAppServer();
-  server.listen(port, '127.0.0.1', () => {
-    console.log(`Revealed Thesis Engine listening on http://127.0.0.1:${port}`);
+  server.listen(port, '0.0.0.0', () => {
+    console.log(`Revealed Thesis Engine listening on port ${port}`);
   });
 }
