@@ -39,3 +39,13 @@
   - `GET /api/entity-dossier` (UUID + activeRef) payload size: `476,999 B` -> **`314,303 B`** (`-162.7 KB`, **`-34.1%`**)
   - `npm test`: `47/47` passing
 - **Decision:** KEEP
+
+### Exp 2 (2026-11-15 02:21) — Strip Unused `verifiedRelationships` Bloat & Expose Funding Scalars
+- **Goal:** Remove unused `verifiedRelationships` array (`42.9 KB`) from `summarizeLiveCalaEntity` and expose `fundingStage`, `totalFunding`, and `totalFundingUnits` on `identity`.
+- **Files:** `server.mjs`
+- **Before -> After:**
+  - `GET /api/entity-dossier` payload: `314,303 B` -> **`271,404 B`** (`-42.9 KB`; `-43.1%` vs initial `476,999 B`)
+  - `POST /api/analyze` payload: `277,705 B` -> **`235,168 B`** (`-42.5 KB`, `-15.3%`)
+  - `GET /api/entity-dossier` UUID latency: `6.63 ms` -> **`5.57 ms`**
+  - `npm test`: `47/47` passing (`11,556.6 ms`)
+- **Decision:** KEEP

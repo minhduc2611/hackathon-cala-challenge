@@ -179,44 +179,6 @@ function summarizeLiveCalaEntity(entityData) {
     ? entityData.numerical_observations.slice(0, 12)
     : [];
 
-  const supportedRelationshipTypes = new Set([
-    'PARTNERED_WITH',
-    'SUPPLIES',
-    'COMPETES_WITH',
-    'ACQUIRED',
-    'IS_SUBSIDIARY_OF',
-    'INVESTED_IN',
-    'FOUNDED',
-    'IS_CEO_OF',
-    'IS_CTO_OF',
-    'IS_BOARD_MEMBER_OF',
-    'WORKS_AT',
-    'PARTICIPATES_IN_FUNDING_ROUND',
-    'HAS_FUNDING_ROUND',
-    'PARTICIPATES_IN_CORPORATE_EVENT',
-    'PARTICIPATES_IN_EVENT'
-  ]);
-  const verifiedRelationships = [];
-  for (const [direction, relationMap] of Object.entries({ outgoing, incoming })) {
-    for (const [relation, targets] of Object.entries(relationMap || {})) {
-      if (!supportedRelationshipTypes.has(relation)) continue;
-      for (const target of targets || []) {
-        if (!target?.id || !target?.name) continue;
-        verifiedRelationships.push({
-          id: `${direction}:${relation}:${target.id}`,
-          direction,
-          relation,
-          entityId: target.id,
-          name: target.name,
-          entityType: target.entity_type || target.entityType || 'Entity',
-          role: target.properties?.role || null,
-          eventDate: target.properties?.event_date || target.properties?.valid_since || null,
-          sources: (target.properties?.sources || []).slice(0, 2)
-        });
-      }
-    }
-  }
-
   return {
     id: entityData.id,
     name: entityData.name,
@@ -247,8 +209,7 @@ function summarizeLiveCalaEntity(entityData) {
     eventsAttended: eventsAttended.slice(0, 25),
     leadership: leadership.slice(0, 10),
     worksAt: worksAt.slice(0, 8),
-    numericalObservations,
-    verifiedRelationships
+    numericalObservations
   };
 }
 
@@ -1580,6 +1541,9 @@ export function createAppServer(options = {}) {
         address: profile.address || 'Not found in Cala',
         operationalStatus: profile.operationalStatus || 'Not found in Cala',
         ownershipStatus: profile.ownershipStatus || 'Not found in Cala',
+        fundingStage: profile.fundingStage || null,
+        totalFunding: profile.totalFunding ?? null,
+        totalFundingUnits: profile.totalFundingUnits || null,
         foundingDate: profile.foundingDate || indexedCompany?.foundingDate || null,
         employeeCount: hasKnownNumericValue(indexedCompany?.employeeCount) ? Number(indexedCompany.employeeCount) : null,
         employeeCountRange: profile.employeeCountRange || null
