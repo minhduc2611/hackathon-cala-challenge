@@ -287,8 +287,7 @@ function normalizeRawRelationshipGroups(entity = {}) {
           priorRole: target.properties?.prior_role || null,
           priorValidUntil: target.properties?.prior_valid_until || null,
           sourceId: target.properties?.source_id || target.properties?.sourceId || target.properties?.sources?.[0]?.id || target.properties?.sources?.[0]?.source_id || target.properties?.sources?.[0]?.sourceId || null,
-          sourceTier: sourceTierFor(target.properties?.sources?.[0], null),
-          sources: (target.properties?.sources || []).slice(0, 3)
+          sourceTier: sourceTierFor(target.properties?.sources?.[0], null)
         }));
     }
   }

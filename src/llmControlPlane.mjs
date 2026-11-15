@@ -615,7 +615,7 @@ export async function analyzeConnectionWithCitationGate(packet = {}, options = {
       systemPrompt,
       userContent: jsonStr,
       maxTokens: 340,
-      timeoutMs: options.timeoutMs ?? 2800,
+      timeoutMs: options.timeoutMs ?? 6000,
       fetchFn: options.fetchFn || globalThis.fetch
     });
     const parsed = JSON.parse(stripJsonCodeFences(rawText));

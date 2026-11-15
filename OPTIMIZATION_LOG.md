@@ -78,3 +78,14 @@
   - Grounding gate: `filterVerifiedBullets` drops ungrounded insights/years/currency amounts; supports both `SOURCES` registry and dynamic Cala dossier citations
   - `npm test`: `48/48` passing (`11,218.7 ms`)
 - **Decision:** KEEP
+
+
+### Exp 6: Strip duplicated per-edge `sources` from dossier relationships & tune Claude analyst timeout
+- **Files:** `server.mjs`, `src/llmControlPlane.mjs`
+- **Hypothesis:** `normalizeRawRelationshipGroups` repeated `(target.properties?.sources || []).slice(0, 3)` on every relationship row (`57,218 B`), duplicating records already collected into `dossier.sources`; meanwhile `analyzeConnectionWithCitationGate` used `timeoutMs: 2800`, causing real Anthropic calls (`~1.5-2.9s`) to occasionally abort and fall back.
+- **Changes:** Removed redundant `.sources` array from `normalizeRawRelationshipGroups` items (preserving `sourceId` and `sourceTier`, while `collectDossierSources` continues to include all relationship sources in `dossier.sources`). Raised `analyzeConnectionWithCitationGate` `timeoutMs` default from `2800` to `6000`.
+- **Measurements:**
+  - `GET /api/entity-dossier?ref=company:Anthropic`: `271,404 B -> 177,486 B` (`-34.6%`, `-62.8%` vs `476,999 B` baseline), `6.79ms` median.
+  - Live `POST /api/connection-insight`: cold Claude API call `200 OK` in `1745.1ms` (`controlPlaneMode: "anthropic-connection-analyst"`), cached repeat `4.80ms` (`fromCache: true`).
+  - `npm test`: `48/48` pass (`12,065.3ms`).
+- **Decision:** KEEP
