@@ -1,158 +1,41 @@
-# Overnight Optimizer Log · Revealed Thesis Engine
+# Overnight Optimization Log · Revealed Thesis Engine
 
-## Summary & Configuration
-- **Branch:** `overnight/2026-11-14` (merged to `main`)
-- **Start Time:** `2026-11-14T07:59:35+02:00`
-- **End Time:** `2026-11-14T08:14:00+02:00`
-- **Goal Metric:**
-  1. All 12 automated tests pass (`12/12`), `0` console/network errors, `0` UI hygiene violations (`0` em-dashes, `0` `transition: all`, `0` `border-radius: 999px`).
-  2. UX & Layout Simplification Score:
-     - **0** step tabs in the top bar (all top-bar steps removed; `Analyst / Investor` + benchmark + views consolidated into **1 single option button** `#optionsMenuBtn`).
-     - **True 100vh full-screen 3-step setup (`body.is-onboarding`)** with no upper tab (`#dashboardMasthead` hidden): Step 1 (How it works & Cala data reliability), Step 2 (Choose role), Step 3 (Investor mandate, seen companies, benchmark & scoring config).
-     - **Floating rounded AI search bar (`68px` height, `border-radius: 22px`, `0` card/tab container behind it)** with embedded rounded `Search` button (`#aiSearchSubmitBtn`) and collapsible filter drawer (`#collapsibleFilterStrip`).
-  3. Asset payload & render efficiency (`144,763` bytes total across `index.html`, `styles.css`, `app.js`; test suite latency improved from `118.3ms` -> `111.6ms`).
-- **Off-limits:** `.env`, `.cache/cala-cache.json`, live Cala API credits (`8/8` preserved), external dependencies.
+- **Branch:** `overnight/2026-11-15` (from `main` via baseline checkpoint `7a59bea`)
+- **Start Time:** 2026-11-15 02:14 (+02:00)
+- **Time Budget:** 6 hours | **Max Experiments:** 40
+- **Off-Limits:** `.env` / secrets, `main` branch, external deployment / remote push, destructive data deletion
+- **Goal Metrics:**
+  1. Correctness & UI quality: `npm test` passes (100%), `node --check` passes, `0` UI invariant violations (`<details>`, em-dashes, green hex/rgba, `pts`/`Formula:`), `0` console/page/HTTP >=400 errors in Chrome (`1440x900` & `390x844`).
+  2. Performance & Payload: `/api/entity-dossier` median latency, `/api/analyze` latency & payload size, `/api/search` latency, `npm test` median duration, asset byte sizes.
+  3. Product Quality: Connection link data transparency (1-hop vs 2-hop provenance, deal economics, full co-investor breakdown, graph-record provenance, explicit missing fields), Company Dossier UI organization & bug fixes, and optional citation-gated Claude AI connection/entity insights.
 
-### Baseline vs. Final Metrics
+## Baseline Measurements (3 runs, median)
 
-| Metric | Baseline (`fe763e1`) | Final (`overnight/2026-11-14`) | Status |
-| :--- | :--- | :--- | :--- |
-| Automated Test Suite | `12/12` (`118.3ms`) | `12/12` (`111.6ms`) | Improved (`-5.7%` runtime) |
-| Top-Bar Step Tabs Count | `4` tabs visible | `0` tabs (removed; 1 option button `#optionsMenuBtn`) | Target Met |
-| Onboarding Upper Tab Visible | `1` header visible | `0` (`100vh` full-screen, `#dashboardMasthead` hidden) | Target Met |
-| Search Bar Wrapper Box Behind Input | `1` `.ai-search-card` box | `0` (floating rounded search pill + embedded button) | Target Met |
-| Console / Network / Hygiene Errors | `0` | `0` (normalized `appliedFilters` / `queryTrace.operations`) | Target Met |
-| Total Frontend Payload (`HTML+CSS+JS`) | `137,789` bytes | `144,763` bytes (`34.2KB` HTML, `38.1KB` CSS, `72.4KB` JS) | Verified |
+| Metric | Run 1 | Run 2 | Run 3 | Median | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `npm test` (47 tests) | 13,855.8 ms | 11,084.0 ms | 11,888.7 ms | **11,888.7 ms** | 47/47 pass |
+| `GET /api/search?q=Anthropic` | 2.05 ms | 0.89 ms | 0.99 ms | **0.99 ms** | Cached Cala |
+| `POST /api/analyze` (Anthropic + OpenAI) | 28.58 ms | 15.76 ms | 15.26 ms | **15.76 ms** | 277,705 bytes (32 nodes, 71 edges) |
+| `GET /api/entity-dossier?ref=company:Anthropic` | 180.74 ms | 78.80 ms | 89.73 ms | **89.73 ms** | Bottleneck to profile |
+| Asset Sizes | — | — | — | `app.js` 177,673 B · `styles.css` 177,239 B · `engine.mjs` 336,747 B | `anthropicConfigured: true` |
 
----
+## Ranked Backlog
+
+1. **[Perf + Bug] Profile & optimize `/api/entity-dossier` (`89.73 ms` median) and `/api/analyze` payload (`277,705 B`)** — High gain, low risk.
+2. **[Feature + UX] Transparent Link/Connection Display (Hover Tooltip + Connection Inspector)** — High gain, medium risk: clearly separate 1-hop vs 2-hop provenance, raw verified Cala relation, deal economics, full syndicate & bridge breakdown, graph-record provenance IDs, and explicit missing-field gaps.
+3. **[UI Bug + Organization] Fix Company Dossier Tables, Timeline Sorting & Tab Counts** — High gain, low risk: remove repeated `"Not found in Cala"` clutter in table cells, add count badges to all 6 tabs, sort Timeline ISO dates cleanly with undated items grouped separately.
+4. **[UX + Organization] Reorganize Company Dossier `Overview` & `Connections` Tabs** — High gain, medium risk: add Key Signals / Quick Metrics strip, clickable alias chips, structured lens-grouped Connection cards, and smooth drilldown.
+5. **[AI Layer] Optional Citation-Gated Claude AI Connection & Entity Insights (`src/llmControlPlane.mjs` + `/api/connection-insight`)** — High gain, medium risk: add lazy on-demand AI synthesis inside Connection Inspector & Company Dossier backed strictly by verified Cala source IDs + numeric/citation gate, cached per edge/entity, with instant deterministic fallback.
+6. **[Frontend Bugs] Race-condition, Accessibility, Pan/Zoom & Light-Theme Audit** — High gain, low risk: guard stale async `openEntityDossier` / search races, focus management, keyboard navigation, and light-theme contrast.
+7. **[QA] Expand automated tests & full end-to-end Chrome verification (`1440x900` & `390x844`, dark + light themes)** — Required final verification.
 
 ## Experiment Log
 
-### [2026-11-14 08:04] — Exp 1: Full-Screen 3-Step Onboarding (No Upper Tab) + Single Option Button Top Bar
-- **Hypothesis:** Removing all step tabs from `#dashboardMasthead`, hiding `#dashboardMasthead` completely during onboarding (`body.is-onboarding`), and splitting setup into 3 dedicated full-screen steps (1. How it works & Cala data reliability, 2. Role selection, 3. Investor benchmark, stated thesis note, seen startups & scoring config) eliminates dashboard clutter while highlighting Cala's verified knowledge graph.
-- **Files touched:** `public/index.html`, `public/styles.css`, `public/app.js`
+### Exp 1 (2026-11-15 02:20) — Backend Dossier Name Resolution & Payload Bloat Removal
+- **Goal:** Eliminate 404/85.8ms wasted Cala lookup on name-based `/api/entity-dossier?ref=company:<name>` requests, drop unused `rawRelationships` duplicate payload (`165 KB`), and add hydrated graph fallback for `rounds`.
+- **Files:** `server.mjs`
 - **Before -> After:**
-  - Top bar step tabs: `4` -> `0`
-  - Top bar option controls: `3 separate controls` -> `1 single option button` (`#optionsMenuBtn` + `#optionsMenuPopover`)
-  - Onboarding upper tab: `1 visible` -> `0 visible` (`getComputedStyle(dashboardMasthead).display === 'none'`)
-- **Tests:** PASS (`12/12`, `134.8ms`), Browser Check 1 (`final_step_496.png`) verified.
-- **Decision:** KEEP
-
-### [2026-11-14 08:08] — Exp 2: Floating Rounded AI Search Bar (No Backing Card) + Collapsible Filters
-- **Hypothesis:** Replacing the boxed search card on `#panel-search` with an unboxed floating rounded search pill (`.floating-search-bar`, `max-width: 820px`, `height: 68px`, `border-radius: 22px`) containing an embedded emerald `Search` button (`#aiSearchSubmitBtn`, `height: 52px`, `border-radius: 16px`) and hiding secondary filters behind `Refine Filters ▾` (`#toggleFiltersBtn`) makes the search experience cleaner and faster.
-- **Files touched:** `public/index.html`, `public/styles.css`, `public/app.js`
-- **Before -> After:**
-  - Search bar container cards behind input: `1` -> `0`
-  - Search input height / radius: `44px / 10px` -> `68px / 22px` with embedded `52px` button
-  - Exposed filter controls on initial load: `5 inputs visible` -> `0 (collapsed behind Refine Filters ▾)`
-- **Tests:** PASS (`12/12`), Browser Check 2 (`final_step_506.png`) verified at `1440x900` and `390x844`.
-- **Decision:** KEEP
-
-### [2026-11-14 08:11] — Exp 3: Above-the-Fold Onboarding Rhythm & Zero-Warning Query Trace Normalization
-- **Hypothesis:** Tightening vertical margins in `.onboarding-fullscreen` keeps Step 1's primary CTA (`#step1NextBtn`) above the fold without scrolling, and normalizing `res.appliedFilters` / `res.queryTrace?.operations` in `executeSearchRefinement()` eliminates the `ops.map` console warning when clicking AI search example chips.
-- **Files touched:** `public/styles.css`, `public/app.js`
-- **Before -> After:**
-  - Console warnings during AI chip click: `1` (`ops.map is not a function`) -> `0`
-  - Automated test suite duration: `134.8ms` -> `111.6ms` (`12/12` passing)
-- **Tests:** PASS (`12/12`, `111.6ms`)
-- **Decision:** KEEP
-
-### [2026-11-14 09:00] — Exp 4: Top-Panel Logo Stage, Incomplete-Circle Score Arc & Progressive Hover Disclosure
-- **Hypothesis:** Moving the `46x46` startup monogram crest into a cohesive `.tile-top-stage` banner on top of each card alongside an open `250°` incomplete-circle SVG score gauge (`buildIncompleteCircleScoreSvg`), enlarging `.tile-name` to `18px`, and moving secondary metadata behind smooth `@media (hover: hover)` disclosure (with `@media (hover: none), (max-width: 720px)` fallback) improves scannability across the 7-column grid and surfaces direct `Network ->` drawer jumping on hover.
-- **Files touched:** `public/app.js`, `public/index.html`, `public/styles.css`
-- **Before -> After:**
-  - Startup card title size: `14px` -> `18px` bold `#f8fafc` (`min-height: 44px`)
-  - Startup card logo size & position: `34x34` inline corner -> `46x46` featured in `.tile-top-stage` (`11%` radial tint + subtle sector motif)
-  - Score visualization: solid badge / closed circle -> unified `250°` incomplete-circle SVG arc (`54px` tile, `62px` drawer, `92px` deep-dive)
-  - Secondary details at rest (desktop hover devices): always exposed -> cleanly revealed on `:hover` / `:focus-within` across tiles, `#alsoScreenedCard`, Step 1 `.stat` / `.flow-step`, Step 3 `.fund-pick-card`, `.sb-row`, and `.evidence-item`
-- **Tests:** PASS (`12/12`, `111.7ms`), hygiene check `0` violations, Browser Check (`final_step_773.png`) verified at `1440x900` (`0` console/network errors, `8/8` Cala credits preserved)
-- **Decision:** KEEP
-
-### [2026-11-14 09:38] — Exp 5: Constant-Height Scale Hover, 64px Top Emblems, Centered Modal Inspector & Deal-Flow Features
-- **Hypothesis:** Replacing vertical height expansion on hover with CSS `scale(1.04)` + fixed-height footer cross-fade, enlarging startup emblems to `64x64px`, centering `#inspectorDrawer` (`min(980px, 94vw)`) with a 2-col `.modal-exec-grid`, and adding Call List triage, search autocomplete, warm intro draft copy, and modal hotkeys delivers a zero-jitter, fast VC workflow.
-- **Files touched:** `public/index.html`, `public/styles.css`, `public/app.js`
-- **Before -> After:**
-  - Hover vertical expansion (`tile.offsetHeight` diff): vertical grow -> `0px` (`235px` rest & hover, `scale(1.04)` focus lift)
-  - Top logo size (grid & modal): `46x46px` / `48x48px` -> `64x64px` layered sector SVGs
-  - Inspector window alignment: right-edge drawer -> centered `980x792px` modal (`top: 54px`, `bottom: 54px` at `1440x900`)
-  - Workflow accelerators added: `★ Call List` star bookmarking & filter (`localStorage`), `#searchSuggestPopup` autocomplete, `#copyWarmIntroBtn` warm intro generator, and modal hotkeys (`<-/->`, `1`, `2`, `S`, `C`, `Esc`)
-- **Tests:** PASS (`12/12`, `117.5ms`), hygiene check `0` violations, Browser Checks verified (`1440x900` `final_step_842.png` & `390x844` mobile zero overflow, `0` console/network errors, `8/8` Cala credits preserved)
-- **Decision:** KEEP
-
-### [2026-11-14 09:50] — Exp 6: Call List Compare Matrix, Interactive Network Graph Nodes & Unified Deep-Dive / Thesis Drill-Downs
-- **Hypothesis:** Adding a side-by-side Call List Comparison Matrix (`#callListCompareCard`), making every node inside `#networkGraphCanvas` inspectable in place (`#drawerNetworkNodeInspector`) with animated primary route paths, aligning `#panel-talk` with the `64x64px` logo + incomplete-circle gauge aesthetic, and making `#panel-thesis` sector/stage/geo rows & recovered deals interactive entry points unifies every workspace screen into one cohesive deal-flow loop.
-- **Files touched:** `public/index.html`, `public/styles.css`, `public/app.js`
-- **Before -> After:**
-  - Saved Call List workflow: filter-only pill -> `#compareCallListBtn` toggles side-by-side up-to-4-column comparison matrix (`48x48` logos, `46x46` gauges, 5-factor bars, `Open Brief`, `Copy Intro`)
-  - Network SVG (`buildNetworkGraphSvg`): static nodes + immediate peer leave -> column headers, animated `.svg-warm-flow-edge`, clickable `.svg-net-node` inspector bar (`#drawerNetworkNodeInspector`) with non-destructive peer CTA
-  - Deep Dive & Thesis screens: legacy ring header / static distribution bars -> `64x64` logo + `84px` incomplete-circle ring + `#talkSaveCallBtn`/`#talkCopyIntroBtn` in `#panel-talk`, clickable drill-downs in `#panel-thesis` with `#uiToastBanner` feedback
-- **Tests:** PASS (`12/12`, `111.5ms`), hygiene scan `0` hits, Browser Checks verified (`1440x900` & `390x844`, `final_step_881.png`, `final_step_895.png`, `0` console/network errors, `8/8` Cala credits preserved)
-- **Decision:** KEEP
-
-### [2026-11-14 11:30] — Exp 7: Low-Density Progressive-Disclosure Tab Redesign & Cache-First Live Cala Surfaces
-- **Hypothesis:** Replacing dense text walls and open tables inside modal, deep-dive, and thesis screens with 3-4 scannable `.hero-kpi-strip` cards, hiding `.sb-hover-detail` in `Key Signals` default mode, closing all secondary `<details>` accordions on load, and wiring cache-first `⚡ Live Cala` triggers on Search, Modal, and Thesis views maximizes visual clarity and live Cala data utility at `0` redundant API credits.
-- **Files touched:** `public/index.html`, `public/styles.css`, `public/app.js`
-- **Before -> After:**
-  - Modal default depth: `evidence` with 3 verbose open accordions -> `quick` (`Key Signals`) with all 4 `<details>` closed by default (`open === false`) and compact 5-factor bars
-  - Also-screened & network secondary blocks: always expanded -> collapsed `<details>` (`#alsoScreenedCard`, `#networkBridgesDetails`, `#networkPeersDetails`)
-  - Live Cala triggers: deep buried checkbox only -> accessible on Search, Modal header, and auto-cached Fund card on Thesis (`0` live credits)
-- **Tests:** PASS (`11/11` sandboxed unit tests, `80.5ms`), hygiene check `0` violations, Browser Checks verified (`final_step_942.png`, `final_step_948.png`, `final_step_977.png`, `0` console/network errors, `8/8` Cala credits preserved)
-- **Decision:** KEEP
-
-### [2026-11-14 11:45] — Exp 8: Official Cala Field Guide Schema, Slush 2026 Event Graph & AI-Powered Search Copilot
-- **Hypothesis:** Integrating official Cala Field Guide provenance (`source_rank`: `FILING`/`PRIMARY`/`PRESS`/`AGGREGATOR`, `date_precision`), role-filtered `PARTICIPATES_IN_FUNDING_ROUND` (`ISSUER` vs `INVESTOR`), deduplicated `FINANCING_RAISED_OR_FACILITY_ENTERED` filings, `numerical_observations`, `FOUNDED`/`IS_CEO_OF` leadership, `Slush 2026` (`bc844d56-6ab4-452b-96bf-2661e86e592b`) event filtering, and compound natural-language `AI Search` with cited synthesis turns static search into a complete AI sourcing copilot without raising rest-state density.
-- **Files touched:** `public/index.html`, `public/styles.css`, `public/app.js`, `src/calaClient.mjs`, `src/engine.mjs`, `server.mjs`
-- **Before -> After:**
-  - Source citations & rounds: plain year/publisher links -> color-coded `[FILING · day]` / `[PRIMARY]` / `[PRESS]` `source_rank` badges, explicit `ISSUER · EQUITY` round roles, and deduplicated regulatory filing indicators inside closed accordions
-  - Slush 2026 Event integration: absent -> 1-click `#filterSlushBtn` (`17` attendees) + 0-credit `Slush 2026` `Event` entity inspector (`bc844d56-6ab4-452b-96bf-2661e86e592b`)
-  - Search bar: single-keyword filter -> `AI Search` parsing multi-constraint NL prompts (`"Slush 2026 DeepTech raising soon"`) with cited startup chips and 1-click `Ask Live Cala Knowledge` escalation
-- **Tests:** PASS (`11/11` sandboxed unit tests, `76.2ms`), `node --check` pass, hygiene check `0` hits, Browser Checks verified at `1440x900` & `390x844` (`final_step_991.png`, `0` console/network errors, `8/8` Cala credits preserved)
-- **Decision:** KEEP
-
-### [2026-11-14 12:05] — Exp 9: Curated Non-Technical Modal, White/Lime UI + Non-Blue Charcoal Dark UI & Zero-Emoji Cleanup
-- **Hypothesis:** Stripping API schema/role/UUID jargon from modal & Cala views, condensing the modal to 3 KPI cards and 3 concise accordions with clean single-line header geometry (`scrollTop = 0`), adding a crisp White default palette (`#f6f8f5` / `#ffffff`) with emerald green + lime accents alongside a neutral obsidian charcoal Dark UI (`#0c0d0c` / `#141614`, zero blue cast), and removing all decorative emojis (`⚡`/`★`/`☆`/`✓`) delivers executive readability in both light and dark modes.
-- **Files touched:** `public/index.html`, `public/styles.css`, `public/app.js`
-- **Before -> After:**
-  - Theme options: single dark-navy (`#070b14` / `#38bdf8`) palette -> dual `White` (default, `#ffffff` + `#16a34a` green + `#ecfccb`/`#65a30d` lime) & neutral `Dark` (`rgb(12, 13, 12)` charcoal + `#22c55e` green + `#a3e635` lime) toggled via `#themeToggleBtn` / `#onbThemeToggleBtn` / `#optionsMenuPopover`
-  - Modal content density: 4 KPIs + verbose legal/filing metadata + 4 accordions -> 3 KPIs (`Thesis Fit`, `Latest Round`, `Warm Route`) + concise 1-sentence takeaway + 3 pills + 3 clean collapsed accordions fitting cleanly without initial scroll
-  - Random dingbats / emojis (`⚡`, `★`, `☆`, `✓`): 11 HTML/JS occurrences -> `0` (replaced with inline `13-14px` SVG bookmark icons & clean `.live-dot`)
-- **Tests:** PASS (`11/11` sandboxed unit tests, `81.3ms`), `node --check` pass, hygiene & dingbat checks `0` hits, Browser Checks verified White Grid (`final_step_1004.png`), White Modal (`final_step_1028.png`), Neutral Dark Modal (`final_step_1036.png`), `390x844` mobile zero overflow, `0` console/network errors, `8/8` Cala preserved
-- **Decision:** KEEP
-
-### [2026-11-14 12:10] — Exp 10: Obsidian Black & Gray UI with Restrained Steel-Blue Accents (Zero Green)
-- **Hypothesis:** Replacing all green/lime UI tokens across both themes with an obsidian black (`#09090b`) and graphite gray (`#111114` / `#17171b`) default aesthetic, monochrome silver-white primary buttons (`#ededf0`), graphite-to-steel-blue factor bars, and a subtle `#729cd4` steel-blue accent on score arcs and key links gives an understated, institutional dark look without green or heavy cobalt washes.
-- **Files touched:** `public/index.html`, `public/styles.css`, `public/app.js`
-- **Before -> After:**
-  - Color palette: bright green/lime UI (`#16a34a`, `#22c55e`, `#a3e635`) -> obsidian black (`#09090b`) & graphite gray (`#111114` / `#17171b`), crisp silver CTAs (`#ededf0`), and subtle steel blue (`#729cd4`) focal accents; zero green hex/rgba values anywhere in `public/`
-- **Tests:** PASS (`11/11` sandboxed unit tests, `81.7ms`), `node --check` pass, hygiene & green-token scan `0` hits, Browser Checks verified Obsidian Grid (`final_step_1042.png`) & Obsidian Modal (`final_step_1050.png`, `scrollTop === 0`, Light/Dark toggle intact, `0` console/network errors, `8/8` Cala preserved)
-- **Decision:** KEEP
-
-### [2026-11-14 12:20] — Exp 11: Remove All Expandable Tabs/Panels and Render Curated Flat Executive Sections
-- **Hypothesis:** Eliminating every `<details>` accordion, `.exposure-depth-bar` mode switcher, and CSS `+` badge indicator while rendering only essential, high-signal startup details inside clean flat 2-column sections makes key facts immediately readable without clicking to unfold panels.
-- **Files touched:** `public/index.html`, `public/styles.css`, `public/app.js`
-- **Before -> After:**
-  - Expandable `<details>` panels across app: `8` static + `7` dynamic templates -> `0` (`document.querySelectorAll('details').length === 0`)
-  - Reading-depth toolbar (`.exposure-depth-bar`) & `+` CSS pseudo-elements: removed (`0` matches in `public/`)
-  - Modal Brief (`#drawerPaneBrief`) & Network (`#drawerPaneNetwork`): curated 2-column `.modal-exec-grid` + `.modal-essentials-grid` showing top 2 reasons (`Why to call`), 5-factor bars, `Backing & Leadership` (Latest Round, Lead & Syndicate, Leadership), and 1 watchout + warm intro preview directly
-- **Tests:** PASS (`11/11` sandboxed unit tests, `72.3ms`), `node --check` pass, zero `<details>` / `+` CSS / hygiene checks pass; Browser verified at `1440x900` and `390x844` (`0` console/HTTP errors, `8/8` Cala preserved, centered obsidian modal verified in `final_step_1064.png`)
-- **Decision:** KEEP
-
-### [2026-11-14 12:40] — Exp 12: Agentic Cala Data Upgrade (Time-Travel Entry DNA, Upstream Feeders, Arbitrage Triggers & 4-Agent Copilot)
-- **Hypothesis:** Exploiting 5 Level-3 Cala Field Guide signals—time-travel `employee_count` entry reconstruction with point-in-time `cutoffDate` safety, Round N-1 upstream feeder syndicate separation, filing/runway/velocity "Why Now" arbitrage triggers, temporal `validSince`/`validUntil` founder alumni lineage, and a 4-agent auditable copilot trace—deepens VC diligence and search intelligence while preserving all flat obsidian UI & budget invariants.
-- **Files touched:** `src/data.mjs`, `src/engine.mjs`, `server.mjs`, `public/app.js`, `test/engine.test.mjs`
-- **Before -> After:**
-  - Thesis DNA: static deal counts/averages -> `timeTravelProfile` (`16` median entry employees, `~40.3` months post-founding, `58%` `FILING`/`PRIMARY` provenance) and `upstreamFeeders` (`Inventure`, `Maki Ventures`, `Icebreaker.vc` Round N-1 feeders + `feeder_to_lead` warm paths)
-  - Startup Signals & Modal: generic stage/round rows -> real `employeeCountSeries`, UK Companies House `financialMetrics`, `FINANCING_RAISED_OR_FACILITY_ENTERED` filings, `alumniSpinout` operator lineage (`Henrik Ranta (ex-ICEYE, since 2023)`), `whyNowTrigger` quick pill, and 4 flat `.cala-ts-row` rows inside `Backing & Leadership`
-  - AI Search Copilot: keyword & basic criteria matching -> agentic intents (`fast headcount growth`, `feeder syndicate`, `filing signal`, `alumni founder`) with 4-agent trace pills (`1. Time-Travel DNA Profiler` -> `2. Upstream Syndicate Mapper` -> `3. Filing & Velocity Arbitrage Scout` -> `4. Provenance Gate`)
-- **Tests:** PASS (`15/15` sandboxed unit tests, `86.3ms`), `node --check` pass, zero `<details>` / `+` CSS / green / emoji / hygiene checks pass; Live Chrome verified (`final_step_1083.png`, `0` console/HTTP errors, `8/8` Cala preserved)
-- **Decision:** KEEP
-
-### [2026-11-14 13:35] — Exp 13: Zero-Scroll 3-Step Startup Modal, Cala AI Spotlight & Connected Warm Network Flow
-- **Hypothesis:** Replacing the fragmented 7-box modal and isolated Network tab with a unified 3-step decision flow (`1. Why This Startup Fits` -> `2. CALA AI GRAPH` Spotlight -> `3. Warm Network Path & Intro`) and fixing `.connected-net-bottom` grid track sizing (`minmax(0, ...)`) makes startup triage immediate, prominently showcases Cala AI's verified signals, and connects warm bridges, cluster peers, and intro outreach into a single zero-scroll modal view.
-- **Files touched:** `public/index.html`, `public/app.js`, `public/styles.css`
-- **Before -> After:**
-  - Startup modal brief: 7 fragmented boxes + duplicate hero KPIs + 5 tall bars + disconnected Network tab + overflowing footer (`786px` scrollHeight) -> clean zero-scroll 3-step view (`1. Why This Startup Fits` with single-line 5-chip factor strip, `2. CALA AI GRAPH` spotlight card with `Verify Live` & 4 Cala rows, `3. Warm Network Path & Intro` with live `LinkedIn Bridge` <-> `Cala Syndicate` toggle updating 3-hop chain & draft copy, inline peer pivots + header `#peerBackBtn`, `Open Graph Map ->`, and primary `Copy Warm Intro Note`), Step 3 finishing `-12px` above `.drawer-body` bottom (`scrollTop === 0`, `scrollHeight <= clientHeight`)
-  - CSS Grid `.connected-net-bottom`: unrestrained `0.85fr 1.15fr` crushed `.warm-intro-preview` to `154px` wide -> `minmax(0, 0.82fr) minmax(0, 1.18fr)` + `min-width: 0` gave `.warm-intro-preview` `565px` and kept `#copyWarmIntroBtn` a crisp `168 x 35.5px` single-line button
-  - Full-screen deep dive (`#panel-talk`) & grid tiles: aligned with `#talkVerifyCalaBtn`, 3-step structure, and `Cala` / warm bridge footers
-- **Tests:** PASS (`15/15` sandboxed unit tests, `84.1ms`), `node --check` pass, zero `<details>` / `+` CSS / green / emoji / hygiene checks pass; Live Chrome verified at `1440x900` (`final_step_1269.png`: 5 factor chips unclipped `515.19px <= 527.54px`, zero vertical overflow, `0` console/HTTP errors, `#telemetryLine` `4/8 Cala` untouched) & mobile `390x844` (`scrollWidth === 390px`)
+  - `GET /api/entity-dossier?ref=company:Anthropic`: `404 (85.79 ms)` -> **`200 OK (6.09 ms median)`** (`14.1x` faster)
+  - `GET /api/entity-dossier` (UUID + activeRef) payload size: `476,999 B` -> **`314,303 B`** (`-162.7 KB`, **`-34.1%`**)
+  - `npm test`: `47/47` passing
 - **Decision:** KEEP

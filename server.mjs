@@ -1060,7 +1060,18 @@ export function createAppServer(options = {}) {
 
     let entity = liveEntitiesById.get(id) || null;
     if (!entity) {
-      const localFund = FUNDS.find((fund) => fund.id === id || fund.calaEntityId === id);
+      const targetNorm = normalizeEntityCoreName(id);
+      if (targetNorm) {
+        for (const cached of liveEntitiesById.values()) {
+          if (normalizeEntityCoreName(cached?.name) === targetNorm) {
+            entity = cached;
+            break;
+          }
+        }
+      }
+    }
+    if (!entity) {
+      const localFund = FUNDS.find((fund) => fund.id === id || fund.calaEntityId === id || normalizeEntityCoreName(fund.name) === normalizeEntityCoreName(id));
       if (localFund?.calaEntityId) {
         try {
           entity = await hydrateLiveEntity(localFund.calaEntityId);
@@ -1077,7 +1088,8 @@ export function createAppServer(options = {}) {
       }
     }
     if (!entity) {
-      const local = COMPANIES.find((company) => company.id === id || company.calaEntityId === id);
+      const targetNorm = normalizeEntityCoreName(id);
+      const local = COMPANIES.find((company) => company.id === id || company.calaEntityId === id || (targetNorm && normalizeEntityCoreName(company.name) === targetNorm));
       if (local) entity = localCompanyAsEntity(local);
     }
     if (!entity?.id || !entity?.name) return null;
@@ -1499,17 +1511,51 @@ export function createAppServer(options = {}) {
     const people = [...peopleByKey.values()];
     const employeeCountSeries = indexedCompany?.employeeCountSeries || [];
     const financialMetrics = indexedCompany?.financialMetrics || [];
-    const corporateEvents = indexedCompany?.corporateEvents || profile.corporateEvents || [];
-    const rounds = indexedCompany
-      ? (indexedCompany.rounds || []).map((round) => ({
-          id: round.id,
-          type: round.type,
-          date: round.date || null,
-          amountEurM: round.amountEurM ?? null,
-          investorNames: round.investorNames || (round.investorIds || []).map((id) => indexedCompany.liveInvestorsMap?.[id] || PEER_INVESTORS[id] || id),
-          sources: resolveSources(round.sourceIds || [])
-        }))
-      : [...(profile.issuerRounds || []), ...(profile.raisedRounds || [])];
+    const corporateEvents = (indexedCompany?.corporateEvents?.length ? indexedCompany.corporateEvents : profile.corporateEvents) || [];
+    const hydratedRoundsFromGraph = [
+      ...(relationshipGroups.outgoing.HAS_FUNDING_ROUND || []),
+      ...(relationshipGroups.incoming.PARTICIPATES_IN_FUNDING_ROUND || []),
+      ...(relationshipGroups.outgoing.RAISED || [])
+    ].map((rel) => {
+      const roundNode = liveEntitiesById.get(String(rel.id || '')) || null;
+      const roundName = roundNode?.name || rel.name || rel.roundType || rel.type || 'Funding Round';
+      const roundMeta = roundNode?.relationships ? normalizeRawRelationshipGroups(roundNode) : null;
+      const roundInvestors = roundMeta
+        ? [
+            ...(roundMeta.incoming.PARTICIPATES_IN_FUNDING_ROUND || []),
+            ...(roundMeta.incoming.INVESTED_IN || []),
+            ...(roundMeta.incoming.LED_ROUND || [])
+          ]
+            .filter((p) => (p.entityType || p.entity_type || '').toLowerCase() !== 'company')
+            .map((p) => ({ id: p.id || null, name: p.name, entityType: p.entityType || p.entity_type || 'Organization' }))
+        : [];
+      return {
+        id: rel.id || roundNode?.id || null,
+        type: roundName,
+        roundType: roundName,
+        date: rel.eventDate || rel.date || roundNode?.date || roundNode?.foundingDate || null,
+        amount: rel.amount ?? roundNode?.amount ?? null,
+        amountEurM: rel.amountEurM ?? null,
+        currency: rel.currency || null,
+        investors: roundInvestors,
+        investorNames: roundInvestors.map((i) => i.name),
+        sources: mergeSources(rel.sources || [], roundNode?.sources || [])
+      };
+    });
+    const indexedRoundList = (indexedCompany?.rounds || []).map((round) => ({
+      id: round.id,
+      type: round.type,
+      date: round.date || null,
+      amountEurM: round.amountEurM ?? null,
+      investorNames: round.investorNames || (round.investorIds || []).map((id) => indexedCompany.liveInvestorsMap?.[id] || PEER_INVESTORS[id] || id),
+      sources: resolveSources(round.sourceIds || [])
+    }));
+    const profileRounds = [...(profile.issuerRounds || []), ...(profile.raisedRounds || [])];
+    const rounds = indexedRoundList.length
+      ? indexedRoundList
+      : profileRounds.length
+        ? profileRounds
+        : hydratedRoundsFromGraph;
     const gaps = [
       !profile.description ? { field: 'Description', status: 'Not found in Cala' } : null,
       !profile.address ? { field: 'Headquarters address', status: 'Not found in Cala' } : null,
@@ -1543,10 +1589,6 @@ export function createAppServer(options = {}) {
       investors: investorRelations,
       portfolio,
       relationships: relationshipGroups,
-      rawRelationships: {
-        outgoing: entity.relationships?.outgoing || {},
-        incoming: entity.relationships?.incoming || {}
-      },
       employeeCountSeries,
       financialMetrics,
       corporateEvents,
