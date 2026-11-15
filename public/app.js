@@ -3302,6 +3302,7 @@ function isEntityOnMap(node) {
 async function openEntityDossier(node, options = {}) {
   const id = idOf(node);
   if (!id) return;
+  const reqSeq = (state.dossierRequestSeq = (state.dossierRequestSeq || 0) + 1);
   const history = options.history || state.dossier?.history || [];
   const initial = dataForDossier(node);
   const cached = state.dossierCache.get(id);
@@ -3323,7 +3324,7 @@ async function openEntityDossier(node, options = {}) {
   };
 
   $("#entityDossierBackdrop").hidden = false;
-  renderDossier();
+  renderDossier({ resetScroll: true });
   $("#entityDossierModal")?.focus();
 
   if (cached) return;
@@ -3339,13 +3340,13 @@ async function openEntityDossier(node, options = {}) {
     const payload = await fetchJson(`/api/entity-dossier?${params.toString()}`);
     const data = dataForDossier({ ...node, id }, payload);
     state.dossierCache.set(id, data);
-    if (state.dossier?.node.id === id) {
+    if (reqSeq === state.dossierRequestSeq && state.dossier?.node.id === id) {
       state.dossier.data = data;
       state.dossier.loading = false;
       renderDossier();
     }
   } catch {
-    if (state.dossier?.node.id === id) {
+    if (reqSeq === state.dossierRequestSeq && state.dossier?.node.id === id) {
       state.dossier.loading = false;
       renderDossier();
     }
@@ -3599,6 +3600,35 @@ function renderConnectionInspectorBody(dossier) {
   `;
 }
 
+function deduplicateEntityList(items = []) {
+  const seen = new Set();
+  const out = [];
+  for (const item of asList(items)) {
+    const id = idOf(item);
+    const label = cleanText(nameOf(item));
+    const key = id ? `id:${id}` : `name:${normalizedName(label)}`;
+    if (!label || seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
+}
+
+function formatTotalFundingDisplay(data) {
+  const amt = data?.totalFunding;
+  if (amt === null || amt === undefined || amt === "") return "";
+  const num = Number(amt);
+  const units = cleanText(data?.totalFundingUnits);
+  if (Number.isFinite(num)) {
+    const formatted =
+      num >= 1e9 ? `${(num / 1e9).toFixed(1).replace(/\.0$/, "")}B` :
+      num >= 1e6 ? `${(num / 1e6).toFixed(1).replace(/\.0$/, "")}M` :
+      num.toLocaleString();
+    return [formatted, units].filter(Boolean).join(" ");
+  }
+  return [cleanText(amt), units].filter(Boolean).join(" ");
+}
+
 function renderDossierTabContent(dossier) {
   const data = dossier.data;
   const node = dossier.node;
@@ -3606,14 +3636,22 @@ function renderDossierTabContent(dossier) {
     ? `<div class="dossier-section"><div class="dossier-skeleton" aria-label="Loading verified Cala record"></div></div>`
     : "";
 
+  const people = peopleFor(data);
+  const rounds = roundsFor(data);
+  const investors = deduplicateEntityList(data.investors);
+  const remoteConns = connectionRows(data);
+  const mapEdges = mapEdgesForNode(node);
+  const sources = sourcesFor(data);
+
   if (dossier.tab === "overview") {
-    const aliases = asList(data.aliases).map(recordText).filter((v) => v !== MISSING).join(" | ");
+    const aliasList = [...new Set(asList(data.aliases).map(recordText).filter((v) => v && v !== MISSING))];
     const entityKind = typeBadge(data);
     const isPerson = entityKind === "Person";
-    const affiliatedOrgs = [...new Set([...peopleFor(data), ...relationshipRows(data.relationships)].map((r) => formatReadableEntityLabel(nameOf(r))).filter(Boolean))]
+    const affiliatedOrgs = [...new Set([...people, ...relationshipRows(data.relationships)].map((r) => formatReadableEntityLabel(nameOf(r))).filter(Boolean))]
       .slice(0, 3)
-      .join(" | ");
+      .join(", ");
     const personRole = cleanText(data.role || data.title || data.jobTitle);
+    const totalFundingLabel = formatTotalFundingDisplay(data);
 
     const schemaFields = isPerson
       ? [
@@ -3621,26 +3659,99 @@ function renderDossierTabContent(dossier) {
           { label: "Role / Title", value: populatedValue(personRole) },
           { label: "Affiliations", value: populatedValue(affiliatedOrgs) },
           { label: "Location / Country", value: populatedValue(data.headquarters || data.hq || data.hqCity || data.country) },
-          { label: "Aliases", value: populatedValue(aliases) },
           { label: "Website", value: populatedValue(data.website || data.domain || data.url) }
         ]
       : [
           { label: "Category", value: populatedValue(data.category || data.sector || entityKind) },
+          { label: "Funding Stage", value: populatedValue(data.fundingStage) },
+          { label: "Total Funding", value: populatedValue(totalFundingLabel) },
           { label: "Headquarters", value: populatedValue(data.headquarters || data.hq || data.hqCity || data.address) },
           { label: "Country", value: populatedValue(data.country) },
           { label: "Founded", value: populatedValue(data.founded || data.foundingDate) },
           { label: "Status", value: populatedValue(data.operationalStatus || data.status || data.ownershipStatus) },
           { label: "Website", value: populatedValue(data.website || data.domain || data.url) },
-          { label: "Listing or Parent", value: populatedValue(data.listing || data.parentCompany || data.parent || data.acquiredBy) },
-          { label: "Aliases", value: populatedValue(aliases) }
+          { label: "Listing or Parent", value: populatedValue(data.listing || data.parentCompany || data.parent || data.acquiredBy) }
         ];
 
     const populated = schemaFields.filter((f) => f.value);
     const missing = schemaFields.filter((f) => !f.value);
     const displayCards = populated.length ? populated : [{ label: "Category", value: entityKind }];
 
+    const connCount = Math.max(remoteConns.length, mapEdges.length);
+    const kpiHtml = `
+      <div class="dossier-kpi-strip">
+        <button type="button" class="dossier-kpi-card" data-switch-dossier-tab="connections">
+          <span class="kpi-num">${connCount}</span>
+          <span class="kpi-lbl">Verified Links</span>
+        </button>
+        <button type="button" class="dossier-kpi-card" data-switch-dossier-tab="people">
+          <span class="kpi-num">${people.length}</span>
+          <span class="kpi-lbl">People</span>
+        </button>
+        <button type="button" class="dossier-kpi-card" data-switch-dossier-tab="funding">
+          <span class="kpi-num">${rounds.length + investors.length}</span>
+          <span class="kpi-lbl">${rounds.length ? "Rounds & Backers" : "Backers"}</span>
+        </button>
+        <button type="button" class="dossier-kpi-card" data-switch-dossier-tab="sources">
+          <span class="kpi-num">${sources.length}</span>
+          <span class="kpi-lbl">Cala Sources</span>
+        </button>
+      </div>
+    `;
+
+    const topConnPreview = (remoteConns.length ? remoteConns : mapEdges).slice(0, 3);
+    const previewHtml = topConnPreview.length
+      ? `
+      <section class="dossier-section">
+        <div class="dossier-section-head-row">
+          <h3>Top Verified Connections</h3>
+          <button type="button" class="dossier-link-btn" data-switch-dossier-tab="connections">View all (${connCount}) &rarr;</button>
+        </div>
+        <div class="group-entry-list">
+          ${topConnPreview
+            .map((item, idx) => {
+              const isRemote = Boolean(item.entityId || item.connectionType);
+              if (isRemote) {
+                const pathSteps = asList(item.path).map((s) => formatReadableEntityLabel(nameOf(s))).filter(Boolean);
+                const title = pathSteps.length ? pathSteps.join(" -> ") : cleanText(item.entityName || item.name) || MISSING;
+                const rel = cleanText(item.relation || item.relationship || item.connectionType);
+                const tier = tierOf(item);
+                return `
+                  <button type="button" class="group-entry" data-focus-connection="${idx}">
+                    <div class="group-entry-top">
+                      <strong>${escapeHtml(title)}</strong>
+                      <span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>
+                    </div>
+                    <span>${escapeHtml(rel)}${item.eventDate ? ` · ${escapeHtml(item.eventDate)}` : ""}</span>
+                  </button>
+                `;
+              }
+              const otherId = item.from === node.id ? item.to : item.from;
+              const other = (state.bridgeMap?.nodes || []).find((n) => n.id === otherId);
+              const title = `${formatReadableEntityLabel(nameOf(node))} -> ${formatReadableEntityLabel(nameOf(other || { id: otherId }))}`;
+              const tier = tierOf(item);
+              return `
+                <button type="button" class="group-entry" data-focus-edge="${escapeHtml(item.id)}" data-focus-node="${escapeHtml(otherId)}">
+                  <div class="group-entry-top">
+                    <strong>${escapeHtml(title)}</strong>
+                    <span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>
+                  </div>
+                  <span>${escapeHtml(cleanText(item.detail || item.label || ""))}</span>
+                </button>
+              `;
+            })
+            .join("")}
+        </div>
+      </section>`
+      : "";
+
+    const aliasHtml = aliasList.length
+      ? `<div class="dossier-alias-row"><span class="dossier-alias-lbl">Also known as:</span><div class="inline-chip-row">${aliasList.slice(0, 8).map((a) => `<span class="inline-chip">${escapeHtml(a)}</span>`).join("")}</div></div>`
+      : "";
+
     return `
       ${loading}
+      ${kpiHtml}
       <section class="dossier-section">
         <div class="dossier-section-head-row">
           <h3>Identity</h3>
@@ -3649,24 +3760,27 @@ function renderDossierTabContent(dossier) {
         <div class="fact-grid">
           ${displayCards.map((f) => factCardHtml(f.label, f.value, data)).join("")}
         </div>
+        ${aliasHtml}
         ${missing.length ? `<p class="dossier-missing-line"><span>Not indexed in Cala yet:</span> ${escapeHtml(missing.map((f) => f.label).join(" · "))}</p>` : ""}
       </section>
       <section class="dossier-section">
         <h3>Cala Summary</h3>
         <p class="dossier-empty">${escapeHtml(cleanText(data.description || data.summary) || MISSING)}</p>
       </section>
+      ${previewHtml}
     `;
   }
 
   if (dossier.tab === "people") {
-    const people = peopleFor(data);
     if (!people.length) {
       return `${loading}<section class="dossier-section"><h3>People</h3><p class="dossier-empty">No people records verified in Cala for this entity.</p></section>`;
     }
+    let hasMissingDates = false;
+    let hasMissingPrior = false;
     return `
       ${loading}
       <section class="dossier-section">
-        <h3>Leadership &amp; Verified People</h3>
+        <h3>Leadership &amp; Verified People (${people.length})</h3>
         <div class="table-wrap">
           <table>
             <thead>
@@ -3688,14 +3802,19 @@ function renderDossierTabContent(dossier) {
                   const nameCell = pid
                     ? `<button type="button" class="inline-chip" data-open-person="${escapeHtml(pid)}">${escapeHtml(pName)}</button>`
                     : escapeHtml(pName);
-                  const span = [cleanText(p.validSince || p.since), cleanText(p.validUntil || p.until)].filter(Boolean).join(" to ") || MISSING;
+                  const relText = cleanText(p.relation || p.relationship);
+                  const roleText = cleanText(p.role || p.title);
+                  const span = [cleanText(p.validSince || p.since), cleanText(p.validUntil || p.until)].filter(Boolean).join(" to ");
+                  const priorText = cleanText(p.priorCompany || p.prior_company);
+                  if (!span) hasMissingDates = true;
+                  if (!priorText) hasMissingPrior = true;
                   return `
                     <tr>
                       <td>${nameCell}</td>
-                      <td>${escapeHtml(cleanText(p.relation || p.relationship) || MISSING)}</td>
-                      <td>${escapeHtml(cleanText(p.role || p.title) || MISSING)}</td>
-                      <td>${escapeHtml(span)}</td>
-                      <td>${escapeHtml(cleanText(p.priorCompany || p.prior_company) || MISSING)}</td>
+                      <td>${relText ? escapeHtml(relText) : `<span class="cell-muted">-</span>`}</td>
+                      <td>${roleText ? escapeHtml(roleText) : `<span class="cell-muted">-</span>`}</td>
+                      <td>${span ? escapeHtml(span) : `<span class="cell-muted">-</span>`}</td>
+                      <td>${priorText ? escapeHtml(priorText) : `<span class="cell-muted">-</span>`}</td>
                       <td><span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span></td>
                     </tr>
                   `;
@@ -3704,14 +3823,13 @@ function renderDossierTabContent(dossier) {
             </tbody>
           </table>
         </div>
+        ${(hasMissingDates || hasMissingPrior) ? `<p class="dossier-missing-line"><span>Unindexed cells (-):</span> ${escapeHtml([hasMissingDates ? "Employment dates" : "", hasMissingPrior ? "Prior employer" : ""].filter(Boolean).join(" · "))} not found in Cala.</p>` : ""}
       </section>
     `;
   }
 
   if (dossier.tab === "funding") {
-    const rounds = roundsFor(data);
-    const investors = asList(data.investors);
-    const portfolio = asList(data.portfolio);
+    const portfolio = deduplicateEntityList(data.portfolio);
     const fallback = [data.listing, data.parentCompany || data.parent, data.acquiredBy].filter(Boolean);
 
     const roundsHtml = rounds.length
@@ -3725,65 +3843,73 @@ function renderDossierTabContent(dossier) {
                   : clickableChipHtml(nameOf(inv), inv, "data-open-investor")
               )
               .join(" ");
-            const amount = [cleanText(round.amount ?? round.amountEurM ?? round.transactionValue), cleanText(round.currency || round.transactionValueUnits)]
-              .filter(Boolean)
-              .join(" ");
+            const rawAmt = cleanText(round.amount ?? round.amountEurM ?? round.transactionValue);
+            const rawUnit = cleanText(round.currency || round.transactionValueUnits || (round.amountEurM != null ? "EUR M" : ""));
+            const amount = [rawAmt, rawUnit].filter(Boolean).join(" ");
+            const dateStr = cleanText(round.date || round.eventDate);
             const tier = tierOf(round);
             return `
               <div class="timeline-item">
-                <time>${escapeHtml(cleanText(round.date || round.eventDate) || MISSING)}</time>
-                <strong>${escapeHtml(formatReadableEntityLabel(cleanText(round.type || round.roundType) || MISSING))}</strong>
-                <div>${escapeHtml(amount || MISSING)}</div>
-                <div class="inline-chip-list">${names || MISSING}</div>
+                <time>${escapeHtml(dateStr || "Undated")}</time>
+                <strong>${escapeHtml(formatReadableEntityLabel(cleanText(round.type || round.roundType) || "Funding Round"))}</strong>
+                <div>${amount ? escapeHtml(amount) : `<span class="cell-muted">Amount unindexed</span>`}</div>
+                ${names ? `<div class="inline-chip-list">${names}</div>` : ""}
                 <span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>
               </div>
             `;
           })
           .join("")}</div>`
-      : `<p class="dossier-empty">No funding rounds recorded in Cala.</p>`;
+      : `<p class="dossier-empty">No dedicated FundingRound nodes recorded in Cala${investors.length ? `; ${investors.length} investor links appear below.` : "."}</p>`;
 
     return `
       ${loading}
-      <section class="dossier-section"><h3>Funding Rounds</h3>${roundsHtml}</section>
+      <section class="dossier-section"><h3>Funding Rounds (${rounds.length})</h3>${roundsHtml}</section>
       <section class="dossier-section">
-        <h3>Investors</h3>
+        <h3>Investors (${investors.length})</h3>
         ${investors.length
           ? `<ul class="data-list">${investors
               .map((inv) => {
                 const tier = tierOf(inv);
-                return `<li>${clickableChipHtml(nameOf(inv), inv, "data-open-investor")} <span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span></li>`;
+                const roleMeta = [cleanText(inv.role), cleanText(inv.eventDate || inv.date)].filter(Boolean).join(" · ");
+                return `<li><div>${clickableChipHtml(nameOf(inv), inv, "data-open-investor")}${roleMeta ? ` <span class="cell-muted" style="font-size:12px;margin-left:6px;">${escapeHtml(roleMeta)}</span>` : ""}</div><span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span></li>`;
               })
               .join("")}</ul>`
           : `<p class="dossier-empty">${escapeHtml(MISSING)}</p>`}
       </section>
       <section class="dossier-section">
-        <h3>Portfolio &amp; Corporate Holdings</h3>
+        <h3>Portfolio &amp; Corporate Holdings (${portfolio.length + fallback.length})</h3>
         ${portfolio.length || fallback.length
-          ? `<ul class="data-list">${portfolio.map((item) => `<li>${clickableChipHtml(nameOf(item), item, "data-open-investor")}</li>`).join("")}${fallback.map((item) => `<li><span>${escapeHtml(recordText(item))}</span></li>`).join("")}</ul>`
+          ? `<ul class="data-list">${portfolio.map((item) => `<li>${clickableChipHtml(nameOf(item), item, "data-open-investor")}<span class="source-tier" data-tier="${escapeHtml(tierOf(item))}">${escapeHtml(tierOf(item))}</span></li>`).join("")}${fallback.map((item) => `<li><span>${escapeHtml(recordText(item))}</span></li>`).join("")}</ul>`
           : `<p class="dossier-empty">${escapeHtml(MISSING)}</p>`}
       </section>
     `;
   }
 
   if (dossier.tab === "connections") {
-    const mapEdges = asList(state.bridgeMap?.edges).filter((e) => e.from === node.id || e.to === node.id);
-    const remoteConns = connectionRows(data);
-
     const groupedRows = ORBIT_QUADRANTS.map((q) => {
       const edgesInGrp = mapEdges.filter((e) => getNodeContributionGroup(e) === q.group);
       const remoteInGrp = remoteConns.filter((c) => deriveContributionGroupFrontend(c) === q.group);
-      const summary = [
-        ...edgesInGrp.map((e) => cleanText(e.detail || "")),
-        ...remoteInGrp.map((c) => cleanText(c.relation || c.relationship || c.connectionType || ""))
-      ]
-        .filter(Boolean)
-        .join(" | ") || MISSING;
+      const items = [
+        ...edgesInGrp.map((e) => cleanText(e.detail || e.label || "")),
+        ...remoteInGrp.map((c) => {
+          const steps = asList(c.path).map((s) => formatReadableEntityLabel(nameOf(s))).filter(Boolean);
+          return steps.length ? `${steps.join(" -> ")} (${cleanText(c.relation || c.connectionType)})` : cleanText(c.relation || c.relationship);
+        })
+      ].filter(Boolean);
+      const uniqueItems = [...new Set(items)];
       const tier = strongestTier([...edgesInGrp, ...remoteInGrp]);
+      const extraCount = Math.max(0, uniqueItems.length - 4);
+      const listHtml = uniqueItems.length
+        ? `<ul class="dossier-group-bullets">${uniqueItems.slice(0, 4).map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>${extraCount ? `<div class="cell-muted" style="font-size:11.5px;margin-top:4px;">+${extraCount} more verified ${extraCount === 1 ? "signal" : "signals"}</div>` : ""}`
+        : `<div class="cell-muted" style="font-size:12px;">No signals recorded in this category.</div>`;
       return `
-        <li>
-          <div><strong>${escapeHtml(q.label)}</strong><div style="color:var(--muted);font-size:12.5px;margin-top:3px;">${escapeHtml(summary)}</div></div>
-          <span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>
-        </li>
+        <div class="dossier-group-card">
+          <div class="dossier-group-head">
+            <span class="tip-lens-badge" data-group="${escapeHtml(q.group)}">${escapeHtml(q.label)}</span>
+            ${uniqueItems.length ? `<span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>` : ""}
+          </div>
+          ${listHtml}
+        </div>
       `;
     }).join("");
 
@@ -3794,13 +3920,14 @@ function renderDossierTabContent(dossier) {
             const title = pathSteps.length ? pathSteps.join(" -> ") : cleanText(c.entityName || c.name || c.label) || MISSING;
             const rel = cleanText(c.relation || c.relationship || c.connectionType) || MISSING;
             const tier = tierOf(c);
+            const badge = c.connectionType === "shared_bridge" ? "2-hop Shared Bridge" : "Direct 1-hop";
             return `
               <button type="button" class="group-entry" data-focus-connection="${idx}">
                 <div class="group-entry-top">
                   <strong>${escapeHtml(title)}</strong>
                   <span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>
                 </div>
-                <span>${escapeHtml(rel)}</span>
+                <span>${escapeHtml(badge)} · ${escapeHtml(rel)}${c.eventDate ? ` · ${escapeHtml(c.eventDate)}` : ""}</span>
               </button>
             `;
           })
@@ -3828,11 +3955,11 @@ function renderDossierTabContent(dossier) {
     return `
       ${loading}
       <section class="dossier-section">
-        <h3>Contribution by Group</h3>
-        <ul class="data-list">${groupedRows}</ul>
+        <h3>Contribution by Decision Group</h3>
+        <div class="dossier-group-grid">${groupedRows}</div>
       </section>
       <section class="dossier-section">
-        <h3>Verified Cala Paths</h3>
+        <h3>Verified Cala Paths (${remoteConns.length || mapEdges.length})</h3>
         ${verifiedList}
       </section>
     `;
@@ -3840,49 +3967,68 @@ function renderDossierTabContent(dossier) {
 
   if (dossier.tab === "timeline") {
     const observations = asList(data.employeeCountSeries);
-    const events = [
+    const allEvents = [
       ...asList(data.corporateEvents),
       ...asList(data.financialMetrics),
       ...relationshipRows(data.relationships)
-    ].sort((a, b) => String(a.date || a.eventDate || "").localeCompare(String(b.date || b.eventDate || "")));
+    ];
+    const datedEvents = [];
+    const undatedEvents = [];
+    for (const item of allEvents) {
+      const dStr = cleanText(item.date || item.eventDate);
+      if (dStr && /\d{4}/.test(dStr)) datedEvents.push({ item, date: dStr });
+      else undatedEvents.push(item);
+    }
+    datedEvents.sort((a, b) => b.date.localeCompare(a.date));
 
     const obsHtml = observations.length
       ? `<div class="table-wrap"><table><thead><tr><th>Date</th><th>Observed Value</th><th>Source</th></tr></thead><tbody>${observations
           .map((item) => {
             const tier = tierOf(item);
-            return `<tr><td>${escapeHtml(cleanText(item.date) || MISSING)}</td><td>${escapeHtml(cleanText(item.value ?? item.count ?? item.employeeCount) || MISSING)}</td><td><span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span></td></tr>`;
+            return `<tr><td>${escapeHtml(cleanText(item.date) || "-")}</td><td>${escapeHtml(cleanText(item.value ?? item.count ?? item.employeeCount) || "-")}</td><td><span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span></td></tr>`;
           })
           .join("")}</tbody></table></div>`
       : `<p class="dossier-empty">${escapeHtml(MISSING)}</p>`;
 
-    const evHtml = events.length
-      ? `<div class="timeline">${events
-          .map((item) => {
+    const datedHtml = datedEvents.length
+      ? `<div class="timeline">${datedEvents
+          .map(({ item, date }) => {
             const tier = tierOf(item);
-            return `<div class="timeline-item"><time>${escapeHtml(cleanText(item.date || item.eventDate) || MISSING)}</time><strong>${escapeHtml(formatReadableEntityLabel(recordText(item)))}</strong><span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span></div>`;
+            return `<div class="timeline-item"><time>${escapeHtml(date)}</time><strong>${escapeHtml(formatReadableEntityLabel(recordText(item)))}</strong><span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span></div>`;
           })
           .join("")}</div>`
-      : `<p class="dossier-empty">${escapeHtml(MISSING)}</p>`;
+      : `<p class="dossier-empty">No dated corporate events verified in Cala.</p>`;
+
+    const undatedHtml = undatedEvents.length
+      ? `<section class="dossier-section"><h3>Undated Cala Relationships (${undatedEvents.length})</h3><div class="timeline is-undated">${undatedEvents
+          .slice(0, 20)
+          .map((item) => {
+            const tier = tierOf(item);
+            return `<div class="timeline-item"><time class="cell-muted">Undated</time><strong>${escapeHtml(formatReadableEntityLabel(recordText(item)))}</strong><span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span></div>`;
+          })
+          .join("")}</div>${undatedEvents.length > 20 ? `<p class="dossier-missing-line">Showing top 20 of ${undatedEvents.length} undated relationships.</p>` : ""}</section>`
+      : "";
 
     return `
       ${loading}
+      <section class="dossier-section"><h3>Dated Milestones &amp; Events (${datedEvents.length})</h3>${datedHtml}</section>
       <section class="dossier-section"><h3>Headcount &amp; Metrics</h3>${obsHtml}</section>
-      <section class="dossier-section"><h3>Corporate Events &amp; Relationships</h3>${evHtml}</section>
+      ${undatedHtml}
     `;
   }
 
   // Sources & Gaps tab
-  const sources = sourcesFor(data);
-  const gaps = gapListForDossier(data, node, mapEdgesForNode(node));
+  const gaps = gapListForDossier(data, node, mapEdges);
   const sourcesHtml = sources.length
     ? `<ul class="data-list">${sources
         .map((src) => {
-          const label = cleanText(src.title || src.name || src.publisher || src.id || src.url) || MISSING;
+          const prettyTitle = formatCleanCitationTitle(src.title || src.name, src.publisher, src.url || src.document || src.link);
+          const label = prettyTitle || cleanText(src.publisher || src.title || src.name || src.id || src.url) || MISSING;
           const url = cleanText(src.url || src.document || src.link);
           const tier = tierOf(src);
           return `
             <li>
-              <div>${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>` : escapeHtml(label)}<div style="color:var(--muted);font-size:12px;">${escapeHtml(cleanText(src.date) || MISSING)}</div></div>
+              <div>${url && /^https?:\/\//i.test(url) ? `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>` : escapeHtml(label)}<div style="color:var(--muted);font-size:12px;">${escapeHtml([cleanText(src.publisher), cleanText(src.date) || "Undated"].filter(Boolean).join(" · "))}</div></div>
               <span class="source-tier" data-tier="${escapeHtml(tier)}">${escapeHtml(tier)}</span>
             </li>
           `;
@@ -3896,7 +4042,7 @@ function renderDossierTabContent(dossier) {
 
   return `
     ${loading}
-    <section class="dossier-section"><h3>Verified Cala Sources</h3>${sourcesHtml}</section>
+    <section class="dossier-section"><h3>Verified Cala Sources (${sources.length})</h3>${sourcesHtml}</section>
     <section class="dossier-section"><h3>Not Found in Cala (Gaps)</h3>${gapsHtml}</section>
   `;
 }
@@ -3905,7 +4051,16 @@ function mapEdgesForNode(node) {
   return asList(state.bridgeMap?.edges).filter((e) => e.from === node.id || e.to === node.id);
 }
 
-function renderDossier() {
+const DOSSIER_TAB_LABELS = {
+  overview: "Overview",
+  people: "People",
+  funding: "Funding & Investors",
+  connections: "Connections",
+  timeline: "Timeline",
+  sources: "Sources & Gaps"
+};
+
+function renderDossier(options = {}) {
   const d = state.dossier;
   if (!d) return;
 
@@ -3943,6 +4098,7 @@ function renderDossier() {
     if (addBtn) addBtn.hidden = true;
     if (body) {
       body.innerHTML = renderConnectionInspectorBody(d);
+      if (options.resetScroll) body.scrollTop = 0;
     }
     return;
   }
@@ -3973,15 +4129,40 @@ function renderDossier() {
   if (backBtn) backBtn.hidden = !d.history.length;
   if (addBtn) addBtn.hidden = isEntityOnMap(node) || state.pinnedEntities.length >= 20;
 
+  const peopleCount = peopleFor(data).length;
+  const fundingCount = roundsFor(data).length + deduplicateEntityList(data.investors).length;
+  const connCount = Math.max(connectionRows(data).length, mapEdgesForNode(node).length);
+  const timelineCount =
+    asList(data.employeeCountSeries).length +
+    asList(data.corporateEvents).length +
+    asList(data.financialMetrics).length +
+    relationshipRows(data.relationships).length;
+  const sourcesCount = sourcesFor(data).length;
+  const tabCounts = {
+    people: peopleCount,
+    funding: fundingCount,
+    connections: connCount,
+    timeline: timelineCount,
+    sources: sourcesCount
+  };
+
   document.querySelectorAll("[data-dossier-tab]").forEach((tab) => {
-    const active = tab.dataset.dossierTab === d.tab;
+    const key = tab.dataset.dossierTab;
+    const active = key === d.tab;
     tab.classList.toggle("is-active", active);
     tab.setAttribute("aria-selected", String(active));
     tab.tabIndex = active ? 0 : -1;
+    const base = DOSSIER_TAB_LABELS[key] || tab.textContent;
+    const count = tabCounts[key];
+    tab.innerHTML =
+      typeof count === "number"
+        ? `${escapeHtml(base)} <span class="dossier-tab-count${count === 0 ? " is-zero" : ""}">${count}</span>`
+        : escapeHtml(base);
   });
 
   if (body) {
     body.innerHTML = renderDossierTabContent(d);
+    if (options.resetScroll) body.scrollTop = 0;
   }
 }
 
@@ -4483,11 +4664,18 @@ function bindDossierEvents() {
     tab.addEventListener("click", () => {
       if (!state.dossier) return;
       state.dossier.tab = tab.dataset.dossierTab;
-      renderDossier();
+      renderDossier({ resetScroll: true });
     });
   });
 
   $("#dossierBody")?.addEventListener("click", (e) => {
+    const switchTabBtn = e.target.closest("[data-switch-dossier-tab]");
+    if (switchTabBtn && state.dossier) {
+      state.dossier.tab = switchTabBtn.dataset.switchDossierTab;
+      renderDossier({ resetScroll: true });
+      return;
+    }
+
     const inspectBtn = e.target.closest("[data-inspect-entity-id]");
     if (inspectBtn && state.dossier) {
       const targetId = inspectBtn.dataset.inspectEntityId;

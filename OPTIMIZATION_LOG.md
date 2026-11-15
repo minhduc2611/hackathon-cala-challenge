@@ -58,3 +58,14 @@
   - Connection transparency: hover tooltips & Connection Inspector now expose `1-hop Direct` vs `2-hop FundingRound`, raw relation (`INVESTED_IN`, etc.), deduplicated unique citations + record IDs, and explicit `Unindexed in Cala` gaps
   - `npm test`: `47/47` passing (`11,299.0 ms`)
 - **Decision:** KEEP
+
+### Exp 4 (2026-11-15 02:26) — Company Dossier UI Organization, Tab Counts & Table/Timeline Bug Fixes
+- **Goal:** Fix repeated `"Not found in Cala"` clutter in `People` & `Funding` tables, fix `Timeline` sorting (`""` sorting ahead of dates), guard `openEntityDossier` against stale async responses, reset modal scroll on tab change, add live tab counts on all 5 detail tabs, and organize `Overview` (KPI strip + alias chips + Top Verified Connections) & `Connections` (2-col Decision Group cards).
+- **Files:** `public/app.js`, `public/styles.css`
+- **Before -> After:**
+  - Table noise: replaced repeated `Not found in Cala` cells with clean `-` + single footer disclosure; deduplicated `investors` & `portfolio` lists
+  - Timeline ordering bug: split `Dated Milestones` (newest-first) from `Undated Cala Relationships`
+  - Tab discovery: live count badges (`People (N)`, `Funding (N)`, `Connections (N)`, `Timeline (N)`, `Sources & Gaps (N)`) + clickable KPI jump cards
+  - Stale async modal race: guarded with monotonic `state.dossierRequestSeq`
+  - `npm test`: `47/47` passing (`11,822.4 ms`), `0` UI invariant violations
+- **Decision:** KEEP
