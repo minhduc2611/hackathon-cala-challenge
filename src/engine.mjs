@@ -4730,6 +4730,116 @@ export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options
       .slice(0, 12);
     const fNode = nodeMap.get(focalId);
     if (fNode) fNode.timingCatalysts = timingEventsByEntity[focalId];
+
+    // Surface top 2 verified dated milestones as visible TIMING map nodes/edges
+    const seenTimingTitles = new Set();
+    let promotedTiming = 0;
+    for (const evt of timingEventsByEntity[focalId]) {
+      if (promotedTiming >= 2) break;
+      const evtLabel = String(evt.label || '').trim();
+      if (!evtLabel || !evt.date) continue;
+      const normKey = evtLabel.toLowerCase().slice(0, 36);
+      if (seenTimingTitles.has(normKey)) continue;
+      seenTimingTitles.add(normKey);
+
+      const evtNodeId = `event:${slugifyBridgeId(`${focalId}-${evtLabel}-${evt.date}`).slice(0, 48)}`;
+      const shortName = evtLabel.length > 38 ? `${evtLabel.slice(0, 35)}...` : evtLabel;
+      if (!nodeMap.has(evtNodeId)) {
+        nodeMap.set(evtNodeId, {
+          id: evtNodeId,
+          name: shortName,
+          fullTitle: evtLabel,
+          kind: 'event',
+          entityType: 'Timing Catalyst',
+          contributionGroup: 'timing',
+          isTimingCatalyst: true,
+          date: evt.date,
+          topSourceRank: evt.sourceRank || 'PRESS',
+          focalEntityIds: [focalId],
+          sourceIds: evt.sourceId ? [evt.sourceId] : []
+        });
+      }
+      const evtEdgeId = `edge:${focalId}:TIMING:${evtNodeId}`;
+      if (!edges.some((e) => e.id === evtEdgeId)) {
+        edges.push({
+          id: evtEdgeId,
+          from: focalId,
+          to: evtNodeId,
+          relation: evt.relation || 'DATED_MILESTONE',
+          label: `${shortName} (${evt.date})`,
+          date: evt.date,
+          contributionGroup: 'timing',
+          isTimingCatalyst: true,
+          topSourceRank: evt.sourceRank || 'PRESS',
+          sourceIds: evt.sourceId ? [evt.sourceId] : [],
+          focalEntityId: focalId,
+          whyMatters: `Verified dated milestone (${evt.date}) indicating active operational or financing timing.`
+        });
+      }
+      promotedTiming += 1;
+    }
+  }
+
+  // Surface verified competitive/sector overlap as a CAUTION bridge across 2+ focal entities
+  if (focalEntityIds.length >= 2) {
+    const byCategory = new Map();
+    for (const focalId of focalEntityIds) {
+      const fEnt = focalById.get(focalId) || {};
+      const fNode = nodeMap.get(focalId);
+      const rawCat = String(fEnt.category || fEnt.sector || fEnt.industry || fNode?.sector || '').trim();
+      if (!rawCat || /^(entity|company|organization|person|unknown)$/i.test(rawCat)) continue;
+      const key = rawCat.toLowerCase();
+      if (!byCategory.has(key)) byCategory.set(key, { label: rawCat, focalIds: [] });
+      byCategory.get(key).focalIds.push(focalId);
+    }
+    for (const [catKey, entry] of byCategory.entries()) {
+      if (entry.focalIds.length < 2) continue;
+      const alreadyHasCautionBridge = edges.some(
+        (e) => e.contributionGroup === 'caution' && entry.focalIds.includes(e.focalEntityId)
+      );
+      if (alreadyHasCautionBridge) continue;
+      const cautionNodeId = `caution:overlap:${slugifyBridgeId(catKey).slice(0, 40)}`;
+      const fallbackSrcIds = entry.focalIds
+        .flatMap((fid) => (nodeMap.get(fid)?.sourceIds || focalById.get(fid)?.sourceIds || []))
+        .filter(Boolean)
+        .slice(0, 3);
+      if (!nodeMap.has(cautionNodeId)) {
+        nodeMap.set(cautionNodeId, {
+          id: cautionNodeId,
+          name: `${entry.label} Rivalry`,
+          kind: 'caution',
+          entityType: 'Competitive Overlap',
+          contributionGroup: 'caution',
+          isCautionFlag: true,
+          isSharedBridge: true,
+          sharedByFocalEntityIds: [...entry.focalIds],
+          topSourceRank: 'PRIMARY',
+          focalEntityIds: [...entry.focalIds],
+          sourceIds: fallbackSrcIds
+        });
+      }
+      for (const fid of entry.focalIds) {
+        const cEdgeId = `edge:${fid}:SECTOR_OVERLAP:${cautionNodeId}`;
+        if (!edges.some((e) => e.id === cEdgeId)) {
+          edges.push({
+            id: cEdgeId,
+            from: fid,
+            to: cautionNodeId,
+            relation: 'SECTOR_COMPETITION',
+            label: `Direct ${entry.label} overlap`,
+            contributionGroup: 'caution',
+            isCautionFlag: true,
+            isSharedBridge: true,
+            sharedBridgeNodeId: cautionNodeId,
+            sharedByFocalEntityIds: [...entry.focalIds],
+            topSourceRank: 'PRIMARY',
+            sourceIds: fallbackSrcIds,
+            focalEntityId: fid,
+            whyMatters: `Multiple mapped entities operate in ${entry.label}; check competitive conflict and customer overlap.`
+          });
+        }
+      }
+    }
   }
 
   const sharedBridgeNodeIds = [];

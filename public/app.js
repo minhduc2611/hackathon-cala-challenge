@@ -106,6 +106,8 @@ const state = {
   pointerPan: null,
   compareBoxOpen: false,
   legendPopoverOpen: false,
+  decisionSummaryOpen: false,
+  actionableOnly: false,
   filtersPanelOpen: false,
   suggestItems: [],
   suggestTimer: null,
@@ -1301,13 +1303,23 @@ function layoutBridgeMapNodes(bridgeMap) {
     };
   }
 
-  // MODE B: Free Multi-Entity Explorer Layout (2..20 focal hubs + centroid shared bridges + radial neighbor fans)
-  const nonAnchors = allNodes.filter((n) => n.kind !== "anchor" && !n.isFocalEntity);
+  // MODE B: Free Multi-Entity Explorer Layout (2..20 focal hubs + centroid shared bridges + grouped satellite branches)
+  const rawNonAnchors = allNodes.filter((n) => n.kind !== "anchor" && !n.isFocalEntity);
+  const rawNodeById = new Map([...anchorNodes, ...rawNonAnchors].map((n) => [n.id, n]));
+  const activeEdges = state.actionableOnly
+    ? allEdges.filter((e) => deriveEdgeVerdict(e, rawNodeById.get(e.to)).key !== "context")
+    : allEdges;
+  const activeNodeIds = new Set(anchorNodes.map((a) => a.id));
+  for (const e of activeEdges) {
+    activeNodeIds.add(e.from);
+    activeNodeIds.add(e.to);
+  }
+  const nonAnchors = rawNonAnchors.filter((n) => activeNodeIds.has(n.id));
   for (const n of [...anchorNodes, ...nonAnchors]) {
     nodeById.set(n.id, n);
     connectedEdgesByNode.set(n.id, []);
   }
-  for (const e of allEdges) {
+  for (const e of activeEdges) {
     if (!connectedEdgesByNode.has(e.from)) connectedEdgesByNode.set(e.from, []);
     if (!connectedEdgesByNode.has(e.to)) connectedEdgesByNode.set(e.to, []);
     connectedEdgesByNode.get(e.from).push(e);
@@ -1317,7 +1329,7 @@ function layoutBridgeMapNodes(bridgeMap) {
   // Determine which anchor owns each unique non-anchor node
   const anchorIdSet = new Set(anchorNodes.map((a) => a.id));
   const ownersOfNode = new Map();
-  for (const e of allEdges) {
+  for (const e of activeEdges) {
     if (anchorIdSet.has(e.from) && nodeById.has(e.to) && !anchorIdSet.has(e.to)) {
       if (!ownersOfNode.has(e.to)) ownersOfNode.set(e.to, new Set());
       ownersOfNode.get(e.to).add(e.from);
@@ -1346,6 +1358,82 @@ function layoutBridgeMapNodes(bridgeMap) {
   const countA = anchorNodes.length;
   const anchorRingRadius = countA === 2 ? 330 : Math.max(360, Math.round(countA * 78));
   const sortedShared = [...sharedNodes].sort((a, b) => Number(b.rarityScore || 0) - Number(a.rarityScore || 0));
+
+  const groupedHubNodes = [];
+  const groupedHubEdges = [];
+  const groupedSatIdSet = new Set();
+
+  const layoutAnchorGroupedSatellites = (aNode, ap, items, spanDeg) => {
+    const groupsActive = ORBIT_QUADRANTS.map((q) => ({
+      group: q.group,
+      label: q.label,
+      sats: items.filter((s) => deriveContributionGroupFrontend(s) === q.group)
+    })).filter((g) => g.sats.length > 0);
+    if (!groupsActive.length) return;
+
+    const gCount = groupsActive.length;
+    groupsActive.forEach((grp, gIdx) => {
+      const gDeg = gCount === 1 ? ap.outAngle : ap.outAngle - spanDeg / 2 + (gIdx / (gCount - 1)) * spanDeg;
+      const hubPos = polarToCartesian(ap.x, ap.y, 146, gDeg);
+      const hubId = `group_hub:${aNode.id}:${grp.group}`;
+      const hubNode = {
+        id: hubId,
+        kind: "group_hub",
+        groupKey: grp.group,
+        contributionGroup: grp.group,
+        label: grp.label,
+        subtitle: CONTRIBUTION_VISUAL_META[grp.group]?.subtitle || "",
+        clueMetric: `${grp.sats.length} ${grp.sats.length === 1 ? "path" : "paths"}`,
+        entityCount: grp.sats.length,
+        edgeCount: grp.sats.length,
+        visualWeight: 0.78,
+        focalEntityIds: [aNode.id]
+      };
+      groupedHubNodes.push(hubNode);
+      nodeById.set(hubId, hubNode);
+      const hm = estimateNodeBoxMetrics(hubNode, "group_hub", false, computeGroupHubOrbSize(0.78));
+      posMap.set(hubId, { x: hubPos.x, y: hubPos.y, ...hm });
+
+      groupedHubEdges.push({
+        id: `spoke:${aNode.id}->${hubId}`,
+        from: aNode.id,
+        to: hubId,
+        contributionGroup: grp.group,
+        topSourceRank: "PRIMARY",
+        rarityScore: 8,
+        isOverviewSpoke: true,
+        label: `${grp.label} Group`,
+        hubEntityCount: grp.sats.length
+      });
+
+      const sCount = grp.sats.length;
+      const satSpread = Math.min(44, Math.max(18, sCount * 14));
+      grp.sats.forEach((s, sIdx) => {
+        const sDeg = sCount === 1 ? gDeg : gDeg - satSpread / 2 + (sIdx / (sCount - 1)) * satSpread;
+        const sRad = 278 + (sIdx % 2) * 44;
+        const pt = polarToCartesian(ap.x, ap.y, sRad, sDeg);
+        const sm = estimateNodeBoxMetrics(s, "entity", false, computeEntityOrbSize(s, false));
+        posMap.set(s.id, { x: pt.x, y: pt.y, isTopUniqueLabel: sIdx < 2, ...sm });
+        groupedSatIdSet.add(s.id);
+
+        const origEdge = activeEdges.find(
+          (e) => (e.from === aNode.id && e.to === s.id) || (e.to === aNode.id && e.from === s.id)
+        );
+        if (origEdge) {
+          groupedHubEdges.push({
+            ...origEdge,
+            id: `branch:${hubId}->${s.id}`,
+            from: hubId,
+            to: s.id,
+            realFrom: origEdge.from,
+            realTo: origEdge.to,
+            realNodeId: s.id,
+            contributionGroup: grp.group
+          });
+        }
+      });
+    });
+  };
 
   if (countA === 2) {
     const p0 = { x: CONSTELLATION_CX - 315, y: CONSTELLATION_CY + 100, outAngle: 162 };
@@ -1381,14 +1469,7 @@ function layoutBridgeMapNodes(bridgeMap) {
       const items = (uniqueByAnchor.get(aNode.id) || [])
         .sort((a, b) => Number(b.rarityScore || 0) - Number(a.rarityScore || 0))
         .slice(0, 10);
-      const nCount = items.length;
-      items.forEach((s, idx) => {
-        const deg = nCount === 1 ? ap.outAngle : ap.outAngle - 78 + (idx / (nCount - 1)) * 156;
-        const rad = 225 + (idx % 2) * 62 + Math.floor(idx / 6) * 48;
-        const pt = polarToCartesian(ap.x, ap.y, rad, deg);
-        const sm = estimateNodeBoxMetrics(s, "entity", false, computeEntityOrbSize(s, false));
-        posMap.set(s.id, { x: pt.x, y: pt.y, ...sm });
-      });
+      layoutAnchorGroupedSatellites(aNode, ap, items, 136);
     });
   } else {
     const anchorDegs =
@@ -1438,27 +1519,24 @@ function layoutBridgeMapNodes(bridgeMap) {
     });
 
     const perAnchorLimit = countA <= 4 ? 8 : 6;
-    const span = Math.min(135, Math.max(46, Math.round(300 / countA)));
+    const span = Math.min(130, Math.max(54, Math.round(300 / countA)));
     anchorNodes.forEach((aNode) => {
       const ap = posMap.get(aNode.id);
       const items = (uniqueByAnchor.get(aNode.id) || [])
         .sort((a, b) => Number(b.rarityScore || 0) - Number(a.rarityScore || 0))
         .slice(0, perAnchorLimit);
-      items.forEach((s, idx) => {
-        const deg = items.length === 1 ? ap.outAngle : ap.outAngle - span / 2 + (idx / (items.length - 1)) * span;
-        const rad = 222 + (idx % 2) * 58 + Math.floor(idx / 6) * 48;
-        const pt = polarToCartesian(ap.x, ap.y, rad, deg);
-        const sm = estimateNodeBoxMetrics(s, "entity", false, computeEntityOrbSize(s, false));
-        posMap.set(s.id, { x: pt.x, y: pt.y, isTopUniqueLabel: idx < 3, ...sm });
-      });
+      layoutAnchorGroupedSatellites(aNode, ap, items, span);
     });
   }
 
   resolveOrbAndLabelCollisions(posMap, nodeById, null);
 
   const placedIds = new Set(posMap.keys());
-  const placedNodes = [...anchorNodes, ...nonAnchors].filter((n) => placedIds.has(n.id));
-  const placedEdges = allEdges.filter((e) => placedIds.has(e.from) && placedIds.has(e.to));
+  const placedNodes = [...anchorNodes, ...groupedHubNodes, ...nonAnchors].filter((n) => placedIds.has(n.id));
+  const directSharedEdges = activeEdges.filter(
+    (e) => placedIds.has(e.from) && placedIds.has(e.to) && !groupedSatIdSet.has(e.from) && !groupedSatIdSet.has(e.to)
+  );
+  const placedEdges = [...directSharedEdges, ...groupedHubEdges.filter((e) => placedIds.has(e.from) && placedIds.has(e.to))];
 
   let minX = CONSTELLATION_W;
   let minY = CONSTELLATION_H;
@@ -2082,6 +2160,7 @@ function renderConstellationMap(bridgeMapInput = undefined, options = {}) {
 
   nodesLayer.innerHTML = nodesHtml;
   applyPathLaserIsolation();
+  renderDecisionSummaryWidget();
   if (options.fit !== false) {
     fitConstellationToViewport();
   }
@@ -2213,6 +2292,307 @@ function hideMapTooltip() {
   if (tipEl) {
     tipEl.hidden = true;
     tipEl.dataset.tipKey = "";
+  }
+}
+
+const CONTEXT_RELATION_SET = new Set([
+  "HEADQUARTERED_IN",
+  "LOCATED_IN",
+  "OPERATES_IN_COUNTRY",
+  "OPERATES_IN_INDUSTRY",
+  "CLASSIFIED_AS",
+  "HAS_SECTOR",
+  "REGISTERED_IN",
+  "INCORPORATED_IN"
+]);
+
+function deriveEdgeVerdict(edge, targetNode = null) {
+  if (!edge) return { key: "context", label: "Neutral Context", shortEffect: "Background metadata." };
+  const group = deriveContributionGroupFrontend(edge);
+  const rel = String(edge.relation || edge.relationType || "").toUpperCase();
+  const targetType = String(targetNode?.entityType || targetNode?.kind || "").toLowerCase();
+
+  if (
+    group === "caution" ||
+    edge.isCautionFlag ||
+    rel.includes("COMPET") ||
+    rel.includes("DISPUTE") ||
+    rel.includes("LITIGAT") ||
+    rel.includes("ACQUIRED")
+  ) {
+    return {
+      key: "caution",
+      label: "Caution / Risk",
+      shortEffect: edge.isSharedBridge
+        ? "Direct competitive overlap or conflict - verify differentiation and customer lock-in."
+        : "Risk or M&A conflict signal - verify impact before proceeding."
+    };
+  }
+
+  if (CONTEXT_RELATION_SET.has(rel) || targetType === "country" || targetType === "industry") {
+    return {
+      key: "context",
+      label: "Neutral Context",
+      shortEffect: "Geographic or sector metadata - helpful context, not an intro or risk."
+    };
+  }
+
+  if (group === "timing" || edge.isTimingCatalyst) {
+    return {
+      key: "beneficial",
+      label: "Catalyst (Beneficial)",
+      shortEffect: `Dated momentum signal${edge.date ? ` (${edge.date})` : ""} supporting active timing conviction.`
+    };
+  }
+
+  if (edge.isSharedBridge) {
+    return {
+      key: "beneficial",
+      label: "Beneficial Bridge",
+      shortEffect: "Shared connection across mapped companies - strong warm intro or read-through path."
+    };
+  }
+
+  if (group === "lineage") {
+    return {
+      key: "beneficial",
+      label: "Beneficial Lineage",
+      shortEffect: "Verified founder or executive operator tie - supports team diligence and backchanneling."
+    };
+  }
+
+  return {
+    key: "beneficial",
+    label: edge.isLead ? "Beneficial (Lead)" : "Beneficial Access",
+    shortEffect: edge.isLead
+      ? "Lead investor relationship - high-conviction warm intro and syndicate anchor."
+      : "Verified investor or partner link - actionable access or syndicate signal."
+  };
+}
+
+function buildFourFactorDecisionSummary(bridgeMap) {
+  const nodes = asList(bridgeMap?.nodes);
+  const edges = asList(bridgeMap?.edges);
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+  const timingMap = bridgeMap?.timingEventsByEntity || {};
+  const timingEventCount = Object.values(timingMap).reduce((sum, arr) => sum + asList(arr).length, 0);
+
+  const byGroup = { access: [], lineage: [], timing: [], caution: [] };
+  for (const e of edges) {
+    const g = deriveContributionGroupFrontend(e);
+    if (byGroup[g]) byGroup[g].push(e);
+  }
+
+  const topNames = (list) => {
+    const seen = new Set();
+    const out = [];
+    for (const e of list) {
+      const n = nodeById.get(e.to) || nodeById.get(e.from);
+      const label = cleanText(n?.label || n?.name || e.label);
+      if (label && !seen.has(label) && !n?.isFocalEntity) {
+        seen.add(label);
+        out.push(label);
+      }
+      if (out.length >= 2) break;
+    }
+    return out;
+  };
+
+  const accessEdges = byGroup.access.filter((e) => deriveEdgeVerdict(e, nodeById.get(e.to)).key !== "context");
+  const accessShared = accessEdges.filter((e) => e.isSharedBridge).length;
+  const lineageEdges = byGroup.lineage;
+  const lineageShared = lineageEdges.filter((e) => e.isSharedBridge).length;
+  const timingEdges = byGroup.timing;
+  const totalTiming = Math.max(timingEdges.length, timingEventCount);
+  const latestTimingDate = [...timingEdges.map((e) => e.date), ...Object.values(timingMap).flat().map((x) => x?.date)]
+    .filter(Boolean)
+    .sort()
+    .pop();
+  const cautionEdges = byGroup.caution;
+
+  const factors = [
+    {
+      group: "access",
+      label: "Access",
+      count: accessEdges.length,
+      effect: accessShared > 0 ? "Beneficial · Strong" : accessEdges.length > 0 ? "Beneficial" : "No Signal",
+      effectClass: accessEdges.length > 0 ? "is-beneficial" : "is-neutral",
+      line: accessShared > 0
+        ? `Shared syndicate bridges (${topNames(accessEdges).join(", ") || accessShared}) unlock warm intros.`
+        : accessEdges.length > 0
+        ? `Direct backers/partners (${topNames(accessEdges).join(", ") || accessEdges.length}) aid outreach.`
+        : "No direct investor or partner paths verified in Cala."
+    },
+    {
+      group: "lineage",
+      label: "Lineage",
+      count: lineageEdges.length,
+      effect: lineageShared > 0 ? "Beneficial · Strong" : lineageEdges.length > 0 ? "Beneficial" : "No Signal",
+      effectClass: lineageEdges.length > 0 ? "is-beneficial" : "is-neutral",
+      line: lineageShared > 0
+        ? `Shared founder/exec ties (${topNames(lineageEdges).join(", ") || lineageShared}) give direct reference edge.`
+        : lineageEdges.length > 0
+        ? `Verified leadership (${topNames(lineageEdges).join(", ") || lineageEdges.length}) supports team diligence.`
+        : "No founder or executive lineage links indexed in Cala."
+    },
+    {
+      group: "timing",
+      label: "Timing",
+      count: totalTiming,
+      effect: totalTiming >= 3 ? "Beneficial · Active" : totalTiming > 0 ? "Catalyst" : "No Signal",
+      effectClass: totalTiming > 0 ? "is-beneficial" : "is-neutral",
+      line: totalTiming > 0
+        ? `${totalTiming} dated milestones${latestTimingDate ? ` (latest ${latestTimingDate})` : ""} show active momentum.`
+        : "No dated funding rounds or milestones verified in Cala."
+    },
+    {
+      group: "caution",
+      label: "Caution",
+      count: cautionEdges.length,
+      effect: cautionEdges.length > 0 ? "Risk · Watch" : "Clear",
+      effectClass: cautionEdges.length > 0 ? "is-caution" : "is-beneficial",
+      line: cautionEdges.length > 0
+        ? `${topNames(cautionEdges).join(", ") || `${cautionEdges.length} risk signal(s)`} - check competitive/IP conflict.`
+        : "No direct competitor or conflict flags surfaced in Cala."
+    }
+  ];
+
+  const hasBeneficial = accessEdges.length > 0 || lineageEdges.length > 0 || totalTiming > 0;
+  const overall = cautionEdges.length > 0 && hasBeneficial
+    ? { label: "Mixed · Actionable + Risks", cls: "is-mixed" }
+    : cautionEdges.length > 0
+    ? { label: "Caution · Verify Risks", cls: "is-caution" }
+    : hasBeneficial
+    ? { label: "Beneficial Signals", cls: "is-beneficial" }
+    : { label: "Limited Coverage", cls: "is-neutral" };
+
+  return { overall, factors };
+}
+
+function renderDecisionSummaryWidget() {
+  const pillBtn = $("#decisionSummaryToggleBtn");
+  const pillDot = $("#decisionPillDot");
+  const pillLabel = $("#decisionPillLabel");
+  const overallBadge = $("#decisionOverallBadge");
+  const factorList = $("#decisionFactorList");
+  const actionableBtn = $("#decisionActionableToggleBtn");
+  const pop = $("#decisionSummaryPopover");
+  if (!pillBtn || !factorList) return;
+
+  if (actionableBtn) {
+    actionableBtn.setAttribute("aria-pressed", String(Boolean(state.actionableOnly)));
+    actionableBtn.classList.toggle("is-active", Boolean(state.actionableOnly));
+  }
+
+  const bridgeMap = state.bridgeMap;
+  if (!bridgeMap || !asList(bridgeMap.nodes).length) {
+    pillBtn.disabled = true;
+    if (pillLabel) pillLabel.textContent = "Decision · 4 Factors";
+    if (pop) pop.hidden = true;
+    return;
+  }
+  pillBtn.disabled = false;
+  const summary = buildFourFactorDecisionSummary(bridgeMap);
+
+  if (pillDot) {
+    pillDot.className = `decision-pill-dot ${summary.overall.cls}`;
+  }
+  if (pillLabel) {
+    pillLabel.textContent = `Decision · ${summary.overall.label}`;
+  }
+  if (overallBadge) {
+    overallBadge.className = `decision-verdict-badge ${summary.overall.cls}`;
+    overallBadge.textContent = summary.overall.label;
+  }
+
+  factorList.innerHTML = summary.factors
+    .map(
+      (f) => `
+      <button type="button" class="decision-factor-row" data-factor-group="${escapeHtml(f.group)}">
+        <div class="decision-factor-top">
+          <span class="decision-factor-name">
+            <span class="fam-dot" style="background:${getContributionColorHex(f.group)}"></span>
+            ${escapeHtml(f.label)} <span class="decision-factor-count">(${f.count})</span>
+          </span>
+          <span class="decision-effect-pill ${escapeHtml(f.effectClass)}">${escapeHtml(f.effect)}</span>
+        </div>
+        <div class="decision-factor-line">${escapeHtml(f.line)}</div>
+      </button>
+    `
+    )
+    .join("");
+}
+
+async function runFourFactorClaudeInsight() {
+  const outEl = $("#decisionAiOutput");
+  const btnEl = $("#decisionRunClaudeBtn");
+  if (!outEl || !state.bridgeMap) return;
+
+  const summary = buildFourFactorDecisionSummary(state.bridgeMap);
+  const focalNames = asList(state.bridgeMap.focalEntities).map((f) => f.name).filter(Boolean);
+  const title = focalNames.length ? `${focalNames.join(" + ")} · 4-Factor Investment Decision` : "4-Factor Investment Decision";
+  const srcObj = state.bridgeMap.sources || {};
+  const allSources = Object.values(srcObj)
+    .filter((s) => s && s.id)
+    .slice(0, 8);
+  const topIds = allSources.slice(0, 3).map((s) => s.id);
+  const cacheKey = `4factor:${title}:${state.actionableOnly}:${summary.factors.map((f) => `${f.group}:${f.count}`).join(",")}`;
+
+  const renderResult = (res) => {
+    const srcById = new Map(allSources.map((s) => [s.id, s]));
+    const modeLabel = res.controlPlaneMode === "anthropic-connection-analyst" ? "Claude AI · Grounded" : "Deterministic Cala Brief";
+    const bullets = asList(res.insights)
+      .map((b) => {
+        const cites = asList(b.sourceIds)
+          .map((id) => srcById.get(id))
+          .filter(Boolean)
+          .map((s) => `<span class="ai-cite-pill">${escapeHtml(s.publisher || s.title || s.id)}</span>`)
+          .join("");
+        return `<li>${escapeHtml(b.text)} ${cites}</li>`;
+      })
+      .join("");
+    outEl.hidden = false;
+    outEl.innerHTML = `
+      <div class="decision-ai-card">
+        <div class="decision-ai-head"><span>${escapeHtml(modeLabel)}</span></div>
+        <p class="decision-ai-summary">${escapeHtml(res.summary || "")}</p>
+        ${bullets ? `<ul class="decision-ai-bullets">${bullets}</ul>` : ""}
+        ${res.question ? `<p class="decision-ai-q"><strong>Next Check:</strong> ${escapeHtml(res.question)}</p>` : ""}
+      </div>
+    `;
+  };
+
+  if (state.aiInsightCache.has(cacheKey)) {
+    renderResult(state.aiInsightCache.get(cacheKey));
+    return;
+  }
+
+  outEl.hidden = false;
+  outEl.innerHTML = `<div class="decision-ai-loading">Analyzing 4 decision factors with Claude AI...</div>`;
+  if (btnEl) btnEl.disabled = true;
+
+  try {
+    const res = await fetchJson("/api/connection-insight", {
+      method: "POST",
+      body: JSON.stringify({
+        mode: "entity",
+        title,
+        hopType: "4-Factor Summary",
+        relation: "DECISION_SYNTHESIS",
+        whyMatters: `Overall verdict: ${summary.overall.label}.`,
+        facts: summary.factors.map((f) => ({
+          text: `${f.label} (${f.effect}): ${f.line}`,
+          sourceIds: topIds
+        })),
+        sources: allSources
+      })
+    });
+    state.aiInsightCache.set(cacheKey, res);
+    renderResult(res);
+  } catch (err) {
+    outEl.innerHTML = `<div class="decision-ai-loading">Unable to run Claude insight: ${escapeHtml(err.message)}</div>`;
+  } finally {
+    if (btnEl) btnEl.disabled = false;
   }
 }
 
@@ -2787,8 +3167,10 @@ function buildEdgeTooltipHtml(edge) {
     whyMatters
   } = ctx;
 
+  const verdict = deriveEdgeVerdict(edge, nodeById.get(edge.to));
   const primaryLabel = edge.label || (isModeATreeEdge ? `${cgMeta.headerLabel} Connection` : "Verified Connection");
   const statusPills = [
+    `<span class="tip-pill tip-verdict-pill is-${escapeHtml(verdict.key)}">${escapeHtml(verdict.label)}</span>`,
     `<span class="tip-pill is-hop">${escapeHtml(edge.isRoundExpanded ? "2-hop · FundingRound" : "1-hop · Direct")}</span>`,
     rawRelations[0] ? `<span class="tip-pill is-rel">${escapeHtml(rawRelations[0])}</span>` : "",
     anyLead ? `<span class="tip-pill is-lead">Lead Investor</span>` : "",
@@ -2897,6 +3279,7 @@ function buildEdgeTooltipHtml(edge) {
       <span class="tip-tier-badge" data-tier="${escapeHtml(rank)}">${escapeHtml(rank)}</span>
     </div>
     ${statusPills ? `<div class="tip-pill-row">${statusPills}</div>` : ""}
+    <div class="tip-verdict-line is-${escapeHtml(verdict.key)}">${escapeHtml(verdict.shortEffect)}</div>
     <div class="tip-route">
       <span class="tip-route-path">${escapeHtml(fromName)} <span class="tip-arrow">${escapeHtml(arrowSymbol)}</span> ${escapeHtml(toName)}</span>
       ${routeTypeText}
@@ -4555,6 +4938,46 @@ function bindFilterAndHudEvents() {
     $("#mapLegendToggleBtn")?.setAttribute("aria-expanded", "false");
   });
 
+  // Bottom-right 4-Factor Decision Summary Popover
+  $("#decisionSummaryToggleBtn")?.addEventListener("click", () => {
+    state.decisionSummaryOpen = !state.decisionSummaryOpen;
+    const pop = $("#decisionSummaryPopover");
+    if (pop) pop.hidden = !state.decisionSummaryOpen;
+    $("#decisionSummaryToggleBtn")?.setAttribute("aria-expanded", String(state.decisionSummaryOpen));
+    if (state.decisionSummaryOpen) renderDecisionSummaryWidget();
+  });
+  $("#decisionSummaryCloseBtn")?.addEventListener("click", () => {
+    state.decisionSummaryOpen = false;
+    const pop = $("#decisionSummaryPopover");
+    if (pop) pop.hidden = true;
+    $("#decisionSummaryToggleBtn")?.setAttribute("aria-expanded", "false");
+  });
+  $("#decisionActionableToggleBtn")?.addEventListener("click", () => {
+    state.actionableOnly = !state.actionableOnly;
+    renderConstellationMap(undefined, { fit: false });
+  });
+  $("#decisionRunClaudeBtn")?.addEventListener("click", () => {
+    runFourFactorClaudeInsight();
+  });
+  $("#decisionFactorList")?.addEventListener("click", (e) => {
+    const row = e.target.closest("[data-factor-group]");
+    if (!row) return;
+    const grp = row.dataset.factorGroup;
+    const layout = state.mapLayoutNodes;
+    if (layout?.mode === "explorer") {
+      const hubNode = (layout.displayNodes || []).find((n) => n.kind === "group_hub" && n.groupKey === grp);
+      if (hubNode) {
+        state.selectedNodeId = state.selectedNodeId === hubNode.id ? null : hubNode.id;
+        state.selectedEdgeId = null;
+        applyPathLaserIsolation();
+      }
+      return;
+    }
+    state.expandedGroupKey = state.expandedGroupKey === grp ? null : grp;
+    syncConstellationControls();
+    renderConstellationMap(undefined, { fit: true });
+  });
+
   // Top-right Zoom Controls
   $("#mapZoomInBtn")?.addEventListener("click", () => {
     state.mapZoom = clampZoom(state.mapZoom * 1.15);
@@ -4618,6 +5041,14 @@ function bindCanvasAndMapInteractions() {
     hideMapTooltip();
 
     if (node.kind === "group_hub") {
+      if (state.mapLayoutNodes?.mode === "explorer") {
+        state.selectedNodeId = state.selectedNodeId === node.id ? null : node.id;
+        state.selectedEdgeId = null;
+        state.hoveredNodeId = null;
+        state.hoveredEdgeId = null;
+        applyPathLaserIsolation();
+        return;
+      }
       state.expandedGroupKey = state.expandedGroupKey === node.groupKey ? null : node.groupKey;
       state.selectedNodeId = null;
       state.selectedEdgeId = null;
