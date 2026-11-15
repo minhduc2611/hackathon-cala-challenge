@@ -9,6 +9,28 @@
   2. Performance & Payload: `/api/entity-dossier` median latency, `/api/analyze` latency & payload size, `/api/search` latency, `npm test` median duration, asset byte sizes.
   3. Product Quality: Connection link data transparency (1-hop vs 2-hop provenance, deal economics, full co-investor breakdown, graph-record provenance, explicit missing fields), Company Dossier UI organization & bug fixes, and optional citation-gated Claude AI connection/entity insights.
 
+## Final summary
+
+- **Branch:** `overnight/2026-11-15` (8 optimization commits ahead of baseline `7a59bea` on `main`)
+- **Kept Experiments:** 8 (`c507426`, `62a2f66`, `21c53dd`, `1698bbb`, `838afb6`, `08d7ed2`, `ef1a826`, `9839d0a`) | **Reverted:** 0
+- **Stop Reason:** All ranked backlog items completed, tested (`49/49` passing), and live-verified across Desktop (`1440x900` Dark & Light) and Mobile (`390x844`) in Chrome with `0` console/page/HTTP >=400 errors.
+
+| Metric | Baseline | Final | Delta |
+| --- | --- | --- | --- |
+| `npm test` | 47/47 pass (`11,888.7 ms` median) | **49/49 pass** (`12,587.1 ms` median) | +2 tests, 100% pass |
+| `GET /api/entity-dossier?ref=company:Anthropic` | `404` (`89.73 ms` median) / `476,999 B` (UUID) | **`200 OK` (`4.56 ms` median) / `177,489 B`** | **-94.9% latency, -62.8% payload** |
+| `GET /api/search?q=Anthropic` | `0.99 ms` median | `1.71 ms` median (`1,091 B`) | < 2 ms |
+| `POST /api/connection-insight` | Not present | **`200 OK`** (`1,745.1 ms` cold Claude API / `4.80 ms` cached) | Citation-gated Claude AI analyst |
+| UI Invariants & Chrome QA | Untested after dossier/link overhaul | `0` invariant violations, `0` console/page/HTTP >=400 errors | Verified `1440x900` + `390x844` |
+
+### Review & Merge Commands
+```bash
+git log --oneline main..overnight/2026-11-15
+git diff main...overnight/2026-11-15
+# To merge when satisfied:
+git checkout main && git merge --no-ff overnight/2026-11-15
+```
+
 ## Baseline Measurements (3 runs, median)
 
 | Metric | Run 1 | Run 2 | Run 3 | Median | Notes |
