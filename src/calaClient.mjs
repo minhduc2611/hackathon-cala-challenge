@@ -171,8 +171,51 @@ export function createCalaClient(options = {}) {
     });
   }
 
+  let cachedEntityIndex = null;
+  let cachedEntityCount = -1;
+
+  function getCachedEntities() {
+    const entries = Object.values(cacheStore || {});
+    if (cachedEntityIndex && cachedEntityCount === entries.length) {
+      return cachedEntityIndex;
+    }
+    const byId = new Map();
+    const scoreRichness = (entity) => {
+      if (!entity || typeof entity !== 'object') return 0;
+      const outRels = Object.values(entity.relationships?.outgoing || {}).reduce(
+        (s, list) => s + (Array.isArray(list) ? list.length : 0),
+        0
+      );
+      const inRels = Object.values(entity.relationships?.incoming || {}).reduce(
+        (s, list) => s + (Array.isArray(list) ? list.length : 0),
+        0
+      );
+      return (entity.relationships ? 10 : 0) + (entity.description ? 2 : 0) + outRels + inRels;
+    };
+    const consider = (entity) => {
+      if (!entity?.id || !entity?.name) return;
+      const id = String(entity.id);
+      const prev = byId.get(id);
+      if (!prev || scoreRichness(entity) >= scoreRichness(prev)) {
+        byId.set(id, { ...prev, ...entity, description: entity.description || prev?.description });
+      }
+    };
+    for (const entry of entries) {
+      const data = entry?.data;
+      if (!data) continue;
+      if (data.id && data.name) consider(data);
+      if (Array.isArray(data.entities)) {
+        for (const item of data.entities) consider(item);
+      }
+    }
+    cachedEntityCount = entries.length;
+    cachedEntityIndex = [...byId.values()];
+    return cachedEntityIndex;
+  }
+
   return {
     getBudgetStatus,
+    getCachedEntities,
     calaEntitySearch,
     calaEntityLookup,
     calaIntrospect,

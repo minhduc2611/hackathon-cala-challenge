@@ -149,14 +149,12 @@ test('refineShortlist handles region filter, sector exclusion, and why-not expla
   assert.ok(Array.isArray(whyOura.aiTrace) && whyOura.aiTrace.length >= 1);
 });
 
-test('analysis shortlist includes LinkedIn bridges and peer startup network links', () => {
+test('analysis shortlist exposes only Cala-backed peer startup network links', () => {
   const analysis = runFullAnalysis({ mode: 'fund', fundId: 'lifeline-ventures' });
   const first = analysis.shortlist[0];
-  assert.ok(first.linkedinNetwork);
-  assert.ok(typeof first.linkedinNetwork.sourceLabel === 'string');
-  assert.ok(Array.isArray(first.linkedinNetwork.nodes) && first.linkedinNetwork.nodes.length >= 2);
-  assert.ok(Array.isArray(first.linkedinNetwork.links) && first.linkedinNetwork.links.length >= 1);
+  assert.equal(first.linkedinNetwork, undefined);
   assert.ok(Array.isArray(first.peerStartups));
+  assert.ok(first.peerStartups.every((peer) => /^cala_/.test(peer.connectionType)));
 });
 
 test('refineShortlist classifies company, investor, and industry AI searches with trace', () => {
@@ -327,7 +325,9 @@ test('ingestLiveCalaEntities expands COMPANIES + SOURCES, scores in full analysi
     ],
     { slush2026: false }
   );
-  assert.equal(nonSlushIng.ingestedCount, 1);
+  // Mature companies returned by a live Cala lookup stay available as explicit
+  // entity-map centers rather than being silently discarded as legacy corps.
+  assert.equal(nonSlushIng.ingestedCount, 2);
 
   const analysis = runFullAnalysis({ mode: 'fund', fundId: 'lifeline-ventures' });
   assert.ok(analysis.shortlist.length > 20);
@@ -340,11 +340,12 @@ test('ingestLiveCalaEntities expands COMPANIES + SOURCES, scores in full analysi
 
   const alphaMesh = COMPANIES.find((c) => c.calaEntityId === 'test-unlocated-slush-1');
   assert.ok(alphaMesh);
-  assert.equal(alphaMesh.country, 'Europe');
+  assert.equal(alphaMesh.country, null);
   assert.equal(alphaMesh.hqCity, 'Slush 2026');
 
   const ipg = COMPANIES.find((c) => c.calaEntityId === 'test-legacy-ipg');
-  assert.equal(ipg, undefined);
+  assert.ok(ipg);
+  assert.equal(ipg.entityCategory, 'established_corp');
 
   const singular = COMPANIES.find((c) => c.calaEntityId === 'test-singular-photonics');
   assert.ok(singular);
@@ -353,8 +354,10 @@ test('ingestLiveCalaEntities expands COMPANIES + SOURCES, scores in full analysi
 
   const brief = buildStartupBrief(finadeck.id, 'lifeline-ventures');
   assert.equal(brief.name, 'Finadeck Oy');
-  assert.ok(brief.rounds.length >= 1);
-  assert.ok(brief.sources.length >= 1);
+  // Sparse live records must not receive a fabricated funding round.
+  assert.equal(brief.rounds.length, 0);
+  // Nor should an absent raw citation become a made-up brief source.
+  assert.equal(brief.sources.length, 0);
 
   const afterBacktest = runPointInTimeBacktest('lifeline-ventures');
   assert.equal(afterBacktest.hiddenDealsCount, baselineBacktest.hiddenDealsCount);
@@ -362,7 +365,7 @@ test('ingestLiveCalaEntities expands COMPANIES + SOURCES, scores in full analysi
   assert.equal(afterBacktest.hitsInTop50, baselineBacktest.hitsInTop50);
 
   // Clean up runtime test companies so baseline remains tidy
-  for (const calaId of ['00541f9a-8af0-5d33-b013-c32d90ba3076', 'test-unlocated-slush-1', 'test-singular-photonics']) {
+  for (const calaId of ['00541f9a-8af0-5d33-b013-c32d90ba3076', 'test-unlocated-slush-1', 'test-legacy-ipg', 'test-singular-photonics']) {
     const idx = COMPANIES.findIndex((c) => c.calaEntityId === calaId);
     if (idx !== -1) COMPANIES.splice(idx, 1);
   }

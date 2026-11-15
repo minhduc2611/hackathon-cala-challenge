@@ -1,8 +1,6 @@
 import {
   COMPANIES,
-  COMPANY_LINKEDIN_LEADERS,
   FUNDS,
-  LINKEDIN_BRIDGES,
   PEER_INVESTORS,
   REFERENCE_DATE,
   SOURCES
@@ -91,10 +89,13 @@ export function interpolateHeadcountAtDate(company, isoDate, cutoffDate = null) 
     .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
 
   if (!series.length) {
+    const declaredHeadcount = Number(company?.employeeCount);
     return {
-      headcount: Number(company?.employeeCount || 12),
+      // Preserve an honest Cala coverage gap instead of inventing a likely
+      // employee count for a sparse live entity.
+      headcount: Number.isFinite(declaredHeadcount) && declaredHeadcount > 0 ? declaredHeadcount : null,
       preRoundVelocityPct: 0,
-      observationDate: cutoffDate || REFERENCE_DATE,
+      observationDate: null,
       sourceId: company?.rounds?.[0]?.sourceIds?.[0] || null
     };
   }
@@ -220,9 +221,9 @@ export function searchEntities(rawQuery = '') {
   );
   const companyMatches = COMPANIES.filter(
     (c) =>
-      c.name.toLowerCase().includes(query) ||
-      c.sector.toLowerCase().includes(query) ||
-      c.country.toLowerCase().includes(query)
+      String(c.name || '').toLowerCase().includes(query) ||
+      String(c.sector || '').toLowerCase().includes(query) ||
+      String(c.country || '').toLowerCase().includes(query)
   );
 
   return {
@@ -667,7 +668,8 @@ export function computeRevealedThesis(input, options = {}) {
       country: c.country,
       region: c.region || null,
       hqCity: c.hqCity || null,
-      latestRoundType: c.rounds[c.rounds.length - 1]?.type || 'Seed',
+      // A missing round is unknown, not an implicit Seed round.
+      latestRoundType: c.rounds[c.rounds.length - 1]?.type || null,
       latestRoundDate: c.rounds[c.rounds.length - 1]?.date || null,
       roundInvestorIds: [...new Set((c.rounds || []).flatMap((r) => [...(r.investorIds || []), r.leadInvestorId].filter(Boolean)))],
       sourceIds: c.rounds.flatMap((r) => r.sourceIds || [])
@@ -1112,13 +1114,6 @@ function buildBridgeFormulaBreakdown({
       plainMeaning: `Founder or operator built verifiable tenure inside ${priorCompany} before launching/joining ${targetName}.`
     };
   }
-  if (kind === 'operator_circle' || kind === 'linkedin') {
-    return {
-      formula: `Operator network tie (${lift}x lift) + sourceRankBonus`,
-      inputs: `Via ${entityName}${operatorDesc ? ` (${operatorDesc})` : ''}; ${lift}x lift; ${topSourceRank} rank (+${rankBonus})`,
-      plainMeaning: `Indexed operator circle connecting ${anchorLabel} contacts to ${targetName} leadership.`
-    };
-  }
   if (kind === 'portfolio_twin') {
     return {
       formula: '1.55 + min(1.4, (simScore - 5) * 0.22) = lift (sector +4, geo +1.5..2.5, subSector +2..4)',
@@ -1335,7 +1330,6 @@ function extractTwoHopSyndicateBridges(thesis, company, visibleRounds, globalInd
 
 function extractBidirectionalAlumniBridges(thesis, company, visibleRounds, globalIndex, signals) {
   const results = [];
-  const existingPrior = normalizeLookupName(signals?.alumniSpinout?.priorCompany || '');
   const companyNorm = normalizeLookupName(company.name);
 
   // 1. Reverse alumni lineage: target company (e.g. Pleo) spun out a founder now leading another European startup (e.g. VeloPay)
@@ -1359,6 +1353,7 @@ function extractBidirectionalAlumniBridges(thesis, company, visibleRounds, globa
       relatedStartupName: targetCompany.name,
       isMegaHub: false,
       totalDeals: null,
+      verifiedAnchorConnection: (thesis?.portfolioCompanyIds || []).includes(targetCompany.id),
       lift,
       rarityScore: computeBridgeRarityScore(lift, topSourceRank, false, 6.4),
       hops: [thesis.fundName, `${role.name} (${company.name} alumni)`, targetCompany.name],
@@ -1379,50 +1374,6 @@ function extractBidirectionalAlumniBridges(thesis, company, visibleRounds, globa
       }),
       whyMatters: `Bidirectional alumni tie: ${role.name} transitioned from ${role.priorRole || 'leadership'} at ${company.name} to lead ${targetCompany.name}, enabling operator backchanneling across both startups.`,
       summary: `Bidirectional lineage: ${role.name} left ${company.name} to become ${role.role} at ${targetCompany.name} (${targetCompany.sector}).`
-    });
-  }
-
-  // 2. Indexed operator / LinkedIn leadership circle integration (COMPANY_LINKEDIN_LEADERS & LINKEDIN_BRIDGES)
-  const leaderMeta = COMPANY_LINKEDIN_LEADERS[company.id];
-  const regionBridge = LINKEDIN_BRIDGES[company.region];
-  const leaderExMatch = leaderMeta?.founder?.match(/ex-([A-Za-z0-9\s.-]+?)(?:\s+(?:Grid|Cryo|Hardware|Edge|Risk|Treasury|Optics|Engineering|Autonomy|Infra))?\)/i);
-  const extractedExScaleup = leaderExMatch ? leaderExMatch[1].trim() : '';
-  const extractedExNorm = normalizeLookupName(extractedExScaleup);
-  const alreadyCoveredByPrior = Boolean(
-    existingPrior &&
-    extractedExNorm &&
-    (existingPrior.includes(extractedExNorm) || extractedExNorm.includes(existingPrior))
-  );
-
-  if (leaderMeta && extractedExNorm && !alreadyCoveredByPrior) {
-    const sourceIds = resolveValidSourceIds([], visibleRounds, company);
-    const topSourceRank = deriveTopRankFromSources(sourceIds, 'PRIMARY');
-    const lift = 1.35;
-    results.push({
-      id: `bridge-alumni-op-${company.id}`,
-      bridgeFamily: 'alumni_spinout',
-      hopKind: 'operator_circle',
-      bridgeEntityId: `op-${slugifyBridgeId(extractedExScaleup)}`,
-      bridgeEntityName: `Ex-${extractedExScaleup} Operator Network`,
-      isMegaHub: false,
-      totalDeals: null,
-      lift,
-      rarityScore: computeBridgeRarityScore(lift, topSourceRank, false, 4.5),
-      hops: [thesis.fundName, regionBridge?.bridgePerson?.split(' (')[0] || `${company.region} Operator Circle`, leaderMeta.founder.split(' (')[0], company.name],
-      date: company.foundingDate || null,
-      topSourceRank,
-      sourceIds,
-      formulaBreakdown: buildBridgeFormulaBreakdown({
-        kind: 'operator_circle',
-        anchorLabel: thesis?.fundName || 'Anchor Fund',
-        entityName: `Ex-${extractedExScaleup} Operator Network`,
-        operatorDesc: leaderMeta.linkedinDegree || 'Regional operator circle',
-        targetName: company.name,
-        lift,
-        topSourceRank
-      }),
-      whyMatters: `${leaderMeta.linkedinDegree || 'Regional operator circle'} connects ${thesis.fundName} to ${leaderMeta.founder}.`,
-      summary: `Operator circle (${leaderMeta.linkedinDegree}): ${leaderMeta.founder}.`
     });
   }
 
@@ -1468,8 +1419,8 @@ function extractPortfolioTwinBridges(thesis, company, visibleRounds, signals) {
 
   if (!bestTwin) return [];
   const { fullTwin, simScore, reasons } = bestTwin;
-  const twinLatestStage = fullTwin.rounds?.[fullTwin.rounds.length - 1]?.type || fullTwin.latestRoundType || 'Portfolio';
-  const companyStage = visibleRounds?.[visibleRounds.length - 1]?.type || company.stage || 'Early';
+  const twinLatestStage = fullTwin.rounds?.[fullTwin.rounds.length - 1]?.type || fullTwin.latestRoundType || 'Not found in Cala';
+  const companyStage = visibleRounds?.[visibleRounds.length - 1]?.type || company.stage || 'Not found in Cala';
   const growthPct = signals?.headcountGrowthPct;
   const hasUnannounced = Boolean(signals?.visibleCorpEvents?.some((e) => e.unannouncedFiling));
 
@@ -1549,6 +1500,12 @@ function buildPeerEdgesForShortlist(displayed = [], globalIndex = null) {
 
       const invsA = new Set((rawA.rounds || []).flatMap((r) => [...(r.investorIds || []), r.leadInvestorId].filter(Boolean)));
       const invsB = new Set((rawB.rounds || []).flatMap((r) => [...(r.investorIds || []), r.leadInvestorId].filter(Boolean)));
+      const liveInvsA = new Set((rawA.liveInvestorNames || []).map(normalizeLookupName).filter(Boolean));
+      const liveInvsB = new Set((rawB.liveInvestorNames || []).map(normalizeLookupName).filter(Boolean));
+      const sharedLiveInvestor = [...liveInvsA].find((name) => liveInvsB.has(name));
+      const peopleA = new Set(rolesA.map((r) => normalizeLookupName(r.name)).filter(Boolean));
+      const peopleB = new Set(rolesB.map((r) => normalizeLookupName(r.name)).filter(Boolean));
+      const sharedPerson = [...peopleA].find((name) => peopleB.has(name));
       const sharedNonMegaInvs = [...invsA]
         .filter((invId) => {
           if (!invsB.has(invId) || BROAD_HUB_INVESTOR_IDS.has(invId)) return false;
@@ -1594,6 +1551,25 @@ function buildPeerEdgesForShortlist(displayed = [], globalIndex = null) {
           reason: `${invName} (${total} indexed deals) backs both ${rawA.name} and ${rawB.name}.`,
           sourceIds: resolveValidSourceIds([], [...(rawA.rounds || []), ...(rawB.rounds || [])], rawA)
         };
+      } else if (sharedLiveInvestor) {
+        const displayName = (rawA.liveInvestorNames || []).find((name) => normalizeLookupName(name) === sharedLiveInvestor) || sharedLiveInvestor;
+        chosen = {
+          kind: 'shared_investor',
+          strength: 2.1,
+          label: `Shared Cala investor: ${displayName}`,
+          reason: `${displayName} is listed in Cala as an investor in both ${rawA.name} and ${rawB.name}.`,
+          sourceIds: resolveValidSourceIds([], [...(rawA.rounds || []), ...(rawB.rounds || [])], rawA)
+        };
+      } else if (sharedPerson) {
+        const personRole = rolesA.find((role) => normalizeLookupName(role.name) === sharedPerson);
+        const displayName = personRole?.name || sharedPerson;
+        chosen = {
+          kind: 'shared_person',
+          strength: 2.0,
+          label: `Shared Cala person: ${displayName}`,
+          reason: `${displayName} has a verified Cala role connected to both ${rawA.name} and ${rawB.name}.`,
+          sourceIds: resolveValidSourceIds([personRole?.sourceId], [...(rawA.rounds || []), ...(rawB.rounds || [])], rawA)
+        };
       } else if (sameSector && (bothSlush || bothFiling)) {
         const catLabel = bothSlush && bothFiling ? 'Slush + Filing Peers' : bothSlush ? 'Slush Peers' : 'Filing Peers';
         chosen = {
@@ -1638,8 +1614,7 @@ export function extractHiddenBridges(thesis, company, visibleRounds = [], signal
     bridgeFamily = null,
     contributionGroup = null,
     filingOnly = false,
-    maxPaths = 5,
-    linkedinNetwork = null
+    maxPaths = 5
   } = options || {};
 
   const normalizedFamily = bridgeFamily && bridgeFamily !== 'all' ? String(bridgeFamily).trim().toLowerCase() : null;
@@ -1660,8 +1635,12 @@ export function extractHiddenBridges(thesis, company, visibleRounds = [], signal
 
   const bridgeMap = new Map();
   const registerBridge = (candidate) => {
+    const hops = candidate?.verifiedAnchorConnection === false
+      ? (candidate.hops || []).filter((hop) => hop?.id !== anchorId && hop?.kind !== 'anchor')
+      : candidate.hops;
     const tagged = {
       ...candidate,
+      hops,
       contributionGroup: deriveContributionGroup(candidate)
     };
     const dedupKey = `${tagged.bridgeFamily}::${String(tagged.bridgeEntityId || tagged.bridgeEntityName).toLowerCase()}`;
@@ -1910,7 +1889,9 @@ export function extractHiddenBridges(thesis, company, visibleRounds = [], signal
       priorRolesByPerson.has(role.name)
     ) {
       const prev = priorRolesByPerson.get(role.name);
-      const prevOrg = prev.company || prev.organization || prev.entityName || prev.role;
+      // A role title such as "Vice President" is not an employer.  Only use
+      // a named organization supplied by Cala when constructing alumni paths.
+      const prevOrg = prev.company || prev.organization || prev.entityName || null;
       if (prevOrg) {
         candidateAlumniList.push({
           personName: role.name,
@@ -1978,6 +1959,7 @@ export function extractHiddenBridges(thesis, company, visibleRounds = [], signal
       bridgeEntityName,
       hops,
       totalDeals: null,
+      verifiedAnchorConnection: inPortfolio,
       lift,
       isMegaHub: false,
       topSourceRank,
@@ -2023,12 +2005,8 @@ export function extractHiddenBridges(thesis, company, visibleRounds = [], signal
     if (!normPerson || alumniCoveredPeople.has(normPerson)) continue;
     const rel = String(role.relation || '').toUpperCase();
     const isAngel = rel === 'INVESTED_IN';
-    const isProminentLiveRel =
-      Boolean(company?.isLiveCalaDiscovered) &&
-      ['INVESTED_IN', 'IS_BOARD_MEMBER_OF', 'IS_CONTROL_PERSON_OF', 'IS_BENEFICIARY_OWNER_OF', 'FOUNDED', 'IS_CEO_OF', 'IS_CTO_OF'].includes(rel) &&
-      emittedDirectPeople < 3;
     const sharedCompanyCount = role.isMatchedPersonBridge ? 2 : countCompaniesForPerson(role.name);
-    if (!role.isMatchedPersonBridge && sharedCompanyCount < 2 && !isProminentLiveRel) continue;
+    if (!role.isMatchedPersonBridge && sharedCompanyCount < 2) continue;
 
     alumniCoveredPeople.add(normPerson);
     emittedDirectPeople += 1;
@@ -2063,6 +2041,10 @@ export function extractHiddenBridges(thesis, company, visibleRounds = [], signal
         }
       ],
       totalDeals: sharedCompanyCount >= 2 ? sharedCompanyCount : 1,
+      // This person can be meaningful evidence about the target, but a fund
+      // anchor has no verified relationship to them merely because they are a
+      // target-side role. Keep it off the anchor trunk.
+      verifiedAnchorConnection: false,
       lift,
       isMegaHub: false,
       topSourceRank,
@@ -2080,62 +2062,6 @@ export function extractHiddenBridges(thesis, company, visibleRounds = [], signal
         topSourceRank
       }),
       summary: `${role.name} (${roleDesc}) connects ${sharedCompanyCount >= 2 ? `${sharedCompanyCount}+ indexed entities including ` : ''}${targetStartupName}${role.validSince ? ` since ${String(role.validSince).slice(0, 7)}` : ''}.`
-    });
-  }
-
-  const explicitLinkedin = linkedinNetwork || company?.linkedinNetwork || null;
-  if (explicitLinkedin?.bridgePerson) {
-    const liEntityId = `li-${slugifyBridgeId(explicitLinkedin.bridgePerson)}`;
-    const sourceIds = resolveValidSourceIds([], rounds, company);
-    const topSourceRank = deriveTopRankFromSources(sourceIds, 'PRESS');
-    const hops = [
-      { id: anchorId, label: anchorLabel, role: 'Query Anchor', kind: 'anchor', date: null },
-      {
-        id: liEntityId,
-        label: explicitLinkedin.bridgePerson,
-        role: explicitLinkedin.networkName || 'Warm Network Bridge',
-        kind: 'bridge',
-        date: null
-      },
-      ...(explicitLinkedin.targetLeader
-        ? [
-            {
-              id: `person-${slugifyBridgeId(explicitLinkedin.targetLeader)}`,
-              label: explicitLinkedin.targetLeader,
-              role: 'Founder / Exec Contact',
-              kind: 'intermediate',
-              date: null
-            }
-          ]
-        : []),
-      { id: targetStartupId, label: targetStartupName, role: 'Target Startup', kind: 'startup', date: null }
-    ];
-
-    registerBridge({
-      id: `bridge-alumni_spinout-${liEntityId}-${targetStartupId}`,
-      bridgeFamily: 'alumni_spinout',
-      bridgeEntityId: liEntityId,
-      bridgeEntityName: explicitLinkedin.bridgePerson,
-      hops,
-      totalDeals: null,
-      lift: 0.75,
-      isMegaHub: false,
-      topSourceRank,
-      sourceIds,
-      date: null,
-      rarityScore: computeBridgeRarityScore(0.75, topSourceRank, false, 3.6),
-      formulaBreakdown: buildBridgeFormulaBreakdown({
-        kind: 'linkedin',
-        anchorLabel,
-        entityName: explicitLinkedin.bridgePerson,
-        operatorDesc: explicitLinkedin.networkName || 'Warm Network Bridge',
-        targetName: targetStartupName,
-        lift: 0.75,
-        topSourceRank
-      }),
-      summary:
-        explicitLinkedin.summary ||
-        `Warm operator network bridge via ${explicitLinkedin.bridgePerson} to ${targetStartupName}.`
     });
   }
 
@@ -2190,6 +2116,7 @@ export function extractHiddenBridges(thesis, company, visibleRounds = [], signal
       bridgeEntityName,
       hops,
       totalDeals: null,
+      verifiedAnchorConnection: false,
       lift,
       isMegaHub: false,
       topSourceRank,
@@ -2605,7 +2532,7 @@ function buildPortfolioConflictAndTwinCheck(company, thesis, companyStage, visib
   for (const p of portfolioList) {
     if (!p || p.id === company?.id) continue;
     const pFull = COMPANIES.find((c) => c.id === p.id) || p;
-    const pStage = p.latestRoundType || pFull.rounds?.[pFull.rounds.length - 1]?.type || 'Seed';
+    const pStage = p.latestRoundType || pFull.rounds?.[pFull.rounds.length - 1]?.type || 'Not found in Cala';
     const stageGap = Math.abs(getStageRankNum(pStage) - companyRank);
     const sameCompetitorGroup = Boolean(
       company?.competitorGroup &&
@@ -2676,7 +2603,7 @@ function buildPortfolioConflictAndTwinCheck(company, thesis, companyStage, visib
     if (!p || p.id === company?.id || p.id === conflictRisk.companyId) continue;
     const pFull = COMPANIES.find((c) => c.id === p.id) || p;
     const pRounds = pFull.rounds || [];
-    const pStage = p.latestRoundType || pRounds[pRounds.length - 1]?.type || 'Seed';
+    const pStage = p.latestRoundType || pRounds[pRounds.length - 1]?.type || 'Not found in Cala';
     const stageGap = Math.abs(getStageRankNum(pStage) - companyRank);
     const pInvs = new Set([
       ...(p.roundInvestorIds || []),
@@ -3515,6 +3442,7 @@ export function buildBridgeMapPayload(thesis, shortlist = [], options = {}) {
         sourceIds: bridge.sourceIds || [],
         date: bridge.date || null,
         isMegaHub: Boolean(bridge.isMegaHub),
+        verifiedAnchorConnection: bridge.verifiedAnchorConnection !== false,
         totalDeals: bridge.totalDeals ?? null,
         lift: bridge.lift,
         rarityScore: bridge.rarityScore,
@@ -3541,6 +3469,7 @@ export function buildBridgeMapPayload(thesis, shortlist = [], options = {}) {
         sourceIds: cat.sourceIds || [],
         date: null,
         isMegaHub: false,
+        verifiedAnchorConnection: false,
         totalDeals: null,
         lift: cat.lift,
         rarityScore: cat.rarityScore,
@@ -3594,9 +3523,11 @@ export function buildBridgeMapPayload(thesis, shortlist = [], options = {}) {
       if (entry.countTowardsFamilyCluster && clusterStats[fam]) clusterStats[fam].bridgeNodeIds.add(bridgeNodeId);
       if (contribStats[grp]) contribStats[grp].bridgeNodeIds.add(bridgeNodeId);
 
-      // Anchor -> Bridge trunk edge (deduplicated per bridge node)
+      // An entity's own fact is useful evidence, but it is not a connection to
+      // the focal entity unless Cala verifies that first hop.
+      const edgeCitation = resolveMapEdgeEvidenceSources(entry.sourceIds);
       const trunkEdgeId = `edge:${anchor.id}:${bridgeNodeId}`;
-      if (!seenEdgeIds.has(trunkEdgeId)) {
+      if (entry.verifiedAnchorConnection && !seenEdgeIds.has(trunkEdgeId)) {
         seenEdgeIds.add(trunkEdgeId);
         edges.push({
           id: trunkEdgeId,
@@ -3613,6 +3544,8 @@ export function buildBridgeMapPayload(thesis, shortlist = [], options = {}) {
           rarityScore: entry.rarityScore,
           topSourceRank: entry.topSourceRank,
           sourceIds: entry.sourceIds,
+          evidenceSources: edgeCitation.evidenceSources,
+          sourceCount: edgeCitation.sourceCount,
           date: entry.date || null,
           label: entry.edgeLabel
         });
@@ -3639,6 +3572,8 @@ export function buildBridgeMapPayload(thesis, shortlist = [], options = {}) {
           rarityScore: entry.rarityScore,
           topSourceRank: entry.topSourceRank,
           sourceIds: entry.sourceIds,
+          evidenceSources: edgeCitation.evidenceSources,
+          sourceCount: edgeCitation.sourceCount,
           date: entry.date || null,
           label: entry.targetEdgeLabel
         });
@@ -3745,6 +3680,1308 @@ export function buildBridgeMapPayload(thesis, shortlist = [], options = {}) {
   };
 }
 
+const ENTITY_MAP_RELATION_META = {
+  PARTNERED_WITH: { label: 'Partnered with', group: 'access', family: 'co_investor' },
+  SUPPLIES: { label: 'Supplies', group: 'access', family: 'co_investor' },
+  SUPPLIED_BY: { label: 'Supplied by', group: 'access', family: 'co_investor' },
+  INVESTED_IN: { label: 'Invested in', group: 'access', family: 'co_investor' },
+  CO_INVESTED_WITH: { label: 'Co-invested with', group: 'access', family: 'co_investor' },
+  ADVISED: { label: 'Advised', group: 'access', family: 'co_investor' },
+  FOUNDED: { label: 'Founded', group: 'lineage', family: 'alumni_spinout' },
+  CO_FOUNDED: { label: 'Co-founded', group: 'lineage', family: 'alumni_spinout' },
+  IS_CEO_OF: { label: 'Leads as CEO of', group: 'lineage', family: 'alumni_spinout' },
+  IS_CTO_OF: { label: 'Leads as CTO of', group: 'lineage', family: 'alumni_spinout' },
+  IS_CFO_OF: { label: 'Serves as CFO of', group: 'lineage', family: 'alumni_spinout' },
+  IS_COO_OF: { label: 'Serves as COO of', group: 'lineage', family: 'alumni_spinout' },
+  IS_CSO_OF: { label: 'Serves as CSO of', group: 'lineage', family: 'alumni_spinout' },
+  IS_CRO_OF: { label: 'Serves as CRO of', group: 'lineage', family: 'alumni_spinout' },
+  IS_CMO_OF: { label: 'Serves as CMO of', group: 'lineage', family: 'alumni_spinout' },
+  IS_CCO_OF: { label: 'Serves as CCO of', group: 'lineage', family: 'alumni_spinout' },
+  IS_VICEPRESIDENT_OF: { label: 'Served as VP at', group: 'lineage', family: 'alumni_spinout' },
+  IS_PRESIDENT_OF: { label: 'Served as President of', group: 'lineage', family: 'alumni_spinout' },
+  IS_CHAIR_OF: { label: 'Chairs', group: 'lineage', family: 'alumni_spinout' },
+  IS_BOARD_MEMBER_OF: { label: 'Serves on the board of', group: 'lineage', family: 'alumni_spinout' },
+  WORKS_AT: { label: 'Works at', group: 'lineage', family: 'alumni_spinout' },
+  IS_MEMBER_OF: { label: 'Is a member of', group: 'lineage', family: 'alumni_spinout' },
+  IS_SUBSIDIARY_OF: { label: 'Is a subsidiary of', group: 'lineage', family: 'portfolio_twin' },
+  IS_DIRECT_PARENT_OF: { label: 'Direct parent of', group: 'lineage', family: 'portfolio_twin' },
+  IS_ULTIMATE_PARENT_OF: { label: 'Ultimate parent of', group: 'lineage', family: 'portfolio_twin' },
+  IS_CONTROL_PERSON_OF: { label: 'Control person of', group: 'lineage', family: 'portfolio_twin' },
+  SPUN_OUT_OF: { label: 'Spun out of', group: 'lineage', family: 'alumni_spinout' },
+  ACQUIRED: { label: 'Acquired', group: 'caution', family: 'portfolio_twin' },
+  COMPETES_WITH: { label: 'Competes with', group: 'caution', family: 'portfolio_twin' },
+  PARTICIPATES_IN_FUNDING_ROUND: { label: 'Participated in funding round', group: 'timing', family: 'event' },
+  HAS_FUNDING_ROUND: { label: 'Has funding round', group: 'timing', family: 'event' },
+  PARTICIPATES_IN_CORPORATE_EVENT: { label: 'Participated in corporate event', group: 'timing', family: 'event' },
+  PARTICIPATES_IN_EVENT: { label: 'Participated in event', group: 'timing', family: 'event' }
+};
+
+const ENTITY_MAP_STATIC_RELATIONS = new Set([
+  'HAS_HEADQUARTERS_IN',
+  'HAS_PRESENCE_IN',
+  'IS_REGISTERED_IN',
+  'OPERATES_IN_INDUSTRY',
+  'HAS_NATIONALITY',
+  'STUDIED_AT',
+  'SPOKE_AT',
+  'FEATURED_IN',
+  'RECEIVED_AWARD',
+  'PUBLISHED_BY',
+  'DESIGNED_BY',
+  'CREATED_BY',
+  'MANUFACTURED_BY',
+  'OPERATED_BY',
+  'TRADED_ON',
+  'LISTED_ON',
+  'IS_BENEFICIARY_OWNER_OF'
+]);
+
+const ENTITY_MAP_SYMMETRIC_RELATIONS = new Set(['PARTNERED_WITH', 'COMPETES_WITH', 'CO_INVESTED_WITH']);
+const ROUND_AND_EVENT_RELATIONS = new Set([
+  'PARTICIPATES_IN_FUNDING_ROUND',
+  'HAS_FUNDING_ROUND',
+  'PARTICIPATES_IN_CORPORATE_EVENT',
+  'PARTICIPATES_IN_EVENT',
+  'IS_TRANCHE_OF'
+]);
+
+const GENERIC_CONTAINER_NAMES = new Set([
+  'results',
+  'other material',
+  'other material event',
+  'results or trading update',
+  'form 10 k',
+  'form 10 q',
+  'form 8 k',
+  'form s 1',
+  'form d',
+  'current report',
+  'annual report',
+  'quarterly report',
+  'shareholder vote',
+  'management or board change',
+  'financing raised',
+  'financing raised or facility entered',
+  'corporate event',
+  'earnings release'
+]);
+
+const PRIORITY_MAP_RELATIONS = new Set([
+  'INVESTED_IN',
+  'CO_INVESTED_WITH',
+  'PARTNERED_WITH',
+  'SUPPLIES',
+  'SUPPLIED_BY',
+  'FOUNDED',
+  'CO_FOUNDED',
+  'IS_CEO_OF',
+  'IS_CTO_OF',
+  'IS_VICEPRESIDENT_OF',
+  'IS_BOARD_MEMBER_OF',
+  'ACQUIRED',
+  'COMPETES_WITH'
+]);
+
+function canonicalMapEntityName(name = '') {
+  let key = normalizeLookupName(name);
+  const suffixRe = /\s+(?:pbc|inc|incorporated|corp|corporation|ltd|limited|llc|llp|lp|plc|gmbh|ag|oyj|oy|ab|sa|sas|bv|nv|co)$/;
+  while (suffixRe.test(key)) {
+    const stripped = key.replace(suffixRe, '').trim();
+    if (stripped.length < 2) break;
+    key = stripped;
+  }
+  return key;
+}
+
+function isHonorificPersonStub(entity = {}) {
+  const type = entityMapType(entity).toLowerCase();
+  if (type !== 'person') return false;
+  return /^(?:mr|ms|mrs|mx|dr|prof)\.?\s+[a-z][a-z'-]*$/i.test(String(entity.name || '').trim());
+}
+
+function isFundingRoundEntity(entity = {}) {
+  const type = entityMapType(entity).toLowerCase();
+  return type === 'fundinground' || type === 'privatecompanyfundinground' || type === 'fundingroundtranche';
+}
+
+function isLikelyInvestorEntity(entity = {}) {
+  const type = entityMapType(entity).toLowerCase();
+  if (type === 'fund') return true;
+  const raw = String(entity.name || '');
+  return /\b(?:venture(?:s| partners)?|capital|partners|investments?|asset management|management|fund(?:s)?|holdings?|equity|endowment|sequoia|catalyst|lightspeed|greenoaks|blackstone|blackrock|fidelity|baillie gifford|dst global|thrive|softbank|gic|mgx|menlo|bessemer|coatue|benchmark|accel|greylock|founders fund|khosla|index ventures|insight partners|tiger global|a16z|andreessen)\b/i.test(raw);
+}
+
+function isGenericEventContainerNode(entity = {}, relationType = '') {
+  if (isFundingRoundEntity(entity)) return true;
+  const type = entityMapType(entity).toLowerCase();
+  if (type === 'corporateevent' || type === 'event') return true;
+  const rawName = String(entity.name || '').trim();
+  const norm = normalizeLookupName(rawName);
+  if (GENERIC_CONTAINER_NAMES.has(norm)) return true;
+  if (/^(?:RESULTS_OR_TRADING_UPDATE|OTHER_MATERIAL_EVENT|SHAREHOLDER_VOTE|MANAGEMENT_OR_BOARD_CHANGE|FINANCING_RAISED_OR_FACILITY_ENTERED|MATERIAL_AGREEMENT_ANNOUNCED|CORPORATE_EVENT|EARNINGS_RELEASE)(?:_|$)/i.test(rawName)) {
+    return true;
+  }
+  if (/^(?:form\s+(?:10-[kq]|8-k|6-k|20-f|s-1|d)|current report|annual report|quarterly report|prospectus|registration statement)\b/i.test(rawName)) {
+    return true;
+  }
+  if (ROUND_AND_EVENT_RELATIONS.has(relationType) &&
+      /^(?:pre[- ]?seed|seed|angel|series [a-z0-9+]+|growth|late[- ]?stage|venture|bridge|convertible|debt|ipo|spac|secondary|grant|undisclosed|unknown)(?:\s+round)?$/i.test(rawName)) {
+    return true;
+  }
+  return false;
+}
+
+function resolveEntityMapRelationMeta(relationType = '') {
+  const key = String(relationType || '').trim();
+  if (!key || ENTITY_MAP_STATIC_RELATIONS.has(key)) return null;
+  if (ENTITY_MAP_RELATION_META[key]) return ENTITY_MAP_RELATION_META[key];
+
+  let words = key.split('_').filter(Boolean).map((w) => w.toLowerCase());
+  if (words[0] === 'is' && words.length >= 3 && words[words.length - 1] === 'of') {
+    words = words.slice(1);
+  }
+  const phrase = words.join(' ');
+  const label = phrase ? phrase.charAt(0).toUpperCase() + phrase.slice(1) : 'Related to';
+
+  let group = 'access';
+  let family = 'co_investor';
+  if (/COMPET|LAWSUIT|LITIG|SUED|REGULAT|SANCTION|AFFECT|RISK|CONFLICT|DEBT|BANKRUPT|INVESTIGAT|TERMINAT|ACQUIR|MERG/i.test(key)) {
+    group = 'caution';
+    family = 'portfolio_twin';
+  } else if (/ROUND|EVENT|FILING|IPO|LIST|ANNOUNCE|LAUNCH|DIVIDEND|TRANCHE|EXPIRE/i.test(key)) {
+    group = 'timing';
+    family = 'event';
+  } else if (/FOUND|CEO|CTO|CFO|COO|CMO|CRO|CSO|EXEC|BOARD|CHAIR|WORK|ALUM|EMPLOY|PARENT|SUBSIDIAR|OWN|CONTROL|MEMBER|SPIN|AFFILIAT/i.test(key)) {
+    group = 'lineage';
+    family = 'alumni_spinout';
+  }
+  return { label, group, family };
+}
+
+function formatCompactRoundValue(amount, units = 'USD') {
+  const num = Number(amount);
+  if (!Number.isFinite(num) || num <= 0) return '';
+  const sym = /eur/i.test(String(units || '')) ? 'EUR ' : '$';
+  if (num >= 1e9) return `${sym}${(num / 1e9).toFixed(num >= 10e9 ? 0 : 1)}B`;
+  if (num >= 1e6) return `${sym}${(num / 1e6).toFixed(num >= 10e6 ? 0 : 1)}M`;
+  if (num >= 1e3) return `${sym}${(num / 1e3).toFixed(0)}K`;
+  return `${sym}${num}`;
+}
+
+function formatTimingContainerLabel(rawName = '') {
+  const str = String(rawName || '').trim();
+  if (!str) return 'Corporate milestone';
+  if (/^[A-Z0-9_]{6,}$/.test(str) && str.includes('_')) {
+    return str
+      .toLowerCase()
+      .split('_')
+      .filter(Boolean)
+      .map((w) => (w === 'or' ? '/' : w.charAt(0).toUpperCase() + w.slice(1)))
+      .slice(0, 4)
+      .join(' ');
+  }
+  return str;
+}
+
+function entityMapType(entity = {}) {
+  return String(entity.entity_type || entity.entityType || entity.type || 'Entity');
+}
+
+function entityMapNodeKind(entity = {}, isAnchor = false) {
+  if (isAnchor) return 'anchor';
+  const type = entityMapType(entity).toLowerCase();
+  if (type === 'person') return 'person';
+  if (type === 'organization' || type === 'fund') return 'organization';
+  if (type.includes('event') || type.includes('round')) return 'event';
+  return 'entity';
+}
+
+function ensureSinglePeriod(text = '') {
+  const cleaned = String(text || '').trim().replace(/\s+/g, ' ').replace(/\.+$/, '');
+  return cleaned ? `${cleaned}.` : '';
+}
+
+function formatReadableEdgeRole(rawRole = '') {
+  const roleStr = String(rawRole || '').trim();
+  if (!roleStr) return '';
+  if (/[a-z]/.test(roleStr)) return roleStr;
+  return roleStr
+    .toLowerCase()
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map((word) => (/^(ceo|cto|cfo|coo|cso|cro|cmo|cco|vp)$/.test(word) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1)))
+    .join(' ');
+}
+
+function extractCalaOriginPublisher(origin = {}) {
+  const explicit = String(origin?.source || origin?.publisher || '').trim();
+  if (explicit && !/^cala/i.test(explicit)) return explicit;
+  const urlStr = String(origin?.url || origin?.document || '').trim();
+  if (urlStr) {
+    try {
+      const host = new URL(urlStr).hostname.replace(/^www\./i, '');
+      if (host === 'sec.gov' || host.endsWith('.sec.gov')) return 'SEC EDGAR';
+      if (host) return host;
+    } catch {
+      // Ignore malformed origin URLs and fall back to explicit/Cala label.
+    }
+  }
+  return explicit || 'Cala Knowledge Graph';
+}
+
+function resolveMapEdgeEvidenceSources(sourceIds = [], limit = 4) {
+  const seen = new Set();
+  const evidenceSources = [];
+  for (const id of sourceIds || []) {
+    const src = SOURCES[id];
+    if (!src) continue;
+    const dedupKey = `${String(src.url || '').trim().toLowerCase()}|${String(src.title || '').trim().toLowerCase()}`;
+    if (seen.has(dedupKey)) continue;
+    seen.add(dedupKey);
+    evidenceSources.push({
+      id: src.id,
+      title: src.title,
+      publisher: src.publisher,
+      url: src.url,
+      date: src.date || null,
+      sourceRank: src.sourceRank || 'AGGREGATOR'
+    });
+  }
+  evidenceSources.sort(
+    (a, b) =>
+      (SOURCE_RANK_PRIORITY[b.sourceRank] || 0) - (SOURCE_RANK_PRIORITY[a.sourceRank] || 0) ||
+      String(b.date || '').localeCompare(String(a.date || ''))
+  );
+  return {
+    evidenceSources: evidenceSources.slice(0, limit),
+    sourceCount: evidenceSources.length
+  };
+}
+
+function registerEntityMapSource(anchor, relation, fallbackRank = null) {
+  const rawOrigins = [
+    ...(relation?.properties?.sources || []),
+    ...(relation?.sources || [])
+  ].filter(Boolean);
+
+  const entityId = String(anchor?.id || 'anchor');
+  const relationId = String(relation?.id || relation?.name || 'relation');
+  const dedupedOrigins = new Map();
+  for (const origin of rawOrigins) {
+    const rank = inferCalaOriginRank(origin, origin?.source_rank || fallbackRank);
+    const originDate = origin?.published_time ? String(origin.published_time).slice(0, 10) : (origin?.date ? String(origin.date).slice(0, 10) : null);
+    const originUrl = origin?.url || origin?.document || '';
+    const originTitle = origin?.name || `${anchor?.name || 'Cala entity'} relationship record`;
+    const key = `${String(originUrl).trim().toLowerCase()}|${String(originTitle).trim().toLowerCase()}`;
+    const existing = dedupedOrigins.get(key);
+    if (
+      !existing ||
+      (SOURCE_RANK_PRIORITY[rank] || 0) > (SOURCE_RANK_PRIORITY[existing.sourceRank] || 0) ||
+      String(originDate || '') > String(existing.date || '')
+    ) {
+      dedupedOrigins.set(key, {
+        origin,
+        sourceRank: rank,
+        date: originDate,
+        url: originUrl || `https://cala.ai/entities/${encodeURIComponent(entityId)}`,
+        title: originTitle,
+        publisher: extractCalaOriginPublisher(origin)
+      });
+    }
+  }
+
+  const sortedOrigins = [...dedupedOrigins.values()].sort(
+    (a, b) =>
+      (SOURCE_RANK_PRIORITY[b.sourceRank] || 0) - (SOURCE_RANK_PRIORITY[a.sourceRank] || 0) ||
+      String(b.date || '').localeCompare(String(a.date || ''))
+  );
+
+  const candidates = sortedOrigins.length
+    ? sortedOrigins.slice(0, 6)
+    : [{
+      origin: null,
+      sourceRank: inferCalaOriginRank(null, fallbackRank),
+      date: null,
+      url: `https://cala.ai/entities/${encodeURIComponent(entityId)}`,
+      title: `${anchor?.name || 'Cala entity'} relationship record`,
+      publisher: 'Cala Knowledge Graph'
+    }];
+
+  const registeredIds = [];
+  const evidenceSources = [];
+  for (let i = 0; i < candidates.length; i += 1) {
+    const item = candidates[i];
+    const sourceSlug = slugifyBridgeId(`${entityId}-${relationId}-${item.origin?.document || item.origin?.url || item.title}-${i}`).slice(0, 64);
+    const sourceId = `src-cala-map-${sourceSlug}`;
+    if (!SOURCES[sourceId]) {
+      SOURCES[sourceId] = {
+        id: sourceId,
+        title: item.title,
+        publisher: item.publisher,
+        url: item.url,
+        date: item.date,
+        sourceRank: item.sourceRank,
+        datePrecision: item.date ? 'day' : 'unknown',
+        snippet: `${anchor?.name || 'Entity'}: verified Cala relationship ${relation?.name || relation?.id || ''}.`
+      };
+    }
+    registeredIds.push(sourceId);
+    if (i < 4) {
+      evidenceSources.push({
+        id: sourceId,
+        title: SOURCES[sourceId].title,
+        publisher: SOURCES[sourceId].publisher,
+        url: SOURCES[sourceId].url,
+        date: SOURCES[sourceId].date,
+        sourceRank: SOURCES[sourceId].sourceRank
+      });
+    }
+  }
+
+  return {
+    sourceId: registeredIds[0],
+    sourceIds: registeredIds,
+    sourceRank: candidates[0].sourceRank,
+    evidenceSources,
+    sourceCount: sortedOrigins.length
+  };
+}
+
+function addEntityMapNode(nodeMap, entity, { isAnchor = false, topSourceRank = null, sourceIds = [] } = {}) {
+  const id = String(entity?.id || '');
+  if (!id) return null;
+  const existing = nodeMap.get(id);
+  if (existing) {
+    const existingPriority = SOURCE_RANK_PRIORITY[String(existing.topSourceRank || '').toUpperCase()] || 0;
+    const newPriority = SOURCE_RANK_PRIORITY[String(topSourceRank || '').toUpperCase()] || 0;
+    if (newPriority > existingPriority) existing.topSourceRank = topSourceRank;
+    existing.sourceIds = [...new Set([...(existing.sourceIds || []), ...sourceIds])];
+    return existing;
+  }
+  const node = {
+    id,
+    label: String(entity?.name || 'Unnamed Cala entity'),
+    kind: entityMapNodeKind(entity, isAnchor),
+    entityType: entityMapType(entity),
+    entityCategory: entity?.entityCategory || null,
+    contributionGroup: isAnchor ? 'all' : null,
+    topSourceRank,
+    sourceIds: [...new Set(sourceIds)],
+    description: entity?.description || entity?.properties?.description?.value || null
+  };
+  nodeMap.set(id, node);
+  return node;
+}
+
+/**
+ * Builds an entity-first graph using only edges supplied by Cala on the anchor
+ * entity. `relatedEntities` can enrich relationship targets, but never creates
+ * an edge on its own. This keeps an isolated fact from looking like a bridge.
+ */
+export function buildEntityBridgeMap(anchorEntity, relatedEntities = [], options = {}) {
+  const requestedCenters = Array.isArray(anchorEntity)
+    ? anchorEntity
+    : [anchorEntity, ...(options.multiCenter ? relatedEntities : [])];
+  const focalEntities = [...new Map(
+    requestedCenters
+      .filter((entity) => entity?.id && entity?.name)
+      .map((entity) => [String(entity.id), entity])
+  ).values()].slice(0, 20);
+
+  if (!focalEntities.length) {
+    const err = new Error('Entity mode requires at least one Cala entity with an id and name.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const anchorEntityResolved = focalEntities[0];
+  const focalById = new Map(focalEntities.map((entity) => [String(entity.id), entity]));
+  const focalEntityIds = focalEntities.map((entity) => String(entity.id));
+  const focalByName = new Map(focalEntities.map((entity) => [normalizeLookupName(entity.name), entity]));
+  const focalByCanonicalName = new Map();
+  for (const entity of focalEntities) {
+    const canon = canonicalMapEntityName(entity.name);
+    if (canon && !focalByCanonicalName.has(canon)) focalByCanonicalName.set(canon, entity);
+  }
+  const relatedById = new Map(
+    (relatedEntities || [])
+      .filter((entity) => entity?.id)
+      .map((entity) => [String(entity.id), entity])
+  );
+  const nonFocalByCanonicalKey = new Map();
+  const getCanonicalBucketKey = (entity = {}) => {
+    const canon = canonicalMapEntityName(entity.name || '');
+    if (!canon) return null;
+    const typeBucket = entityMapType(entity).toLowerCase() === 'person' ? 'person' : 'org';
+    return `${typeBucket}:${canon}`;
+  };
+  for (const entity of relatedById.values()) {
+    if (isFundingRoundEntity(entity) || isGenericEventContainerNode(entity)) continue;
+    const k = getCanonicalBucketKey(entity);
+    if (!k) continue;
+    const prev = nonFocalByCanonicalKey.get(k);
+    if (!prev || (entity.relationships && !prev.relationships)) {
+      nonFocalByCanonicalKey.set(k, entity);
+    }
+  }
+  const nodeMap = new Map();
+  const anchor = {
+    id: String(anchorEntityResolved.id),
+    label: String(anchorEntityResolved.name),
+    kind: 'anchor',
+    entityType: entityMapType(anchorEntityResolved),
+    contributionGroup: 'all'
+  };
+
+  const timingEventsByEntity = Object.fromEntries(focalEntityIds.map((id) => [id, []]));
+  const seenTimingByEntity = new Map(focalEntityIds.map((id) => [id, new Set()]));
+
+  const resolveFocalEntity = (candidate) => {
+    if (!candidate) return null;
+    if (candidate.id && focalById.has(String(candidate.id))) return focalById.get(String(candidate.id));
+    const exact = candidate.name ? focalByName.get(normalizeLookupName(candidate.name)) : null;
+    if (exact) return exact;
+    const canon = candidate.name ? focalByCanonicalName.get(canonicalMapEntityName(candidate.name)) : null;
+    return canon || null;
+  };
+
+  const resolveTargetEntity = (rawTarget) => {
+    const focalMatch = resolveFocalEntity(rawTarget);
+    if (focalMatch) return focalMatch;
+    if (isFundingRoundEntity(rawTarget) || isGenericEventContainerNode(rawTarget)) {
+      if (rawTarget?.id && relatedById.has(String(rawTarget.id))) return relatedById.get(String(rawTarget.id));
+      return rawTarget;
+    }
+    const byId = rawTarget?.id ? relatedById.get(String(rawTarget.id)) : null;
+    const canonicalKey = getCanonicalBucketKey(rawTarget);
+    if (canonicalKey) {
+      const existing = nonFocalByCanonicalKey.get(canonicalKey);
+      if (existing) return existing;
+      const chosen = byId || rawTarget;
+      nonFocalByCanonicalKey.set(canonicalKey, chosen);
+      return chosen;
+    }
+    return byId || rawTarget;
+  };
+
+  const recordTimingCatalyst = (focalId, item) => {
+    const fId = String(focalId || '');
+    if (!fId || !timingEventsByEntity[fId]) return;
+    const seen = seenTimingByEntity.get(fId);
+    const dedupKey = `${item.id || ''}:${normalizeLookupName(item.title || '')}:${item.date || ''}`;
+    if (seen?.has(dedupKey)) return;
+    seen?.add(dedupKey);
+    timingEventsByEntity[fId].push(item);
+  };
+
+  for (const entity of focalEntities) {
+    const entitySource = Object.values(entity.properties || {})
+      .flatMap((property) => property?.sources || [])
+      .find(Boolean) || null;
+    const { sourceId, sourceRank } = registerEntityMapSource(entity, {
+      id: 'entity-record',
+      name: `${entity.name || 'Cala entity'} record`,
+      properties: { sources: entitySource ? [entitySource] : [] }
+    });
+    const node = addEntityMapNode(nodeMap, entity, { isAnchor: true, topSourceRank: sourceRank, sourceIds: [sourceId] });
+    if (node) node.isFocalEntity = true;
+  }
+
+  // In single-center mode, comparison entities stay visible as disconnected
+  // nodes until the live Cala graph proves a relationship.  Multi-center mode
+  // treats every supplied entity as a focal node above.
+  if (!options.multiCenter) {
+    for (const entity of relatedById.values()) {
+      if (resolveFocalEntity(entity)) continue;
+      if (isGenericEventContainerNode(entity)) continue;
+      const entitySource = Object.values(entity.properties || {})
+        .flatMap((property) => property?.sources || [])
+        .find(Boolean) || null;
+      const { sourceId, sourceRank } = registerEntityMapSource(entity, {
+        id: 'entity-record',
+        name: `${entity.name || 'Cala entity'} record`,
+        properties: { sources: entitySource ? [entitySource] : [] }
+      });
+      const node = addEntityMapNode(nodeMap, entity, { topSourceRank: sourceRank, sourceIds: [sourceId] });
+      if (node) node.isPinnedComparison = true;
+    }
+  }
+
+  const edges = [];
+  const seenEdges = new Set();
+  const sharedTargetCenters = new Map();
+  const roundFocalRoleHints = new Map();
+  const groupStats = Object.fromEntries(
+    Object.keys(CONTRIBUTION_GROUP_META).map((group) => [group, { nodeIds: new Set(), edgeCount: 0, entries: [] }])
+  );
+
+  const registerSharedEndpoint = (nodeEntity, focalId) => {
+    const nodeId = String(nodeEntity?.id || '');
+    if (!nodeId || focalById.has(nodeId)) return;
+    const typeBucket = entityMapType(nodeEntity).toLowerCase() === 'person' ? 'person' : 'org';
+    const sharedKey = `${typeBucket}:${canonicalMapEntityName(nodeEntity.name) || normalizeLookupName(nodeEntity.name) || nodeId}`;
+    if (!sharedTargetCenters.has(sharedKey)) {
+      sharedTargetCenters.set(sharedKey, { nodeIds: new Set(), focalIds: new Set() });
+    }
+    const bucket = sharedTargetCenters.get(sharedKey);
+    bucket.nodeIds.add(nodeId);
+    bucket.focalIds.add(String(focalId));
+  };
+
+  const emitVerifiedEdge = ({
+    sourceEntity,
+    targetEntity,
+    relationType,
+    relationMeta,
+    direction = 'outgoing',
+    focalId,
+    rawRecord,
+    date = null,
+    role = null,
+    detail = null,
+    roundLabel = null,
+    roundType = null,
+    roundAmount = null,
+    roundDate = null,
+    syndicatePeers = null,
+    syndicateTotalCount = 0,
+    isLead = false,
+    isRoundExpanded = false
+  }) => {
+    const fromEntity = direction === 'outgoing' ? sourceEntity : targetEntity;
+    const toEntity = direction === 'outgoing' ? targetEntity : sourceEntity;
+    const from = String(fromEntity?.id || '');
+    const to = String(toEntity?.id || '');
+    if (!from || !to || from === to) return null;
+
+    const isSymmetric = ENTITY_MAP_SYMMETRIC_RELATIONS.has(relationType);
+    const edgeId = isSymmetric
+      ? `edge:${[from, to].sort().join(':')}:${relationType}`
+      : `edge:${from}:${relationType}:${to}`;
+    if (seenEdges.has(edgeId)) return null;
+    seenEdges.add(edgeId);
+
+    const anchorForSource = focalById.get(String(focalId)) || sourceEntity;
+    const { sourceIds, sourceRank, evidenceSources, sourceCount } = registerEntityMapSource(
+      anchorForSource,
+      rawRecord || targetEntity
+    );
+    addEntityMapNode(nodeMap, fromEntity, { topSourceRank: sourceRank, sourceIds });
+    addEntityMapNode(nodeMap, toEntity, { topSourceRank: sourceRank, sourceIds });
+
+    const resolvedDate =
+      date ||
+      rawRecord?.properties?.event_date ||
+      rawRecord?.properties?.valid_since ||
+      rawRecord?.properties?.sources?.[0]?.date ||
+      null;
+    const rawRoleValue = role || rawRecord?.properties?.role || null;
+    const readableRole = formatReadableEdgeRole(rawRoleValue);
+    const normalizedLabel = String(relationMeta.label || '').toLowerCase();
+    const roleDuplicatesVerb =
+      readableRole &&
+      (normalizedLabel.includes(readableRole.toLowerCase()) ||
+        readableRole.toLowerCase() === 'founder' && normalizedLabel === 'founded' ||
+        readableRole.toLowerCase() === 'investor' && normalizedLabel.includes('invest'));
+    const lowercaseVerbPhrase = relationMeta.label
+      .toLowerCase()
+      .replace(/\b(ceo|cto|cfo|coo|cso|cro|cmo|cco|vp)\b/gi, (m) => m.toUpperCase());
+    const computedDetail = ensureSinglePeriod(
+      detail ||
+        `${fromEntity.name} ${lowercaseVerbPhrase} ${toEntity.name}${readableRole && !roleDuplicatesVerb ? ` as ${readableRole}` : ''}`
+    );
+
+    const edge = {
+      id: edgeId,
+      from,
+      to,
+      focalEntityId: String(focalId),
+      relation: relationType,
+      isSymmetric,
+      label: roundLabel ? `${relationMeta.label} (${roundLabel})` : relationMeta.label,
+      roundLabel: roundLabel || null,
+      roundType: roundType || null,
+      roundAmount: roundAmount || null,
+      roundDate: roundDate ? String(roundDate).slice(0, 10) : null,
+      syndicatePeers: Array.isArray(syndicatePeers) && syndicatePeers.length ? syndicatePeers : null,
+      syndicateTotalCount: syndicateTotalCount || 0,
+      isLead: Boolean(isLead),
+      isRoundExpanded: Boolean(isRoundExpanded),
+      contributionGroup: relationMeta.group,
+      bridgeFamily: relationMeta.family,
+      topSourceRank: sourceRank,
+      sourceIds,
+      evidenceSources,
+      sourceCount,
+      date: resolvedDate ? String(resolvedDate).slice(0, 10) : null,
+      role: readableRole || null,
+      detail: computedDetail,
+      verified: true
+    };
+    edges.push(edge);
+
+    if (focalById.has(from) && !focalById.has(to)) {
+      registerSharedEndpoint(toEntity, from);
+      const toNode = nodeMap.get(to);
+      if (toNode && !toNode.isFocalEntity) toNode.contributionGroup ||= relationMeta.group;
+    } else if (focalById.has(to) && !focalById.has(from)) {
+      registerSharedEndpoint(fromEntity, to);
+      const fromNode = nodeMap.get(from);
+      if (fromNode && !fromNode.isFocalEntity) fromNode.contributionGroup ||= relationMeta.group;
+    } else if (focalById.has(from) && focalById.has(to)) {
+      const fNode = nodeMap.get(from);
+      const tNode = nodeMap.get(to);
+      if (fNode && !fNode.isFocalEntity) fNode.contributionGroup ||= relationMeta.group;
+      if (tNode && !tNode.isFocalEntity) tNode.contributionGroup ||= relationMeta.group;
+    }
+
+    const stat = groupStats[relationMeta.group];
+    if (stat) {
+      const nonFocalEndpoint = !focalById.has(to) ? toEntity : !focalById.has(from) ? fromEntity : toEntity;
+      stat.nodeIds.add(String(nonFocalEndpoint.id));
+      stat.edgeCount += 1;
+      stat.entries.push({ id: String(nonFocalEndpoint.id), label: nonFocalEndpoint.name, topSourceRank: sourceRank, sourceIds, detail: computedDetail });
+    }
+    return edge;
+  };
+
+  const scanEntityRelationshipsForFocal = (entityRecord, assignedFocal) => {
+    const focalId = String(assignedFocal.id);
+    const relationships = entityRecord.relationships || {};
+    for (const direction of ['outgoing', 'incoming']) {
+      for (const [relationType, rawTargets] of Object.entries(relationships[direction] || {})) {
+        const relationMeta = resolveEntityMapRelationMeta(relationType);
+        if (!relationMeta) continue;
+        for (const rawTarget of rawTargets || []) {
+          if (!rawTarget?.id || !rawTarget?.name) continue;
+          const target = resolveTargetEntity(rawTarget);
+          if (isHonorificPersonStub(target)) continue;
+
+          if (isFundingRoundEntity(target) || isGenericEventContainerNode(target, relationType)) {
+            const roundRole = String(rawTarget.properties?.role || '').toUpperCase();
+            if (isFundingRoundEntity(target) && roundRole) {
+              if (!roundFocalRoleHints.has(String(target.id))) roundFocalRoleHints.set(String(target.id), []);
+              roundFocalRoleHints.get(String(target.id)).push({
+                entity: assignedFocal,
+                role: roundRole,
+                isLead: Boolean(rawTarget.properties?.is_lead),
+                rawRecord: rawTarget
+              });
+            }
+            const origin = rawTarget.properties?.sources?.[0] || rawTarget.sources?.[0] || null;
+            const date =
+              rawTarget.properties?.event_date ||
+              target.properties?.event_date?.value ||
+              target.properties?.announcement_date?.value ||
+              target.properties?.close_date?.value ||
+              origin?.date ||
+              null;
+            const amount = formatCompactRoundValue(
+              target.properties?.transaction_value?.value,
+              target.properties?.transaction_value_units?.value
+            );
+            const roundTypeVal =
+              target.properties?.round_label?.value ||
+              target.properties?.round_type?.value ||
+              formatTimingContainerLabel(target.name);
+            const title = [roundTypeVal, amount].filter(Boolean).join(' · ');
+            const { sourceRank } = registerEntityMapSource(assignedFocal, rawTarget);
+            recordTimingCatalyst(focalId, {
+              id: String(target.id),
+              kind: isFundingRoundEntity(target) ? 'funding_round' : 'corporate_event',
+              title,
+              date: date ? String(date).slice(0, 10) : null,
+              amount: amount || null,
+              role: roundRole || null,
+              sourceRank,
+              url: origin?.document || origin?.url || null
+            });
+            continue;
+          }
+
+          emitVerifiedEdge({
+            sourceEntity: assignedFocal,
+            targetEntity: target,
+            relationType,
+            relationMeta,
+            direction,
+            focalId,
+            rawRecord: rawTarget
+          });
+        }
+      }
+    }
+  };
+
+  // Pass 1: Scan all focal entities AND any hydrated related entities that canonically match a focal hub.
+  for (const focal of focalEntities) {
+    scanEntityRelationshipsForFocal(focal, focal);
+  }
+  for (const neighbor of relatedById.values()) {
+    const matchedFocal = resolveFocalEntity(neighbor);
+    if (matchedFocal && String(neighbor.id) !== String(matchedFocal.id) && neighbor.relationships) {
+      scanEntityRelationshipsForFocal(neighbor, matchedFocal);
+    }
+  }
+
+  // Pass 2: Expand hydrated FundingRound / PrivateCompanyFundingRound entities into Investor -> Issuer edges.
+  for (const roundEntity of relatedById.values()) {
+    if (!isFundingRoundEntity(roundEntity)) continue;
+    const roundId = String(roundEntity.id);
+    const roundType =
+      roundEntity.properties?.round_label?.value ||
+      roundEntity.properties?.round_type?.value ||
+      (/^(?:FINANCING_RAISED|CAPITAL)/i.test(String(roundEntity.name || '')) ? 'Financing' : roundEntity.name) ||
+      'Funding Round';
+    const roundAmount = formatCompactRoundValue(
+      roundEntity.properties?.transaction_value?.value,
+      roundEntity.properties?.transaction_value_units?.value
+    );
+    const roundDateRaw =
+      roundEntity.properties?.event_date?.value ||
+      roundEntity.properties?.announcement_date?.value ||
+      roundEntity.properties?.close_date?.value ||
+      null;
+
+    const participants = [
+      ...(roundEntity.relationships?.incoming?.PARTICIPATES_IN_FUNDING_ROUND || []),
+      ...(roundEntity.relationships?.incoming?.PARTICIPATES_IN_CORPORATE_EVENT || []),
+      ...(roundEntity.relationships?.outgoing?.PARTICIPATES_IN_FUNDING_ROUND || []),
+      ...(roundEntity.relationships?.outgoing?.PARTICIPATES_IN_CORPORATE_EVENT || [])
+    ];
+
+    const participantById = new Map();
+    for (const p of participants) {
+      if (!p?.id || !p?.name) continue;
+      const resolved = resolveTargetEntity(p);
+      if (isHonorificPersonStub(resolved)) continue;
+      const key = String(resolved.id);
+      if (!participantById.has(key)) {
+        participantById.set(key, {
+          entity: resolved,
+          role: String(p.properties?.role || '').toUpperCase(),
+          isLead: Boolean(p.properties?.is_lead),
+          rawRecord: p
+        });
+      }
+    }
+    for (const hint of roundFocalRoleHints.get(roundId) || []) {
+      const key = String(hint.entity.id);
+      if (!participantById.has(key)) {
+        participantById.set(key, hint);
+      } else if (!participantById.get(key).role && hint.role) {
+        participantById.get(key).role = hint.role;
+      }
+    }
+
+    const issuers = [];
+    const investors = [];
+    for (const entry of participantById.values()) {
+      if (entry.role === 'ISSUER' || entry.role === 'BORROWER' || entry.role === 'TARGET') {
+        issuers.push(entry);
+      } else if (entry.role === 'INVESTOR' || entry.role === 'LEAD_INVESTOR' || entry.role === 'LENDER') {
+        investors.push(entry);
+      }
+    }
+    if (!issuers.length || !investors.length) continue;
+
+    const sampleSourceDate =
+      roundDateRaw ||
+      participants.find((p) => p?.properties?.event_date)?.properties?.event_date ||
+      participants.find((p) => p?.properties?.sources?.[0]?.date)?.properties?.sources?.[0]?.date ||
+      null;
+    const shortDate = sampleSourceDate ? String(sampleSourceDate).slice(0, 7) : null;
+    const roundSummary = [roundType, roundAmount, shortDate].filter(Boolean).join(' · ');
+
+    for (const issuer of issuers) {
+      const issuerIsFocal = focalById.has(String(issuer.entity.id));
+      for (const investor of investors) {
+        const investorIsFocal = focalById.has(String(investor.entity.id));
+        if (!issuerIsFocal && !investorIsFocal) continue;
+        const primaryFocalId = investorIsFocal ? String(investor.entity.id) : String(issuer.entity.id);
+        const mergedSources = [
+          ...(investor.rawRecord?.properties?.sources || []),
+          ...(issuer.rawRecord?.properties?.sources || []),
+          ...(roundEntity.properties?.event_date?.sources || []),
+          ...(roundEntity.properties?.transaction_value?.sources || [])
+        ].filter(Boolean);
+        const syndicatePeers = investors
+          .filter((peer) => String(peer.entity.id) !== String(investor.entity.id))
+          .sort(
+            (a, b) =>
+              Number(Boolean(b.isLead)) - Number(Boolean(a.isLead)) ||
+              Number(focalById.has(String(b.entity.id))) - Number(focalById.has(String(a.entity.id))) ||
+              String(a.entity.name || '').localeCompare(String(b.entity.name || ''))
+          )
+          .slice(0, 5)
+          .map((peer) => ({
+            id: String(peer.entity.id),
+            name: String(peer.entity.name || peer.entity.id),
+            isLead: Boolean(peer.isLead)
+          }));
+        const rawRecord = {
+          id: `${roundId}-${investor.entity.id}-${issuer.entity.id}`,
+          name: `${investor.entity.name} -> ${issuer.entity.name} (${roundSummary || roundType})`,
+          properties: {
+            sources: mergedSources,
+            event_date: sampleSourceDate ? String(sampleSourceDate).slice(0, 10) : null,
+            role: investor.isLead ? 'LEAD_INVESTOR' : 'INVESTOR'
+          }
+        };
+        const leadText = investor.isLead ? 'led' : 'invested in';
+        const cleanIssuerOwner = String(issuer.entity.name || '').replace(/\.+$/, '');
+        const detail = ensureSinglePeriod(
+          `${investor.entity.name} ${leadText} ${cleanIssuerOwner}'s ${roundType}${roundAmount ? ` (${roundAmount})` : ''}${sampleSourceDate ? ` on ${String(sampleSourceDate).slice(0, 10)}` : ''}`
+        );
+        emitVerifiedEdge({
+          sourceEntity: investor.entity,
+          targetEntity: issuer.entity,
+          relationType: 'INVESTED_IN',
+          relationMeta: {
+            label: investor.isLead ? 'Led round' : 'Invested in',
+            group: 'access',
+            family: 'co_investor'
+          },
+          direction: 'outgoing',
+          focalId: primaryFocalId,
+          rawRecord,
+          date: sampleSourceDate,
+          role: investor.isLead ? 'LEAD_INVESTOR' : 'INVESTOR',
+          detail,
+          roundLabel: roundSummary || roundType,
+          roundType,
+          roundAmount: roundAmount || null,
+          roundDate: sampleSourceDate ? String(sampleSourceDate).slice(0, 10) : null,
+          syndicatePeers,
+          syndicateTotalCount: Math.max(0, investors.length - 1),
+          isLead: investor.isLead,
+          isRoundExpanded: true
+        });
+      }
+    }
+
+    // If a focal investor co-invested alongside a distinct lead co-investor in a non-focal issuer round,
+    // also add a compact lead co-investor edge so syndicates across maps can link up cleanly.
+    for (const focalInv of investors.filter((inv) => focalById.has(String(inv.entity.id)))) {
+      const leadPeers = investors.filter(
+        (peer) => String(peer.entity.id) !== String(focalInv.entity.id) && (peer.isLead || focalById.has(String(peer.entity.id)))
+      );
+      for (const peer of leadPeers.slice(0, 2)) {
+        const mergedSources = [
+          ...(focalInv.rawRecord?.properties?.sources || []),
+          ...(peer.rawRecord?.properties?.sources || [])
+        ].filter(Boolean);
+        const issuerNames = issuers.map((i) => i.entity.name).slice(0, 2).join(', ');
+        const otherInvestors = investors
+          .filter((inv) => String(inv.entity.id) !== String(focalInv.entity.id) && String(inv.entity.id) !== String(peer.entity.id))
+          .slice(0, 4)
+          .map((inv) => ({
+            id: String(inv.entity.id),
+            name: String(inv.entity.name || inv.entity.id),
+            isLead: Boolean(inv.isLead)
+          }));
+        const detail = ensureSinglePeriod(
+          `${focalInv.entity.name} and ${peer.entity.name} co-invested in ${issuerNames} (${roundSummary || roundType})`
+        );
+        emitVerifiedEdge({
+          sourceEntity: focalInv.entity,
+          targetEntity: peer.entity,
+          relationType: 'CO_INVESTED_WITH',
+          relationMeta: {
+            label: 'Co-invested with',
+            group: 'access',
+            family: 'co_investor'
+          },
+          direction: 'outgoing',
+          focalId: String(focalInv.entity.id),
+          rawRecord: {
+            id: `${roundId}-coinv-${focalInv.entity.id}-${peer.entity.id}`,
+            name: detail,
+            properties: { sources: mergedSources, event_date: sampleSourceDate }
+          },
+          date: sampleSourceDate,
+          detail,
+          roundLabel: roundSummary || roundType,
+          roundType,
+          roundAmount: roundAmount || null,
+          roundDate: sampleSourceDate ? String(sampleSourceDate).slice(0, 10) : null,
+          syndicatePeers: otherInvestors,
+          syndicateTotalCount: Math.max(0, investors.length - 2),
+          isRoundExpanded: true
+        });
+      }
+    }
+  }
+
+  // Pass 3: Scan hydrated 1-hop Person/Company/Organization neighbors for cross-focal edges
+  // (for example, Daniela Amodei having both Anthropic and OpenAI edges even when one hub's list truncated her).
+  for (const neighbor of relatedById.values()) {
+    if (resolveFocalEntity(neighbor)) continue;
+    if (isFundingRoundEntity(neighbor) || isGenericEventContainerNode(neighbor)) continue;
+    if (isHonorificPersonStub(neighbor) || !neighbor.relationships) continue;
+    const canonicalNeighbor = resolveTargetEntity(neighbor);
+    for (const direction of ['outgoing', 'incoming']) {
+      for (const [relationType, rawTargets] of Object.entries(neighbor.relationships[direction] || {})) {
+        const relationMeta = resolveEntityMapRelationMeta(relationType);
+        if (!relationMeta) continue;
+        for (const rawTarget of rawTargets || []) {
+          if (!rawTarget?.id || !rawTarget?.name) continue;
+          const matchedFocal = resolveFocalEntity(rawTarget);
+          if (!matchedFocal) continue;
+          if (isGenericEventContainerNode(matchedFocal, relationType)) continue;
+          const flippedDir = direction === 'outgoing' ? 'incoming' : 'outgoing';
+          emitVerifiedEdge({
+            sourceEntity: matchedFocal,
+            targetEntity: canonicalNeighbor,
+            relationType,
+            relationMeta,
+            direction: flippedDir,
+            focalId: String(matchedFocal.id),
+            rawRecord: rawTarget
+          });
+        }
+      }
+    }
+  }
+
+  // Reconcile noisy or backwards raw INVESTED_IN edges against round-verified edges
+  // and prevent duplicate opposing arrows between the same entity pair.
+  const entityObjById = new Map();
+  for (const e of [...focalEntities, ...relatedEntities]) {
+    if (e?.id && !entityObjById.has(String(e.id))) entityObjById.set(String(e.id), e);
+  }
+  const roundVerifiedUndirectedPairs = new Set();
+  for (const edge of edges) {
+    if (edge.isRoundExpanded && edge.relation === 'INVESTED_IN') {
+      roundVerifiedUndirectedPairs.add([edge.from, edge.to].sort().join(':'));
+    }
+  }
+  const rawInvestedPairs = new Map();
+  for (const edge of edges) {
+    if (!edge.isRoundExpanded && edge.relation === 'INVESTED_IN') {
+      const k = [edge.from, edge.to].sort().join(':');
+      if (!rawInvestedPairs.has(k)) rawInvestedPairs.set(k, []);
+      rawInvestedPairs.get(k).push(edge);
+    }
+  }
+  const dropEdgeIds = new Set();
+  for (const [pairKey, pairEdges] of rawInvestedPairs.entries()) {
+    if (roundVerifiedUndirectedPairs.has(pairKey)) {
+      for (const e of pairEdges) dropEdgeIds.add(e.id);
+      continue;
+    }
+    if (pairEdges.length >= 2) {
+      const sortedPair = [...pairEdges].sort((a, b) => {
+        const aFromNode = nodeMap.get(a.from) || entityObjById.get(a.from) || { name: '' };
+        const aToNode = nodeMap.get(a.to) || entityObjById.get(a.to) || { name: '' };
+        const bFromNode = nodeMap.get(b.from) || entityObjById.get(b.from) || { name: '' };
+        const bToNode = nodeMap.get(b.to) || entityObjById.get(b.to) || { name: '' };
+        const aScore = (isLikelyInvestorEntity({ name: aFromNode.label || aFromNode.name, entity_type: aFromNode.entityType || aFromNode.entity_type }) ? 2 : 0)
+          - (isLikelyInvestorEntity({ name: aToNode.label || aToNode.name, entity_type: aToNode.entityType || aToNode.entity_type }) ? 2 : 0);
+        const bScore = (isLikelyInvestorEntity({ name: bFromNode.label || bFromNode.name, entity_type: bFromNode.entityType || bFromNode.entity_type }) ? 2 : 0)
+          - (isLikelyInvestorEntity({ name: bToNode.label || bToNode.name, entity_type: bToNode.entityType || bToNode.entity_type }) ? 2 : 0);
+        return bScore - aScore || (SOURCE_RANK_PRIORITY[b.topSourceRank] || 0) - (SOURCE_RANK_PRIORITY[a.topSourceRank] || 0);
+      });
+      for (const extra of sortedPair.slice(1)) dropEdgeIds.add(extra.id);
+    }
+  }
+  if (dropEdgeIds.size) {
+    for (let i = edges.length - 1; i >= 0; i--) {
+      if (dropEdgeIds.has(edges[i].id)) edges.splice(i, 1);
+    }
+  }
+  for (const edge of edges) {
+    if (edge.isRoundExpanded || edge.relation !== 'INVESTED_IN') continue;
+    const fromNode = nodeMap.get(edge.from) || { label: edge.from };
+    const toNode = nodeMap.get(edge.to) || { label: edge.to };
+    const fromIsInv = isLikelyInvestorEntity({ name: fromNode.label, entity_type: fromNode.entityType });
+    const toIsInv = isLikelyInvestorEntity({ name: toNode.label, entity_type: toNode.entityType });
+    if (toIsInv && !fromIsInv) {
+      [edge.from, edge.to] = [edge.to, edge.from];
+      edge.id = `edge:${edge.from}:INVESTED_IN:${edge.to}`;
+      edge.label = 'Investor tie';
+      edge.detail = ensureSinglePeriod(`${toNode.label} has a Cala investor tie with ${fromNode.label}`);
+    } else if (!toIsInv && !fromIsInv && focalById.has(edge.from) && focalById.has(edge.to)) {
+      edge.label = 'Financing link';
+      edge.detail = ensureSinglePeriod(`Cala financing record connects ${fromNode.label} and ${toNode.label}`);
+    }
+  }
+
+  sharedTargetCenters.clear();
+  for (const edge of edges) {
+    const fIsFocal = focalById.has(edge.from);
+    const tIsFocal = focalById.has(edge.to);
+    if (fIsFocal && !tIsFocal) {
+      const targetNode = nodeMap.get(edge.to);
+      if (targetNode) registerSharedEndpoint({ id: targetNode.id, name: targetNode.label, entity_type: targetNode.entityType }, edge.from);
+    } else if (tIsFocal && !fIsFocal) {
+      const sourceNode = nodeMap.get(edge.from);
+      if (sourceNode) registerSharedEndpoint({ id: sourceNode.id, name: sourceNode.label, entity_type: sourceNode.entityType }, edge.to);
+    }
+  }
+
+  for (const [focalId, list] of Object.entries(timingEventsByEntity)) {
+    timingEventsByEntity[focalId] = list
+      .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')) || (SOURCE_RANK_PRIORITY[b.sourceRank] || 0) - (SOURCE_RANK_PRIORITY[a.sourceRank] || 0))
+      .slice(0, 12);
+    const fNode = nodeMap.get(focalId);
+    if (fNode) fNode.timingCatalysts = timingEventsByEntity[focalId];
+  }
+
+  const sharedBridgeNodeIds = [];
+  for (const { nodeIds, focalIds } of sharedTargetCenters.values()) {
+    if (focalIds.size < 2) continue;
+    for (const nodeId of nodeIds) {
+      const node = nodeMap.get(nodeId);
+      if (!node) continue;
+      node.isSharedBridge = true;
+      node.sharedByFocalEntityIds = [...focalIds];
+      // The node and each of its incident verified Cala edges carry the same
+      // shared-bridge marker, allowing the UI to highlight a real common path
+      // without inventing an edge between focal entities.
+      for (const edge of edges) {
+        if (edge.from !== nodeId && edge.to !== nodeId) continue;
+        edge.isSharedBridge = true;
+        edge.sharedBridgeNodeId = nodeId;
+        edge.sharedByFocalEntityIds = [...focalIds];
+      }
+      sharedBridgeNodeIds.push(nodeId);
+    }
+  }
+
+  // A deep Cala record can contain hundreds of true relationships. The map is
+  // a projection of that record, not the record itself: retain every shared
+  // bridge and direct focal-to-focal fact, then show a compact, provenance-led
+  // set of each focal entity's remaining top connections. Nothing is inferred
+  // or deleted from the dossier's raw relationship data.
+  const directFocalEdge = (edge) => focalById.has(edge.from) && focalById.has(edge.to);
+  const edgeSignalWeight = (edge) => {
+    let score = (SOURCE_RANK_PRIORITY[edge.topSourceRank] || 0) * 10;
+    if (edge.isRoundExpanded) score += 16;
+    if (edge.isLead) score += 8;
+    if (PRIORITY_MAP_RELATIONS.has(edge.relation)) score += 6;
+    if (edge.relation === 'WORKS_AT' || edge.relation === 'IS_MEMBER_OF') score -= 6;
+    if (edge.date) score += 3;
+    return score;
+  };
+  const compareMapEdge = (left, right) =>
+    edgeSignalWeight(right) - edgeSignalWeight(left) ||
+    String(right.date || '').localeCompare(String(left.date || '')) ||
+    String(left.label || '').localeCompare(String(right.label || '')) ||
+    String(left.id).localeCompare(String(right.id));
+  const selectedEdgeIds = new Set(
+    edges
+      .filter((edge) => edge.isSharedBridge || directFocalEdge(edge))
+      .map((edge) => edge.id)
+  );
+  const maxNonsharedPerGroup = focalEntityIds.length === 1 ? 3 : 2;
+  const maxNonsharedPerFocal = focalEntityIds.length === 1 ? 12 : focalEntityIds.length <= 3 ? 9 : 6;
+  for (const focalId of focalEntityIds) {
+    const candidates = edges
+      .filter((edge) => edge.focalEntityId === focalId && !edge.isSharedBridge && !directFocalEdge(edge))
+      .sort(compareMapEdge);
+    const selectedForFocal = new Set();
+    for (const group of Object.keys(CONTRIBUTION_GROUP_META)) {
+      for (const edge of candidates.filter((candidate) => candidate.contributionGroup === group).slice(0, maxNonsharedPerGroup)) {
+        selectedEdgeIds.add(edge.id);
+        selectedForFocal.add(edge.id);
+      }
+    }
+    for (const edge of candidates) {
+      if (selectedForFocal.size >= maxNonsharedPerFocal) break;
+      if (selectedForFocal.has(edge.id)) continue;
+      selectedEdgeIds.add(edge.id);
+      selectedForFocal.add(edge.id);
+    }
+  }
+  const ENTITY_PROVENANCE_WEIGHT = { FILING: 18, PRIMARY: 12, PRESS: 8, AGGREGATOR: 6 };
+  const formatEntityDisplayLabel = (raw = '', date = null) => {
+    const str = String(raw || '').trim();
+    if (!str) return 'Unnamed Cala entity';
+    if (/^[A-Z0-9_]{8,}$/.test(str) && str.includes('_')) {
+      const words = str
+        .toLowerCase()
+        .split('_')
+        .filter(Boolean)
+        .map((w) => (w === 'or' ? '/' : w.charAt(0).toUpperCase() + w.slice(1)));
+      const compact = words.slice(0, 3).join(' ');
+      const yr = date && String(date).length >= 4 ? ` (${String(date).slice(0, 4)})` : '';
+      return `${compact}${yr}`;
+    }
+    return str;
+  };
+
+  const displayEdges = edges.filter((edge) => selectedEdgeIds.has(edge.id)).map((edge) => {
+    const rank = String(edge.topSourceRank || 'AGGREGATOR').toUpperCase();
+    const basePts = ENTITY_PROVENANCE_WEIGHT[rank] || 6;
+    const sharedPts = edge.isSharedBridge ? 6 : 0;
+    const datePts = edge.date ? 2 : 0;
+    const rarityScore = Math.round((basePts + sharedPts + datePts) * 10) / 10;
+    const formulaBreakdown = {
+      formula: 'sourceRankWeight + sharedBridgeBonus + datedRecordBonus',
+      inputs: `${rank} (+${basePts})${sharedPts ? ` + shared path (+${sharedPts})` : ''}${datePts ? ` + dated ${edge.date} (+${datePts})` : ''} = ${rarityScore} pts`,
+      plainMeaning: edge.detail
+    };
+    return {
+      ...edge,
+      rarityScore,
+      formulaBreakdown
+    };
+  });
+
+  const visibleNodeIds = new Set(focalEntityIds);
+  for (const edge of displayEdges) {
+    visibleNodeIds.add(edge.from);
+    visibleNodeIds.add(edge.to);
+  }
+  for (const nodeId of [...nodeMap.keys()]) {
+    if (!visibleNodeIds.has(nodeId)) nodeMap.delete(nodeId);
+  }
+  for (const [nodeId, node] of nodeMap.entries()) {
+    const incEdges = displayEdges
+      .filter((e) => e.from === nodeId || e.to === nodeId)
+      .sort((a, b) => (b.rarityScore || 0) - (a.rarityScore || 0));
+    const bestEdge = incEdges[0] || null;
+    if (!node.isFocalEntity && bestEdge) {
+      node.rarityScore = bestEdge.rarityScore;
+      node.formulaBreakdown = bestEdge.formulaBreakdown;
+      if (bestEdge.date && !node.date) node.date = bestEdge.date;
+    }
+    const cleanLbl = formatEntityDisplayLabel(node.label, node.date || bestEdge?.date);
+    if (cleanLbl !== node.label) {
+      node.rawLabel = node.label;
+      node.label = cleanLbl;
+    }
+  }
+
+  const displayedSharedBridgeNodeIds = sharedBridgeNodeIds.filter((nodeId) => visibleNodeIds.has(nodeId));
+  const displayedGroupStats = Object.fromEntries(
+    Object.keys(CONTRIBUTION_GROUP_META).map((group) => [group, { nodeIds: new Set(), edgeCount: 0, entries: [], filingNodeIds: new Set() }])
+  );
+  for (const edge of displayEdges) {
+    const stat = displayedGroupStats[edge.contributionGroup];
+    if (!stat) continue;
+    stat.edgeCount += 1;
+    const bridgeIds = [edge.from, edge.to].filter((nodeId) => !focalById.has(nodeId));
+    for (const nodeId of bridgeIds) {
+      const node = nodeMap.get(nodeId);
+      if (!node) continue;
+      stat.nodeIds.add(nodeId);
+      if (String(edge.topSourceRank || '').toUpperCase() === 'FILING') {
+        stat.filingNodeIds.add(nodeId);
+      }
+      stat.entries.push({
+        id: nodeId,
+        label: node.label,
+        rarityScore: edge.rarityScore || 6,
+        topSourceRank: edge.topSourceRank,
+        sourceIds: edge.sourceIds || [],
+        detail: edge.detail
+      });
+    }
+  }
+
+  const groupSignificanceRaw = {};
+  for (const meta of Object.values(CONTRIBUTION_GROUP_META)) {
+    const stat = displayedGroupStats[meta.group];
+    const dedupEntries = new Map();
+    for (const e of stat.entries) {
+      const prev = dedupEntries.get(e.id);
+      if (!prev || (e.rarityScore || 0) > (prev.rarityScore || 0)) dedupEntries.set(e.id, e);
+    }
+    const sortedEntries = [...dedupEntries.values()].sort(
+      (a, b) =>
+        (b.rarityScore || 0) - (a.rarityScore || 0) ||
+        (SOURCE_RANK_PRIORITY[b.topSourceRank] || 0) - (SOURCE_RANK_PRIORITY[a.topSourceRank] || 0) ||
+        a.label.localeCompare(b.label)
+    );
+    const topRarity = sortedEntries[0]?.rarityScore || 0;
+    const top3Slice = sortedEntries.slice(0, 3).map((e) => e.rarityScore || 0);
+    const top3MeanRarity = top3Slice.length ? top3Slice.reduce((s, v) => s + v, 0) / top3Slice.length : 0;
+    const filingCount = stat.filingNodeIds.size;
+    const filingBonus = Math.min(4.5, filingCount * 1.5);
+    const significanceScore = sortedEntries.length
+      ? Math.round((topRarity + top3MeanRarity + filingBonus) * 100) / 100
+      : 0;
+    groupSignificanceRaw[meta.group] = {
+      sortedEntries,
+      topRarity: Math.round(topRarity * 10) / 10,
+      top3MeanRarity: Math.round(top3MeanRarity * 10) / 10,
+      filingCount,
+      filingBonus: Math.round(filingBonus * 10) / 10,
+      significanceScore
+    };
+  }
+  const activeSigScores = Object.values(groupSignificanceRaw).map((g) => g.significanceScore).filter((v) => v > 0);
+  const maxGroupSig = activeSigScores.length ? Math.max(...activeSigScores) : 0;
+  const minGroupSig = activeSigScores.length ? Math.min(...activeSigScores) : 0;
+
+  const contributionClusters = Object.values(CONTRIBUTION_GROUP_META).map((meta) => {
+    const stat = displayedGroupStats[meta.group];
+    const g = groupSignificanceRaw[meta.group];
+    let visualWeight = 0.6;
+    if (g.significanceScore > 0) {
+      visualWeight = maxGroupSig > minGroupSig
+        ? Math.round((0.88 + ((g.significanceScore - minGroupSig) / (maxGroupSig - minGroupSig)) * 0.77) * 100) / 100
+        : 1.15;
+    }
+    const entityWord = stat.nodeIds.size === 1 ? 'entity' : 'entities';
+    return {
+      id: meta.id,
+      group: meta.group,
+      contributionGroup: meta.group,
+      label: meta.label,
+      subtitle: meta.subtitle,
+      nodeCount: stat.nodeIds.size,
+      edgeCount: stat.edgeCount,
+      startupCount: stat.nodeIds.size,
+      topRarity: g.topRarity,
+      top3MeanRarity: g.top3MeanRarity,
+      filingCount: g.filingCount,
+      filingBonus: g.filingBonus,
+      significanceScore: g.significanceScore,
+      visualWeight,
+      significanceFormula: 'topSignalRarity + mean(top3Paths) + min(4.5, FILING_count * 1.5)',
+      significanceInputs: `Top: ${g.topRarity.toFixed(1)} + Top3 avg: ${g.top3MeanRarity.toFixed(1)} + ${g.filingCount} FILING (+${g.filingBonus.toFixed(1)}) = ${g.significanceScore.toFixed(1)} pts | ${stat.nodeIds.size} ${entityWord}`,
+      topContributors: g.sortedEntries.slice(0, 3)
+    };
+  });
+
+  const clusters = Object.entries(BRIDGE_FAMILY_META).map(([family, meta]) => {
+    const familyEdges = displayEdges.filter((edge) => edge.bridgeFamily === family);
+    return {
+      id: meta.id,
+      bridgeFamily: family,
+      label: meta.label,
+      subtitle: meta.subtitle || '',
+      nodeCount: new Set(familyEdges.flatMap((edge) => [edge.from, edge.to]).filter((id) => !focalEntityIds.includes(id))).size,
+      edgeCount: familyEdges.length
+    };
+  });
+
+  return {
+    anchor,
+    focalEntityIds,
+    sharedBridgeNodeIds: displayedSharedBridgeNodeIds,
+    clusters,
+    contributionClusters,
+    timingEventsByEntity,
+    nodes: [...nodeMap.values()],
+    edges: displayEdges,
+    peerEdges: [],
+    stats: {
+      renderedStartups: Math.max(0, nodeMap.size - focalEntities.length),
+      renderedEntities: Math.max(0, nodeMap.size - focalEntities.length),
+      renderedFocalEntities: focalEntities.length,
+      renderedSharedBridges: displayedSharedBridgeNodeIds.length,
+      renderedBridges: displayEdges.length,
+      renderedPeerEdges: 0,
+      suppressedMegaHubCount: 0,
+      hideMegaHubsApplied: Boolean(options.hideMegaHubs)
+    }
+  };
+}
+
 export function computeDataConfidence(company, visibleRounds = [], signals = null) {
   const roundSources = resolveSources((visibleRounds || []).flatMap((r) => r.sourceIds || []));
   const sigRanks = (signals?.arbitrageSignals || []).map((s) => s.sourceRank).filter(Boolean);
@@ -3824,9 +5061,9 @@ function extractCandidateSignals(company, visibleRounds, evalDate, cutoffDate = 
   const headcountAtLastRound = entryObs.headcount;
   const currentObservedEmp = latestObs.headcount;
   const headcountGrowthPct =
-    headcountAtLastRound > 0
+    Number.isFinite(headcountAtLastRound) && Number.isFinite(currentObservedEmp) && headcountAtLastRound > 0
       ? Math.max(0, Math.round(((currentObservedEmp - headcountAtLastRound) / headcountAtLastRound) * 100))
-      : 0;
+      : null;
 
   const alumniRole = (company.peopleCoverage?.roles || []).find((r) => Boolean(r.priorCompany)) || null;
   const alumniSpinout = alumniRole
@@ -3855,7 +5092,7 @@ function extractCandidateSignals(company, visibleRounds, evalDate, cutoffDate = 
     });
   }
 
-  if (headcountGrowthPct >= 30) {
+  if (headcountGrowthPct !== null && headcountGrowthPct >= 30) {
     arbitrageSignals.push({
       type: 'headcount_velocity',
       label: `+${headcountGrowthPct}% team growth`,
@@ -3916,7 +5153,7 @@ function extractCandidateSignals(company, visibleRounds, evalDate, cutoffDate = 
   let whyNowTrigger = '';
   if (filingEvent) {
     whyNowTrigger = `New ${company.country === 'United Kingdom' ? 'Companies House SH01' : 'registry'} filing (${filingEvent.eventDate ? String(filingEvent.eventDate).slice(0, 7) : 'recent'})`;
-  } else if (headcountGrowthPct >= 35) {
+  } else if (headcountGrowthPct !== null && headcountGrowthPct >= 35) {
     whyNowTrigger = `+${headcountGrowthPct}% hiring velocity since ${latestRound?.type || 'round'}`;
   } else if (latestFin && Number.isFinite(latestFin.runwayMonthsEst) && latestFin.runwayMonthsEst <= 15) {
     whyNowTrigger = `Companies House: EUR ${latestFin.cashEurM}M cash (~${latestFin.runwayMonthsEst}m runway)`;
@@ -3927,7 +5164,10 @@ function extractCandidateSignals(company, visibleRounds, evalDate, cutoffDate = 
   } else if (raisingSoon && latestRound) {
     whyNowTrigger = `${NEXT_STAGE[latestRound.type] || 'Next'} window (${Math.round(monthsSince)}m post-${latestRound.type})`;
   } else if (latestRound) {
-    whyNowTrigger = `${latestRound.type} (${latestRound.date ? String(latestRound.date).slice(0, 7) : 'Cala Graph'}) · ${headcountAtLastRound}->${currentObservedEmp} team`;
+    const headcountText = Number.isFinite(headcountAtLastRound) && Number.isFinite(currentObservedEmp)
+      ? ` · ${headcountAtLastRound}->${currentObservedEmp} team`
+      : '';
+    whyNowTrigger = `${latestRound.type} (${latestRound.date ? String(latestRound.date).slice(0, 7) : 'Cala Graph'})${headcountText}`;
   } else if (latestFin) {
     whyNowTrigger = `${latestFin.label || latestFin.metric}: ${latestFin.value}${latestFin.unit ? ` ${latestFin.unit}` : ''}`;
   } else if (company.registryInfo?.registrationNumber) {
@@ -4022,8 +5262,9 @@ export function scoreAndRankCandidates(thesis, options = {}) {
   const limit = options.limit ?? 200;
   const entityScope = options.entityScope === 'all' ? 'all' : 'startups';
   const includeCompanySet = new Set(
-    (options.includeCompanyNames || []).map((n) => String(n || '').trim().toLowerCase()).filter(Boolean)
+    (options.includeCompanyNames || []).map((n) => normalizeLookupName(n)).filter(Boolean)
   );
+  const includeEntityIdSet = new Set((options.includeEntityIds || []).map((id) => String(id || '').trim()).filter(Boolean));
   const seenSet = new Set((options.seenCompanyNames || []).map((n) => n.trim().toLowerCase()).filter(Boolean));
   const excludedIds = new Set(thesis.portfolioCompanyIds || []);
   const weights = getWeights(rankingMode);
@@ -4041,8 +5282,12 @@ export function scoreAndRankCandidates(thesis, options = {}) {
     if (excludedIds.has(company.id)) continue;
     if (seenSet.has(company.name.toLowerCase())) continue;
 
-    const explicitlyIncluded = includeCompanySet.has(company.name.toLowerCase());
-    if (entityScope !== 'all' && company.entityCategory === 'established_corp' && !explicitlyIncluded) continue;
+    const explicitlyIncluded =
+      includeCompanySet.has(normalizeLookupName(company.name)) ||
+      includeEntityIdSet.has(String(company.id)) ||
+      includeEntityIdSet.has(String(company.calaEntityId || ''));
+    const retainLiveEntity = Boolean(company.isLiveCalaDiscovered || explicitlyIncluded);
+    if (entityScope !== 'all' && company.entityCategory === 'established_corp' && !retainLiveEntity) continue;
 
     const visibleRounds = cutoffDate
       ? company.rounds.filter((r) => r.date < cutoffDate)
@@ -4078,10 +5323,10 @@ export function scoreAndRankCandidates(thesis, options = {}) {
 
     // 3. Stage & Time-Travel Entry Kernel (70% next-stage/ticket fit + 30% entry kernel)
     const likelyNextStage = latestRound
-      ? NEXT_STAGE[latestRound.type] || 'Seed'
+      ? NEXT_STAGE[latestRound.type] || 'Not found in Cala'
       : company.entityCategory === 'established_corp'
         ? 'Public / Mature'
-        : 'Pre-Seed / Angel';
+        : 'Not found in Cala';
     let stageTicketRatio = company.entityCategory === 'established_corp' ? 0.12 : 0.55;
     if (latestRound) {
       const currentStageShare = stageShareMap[latestRound.type] || 0;
@@ -4297,19 +5542,21 @@ export function scoreAndRankCandidates(thesis, options = {}) {
     const reasons = enforceFactCitations(candidateReasons);
     const graph = buildRelationshipGraph(thesis, company, visibleRounds, coInvestorPath);
 
-    // Build LinkedIn + 3rd-party bridge & Startup-to-Startup network connections
-    const leaderInfo = COMPANY_LINKEDIN_LEADERS[company.id] || {
-      founder: `${company.name} Founding Team`,
-      linkedinDegree: `2nd via ${company.region} founder circle`
-    };
-    const regionBridge = LINKEDIN_BRIDGES[company.region] || LINKEDIN_BRIDGES['Nordics'];
+    // Surface only connections present in the Cala graph.  The previous
+    // implementation filled this list with regional LinkedIn assumptions.
     const startupInvestorIds = new Set(visibleRounds.flatMap((r) => r.investorIds).filter((id) => id !== 'angel-syndicate'));
+    const startupInvestorNames = new Set((company.liveInvestorNames || []).map(normalizeLookupName).filter(Boolean));
+    const startupPeople = new Set((company.peopleCoverage?.roles || []).map((r) => normalizeLookupName(r.name)).filter(Boolean));
 
     const peerStartups = [];
     for (const other of COMPANIES) {
       if (other.id === company.id) continue;
       const otherInvIds = new Set(other.rounds.flatMap((r) => r.investorIds).filter((id) => id !== 'angel-syndicate'));
       const sharedInvestors = [...startupInvestorIds].filter((id) => otherInvIds.has(id));
+      const otherInvestorNames = new Set((other.liveInvestorNames || []).map(normalizeLookupName).filter(Boolean));
+      const sharedLiveInvestor = [...startupInvestorNames].find((name) => otherInvestorNames.has(name));
+      const otherPeople = new Set((other.peopleCoverage?.roles || []).map((r) => normalizeLookupName(r.name)).filter(Boolean));
+      const sharedPerson = [...startupPeople].find((name) => otherPeople.has(name));
       const isCandidate = !excludedIds.has(other.id);
       if (sharedInvestors.length > 0 && isCandidate) {
         const invName = PEER_INVESTORS[sharedInvestors[0]] || sharedInvestors[0];
@@ -4321,57 +5568,27 @@ export function scoreAndRankCandidates(thesis, options = {}) {
           connectionType: 'cala_shared_investor',
           bridgeLabel: `Shared investor: ${invName}`
         });
-      } else if (
-        sharedInvestors.length === 0 &&
-        other.sector === company.sector &&
-        other.region === company.region &&
-        isCandidate &&
-        peerStartups.length < 3
-      ) {
+      } else if (sharedLiveInvestor && isCandidate) {
         peerStartups.push({
           id: other.id,
           name: other.name,
           sector: other.sector,
           country: other.country,
-          connectionType: 'linkedin_alumni',
-          bridgeLabel: `Alumni link: ${regionBridge.networkLabel}`
+          connectionType: 'cala_shared_investor',
+          bridgeLabel: `Shared investor: ${sharedLiveInvestor}`
+        });
+      } else if (sharedPerson && isCandidate) {
+        peerStartups.push({
+          id: other.id,
+          name: other.name,
+          sector: other.sector,
+          country: other.country,
+          connectionType: 'cala_shared_person',
+          bridgeLabel: `Shared Cala person: ${sharedPerson}`
         });
       }
       if (peerStartups.length >= 4) break;
     }
-
-    const linkedinBridgeSummary = coInvestorPath
-      ? `LinkedIn 2nd-degree via ${regionBridge.thirdPartyCoInvestorRep} (${coInvestorPath.coInvestorName}) and ${leaderInfo.founder}.`
-      : `LinkedIn ${leaderInfo.linkedinDegree}: ${regionBridge.bridgePerson} connects directly to ${leaderInfo.founder}.`;
-
-    const linkedinGraph = {
-      sourceLabel: 'LinkedIn 1st/2nd-degree & 3rd-party founder alumni network',
-      bridgePerson: coInvestorPath ? regionBridge.thirdPartyCoInvestorRep : regionBridge.bridgePerson,
-      targetLeader: leaderInfo.founder,
-      networkName: regionBridge.networkLabel,
-      summary: linkedinBridgeSummary,
-      nodes: [
-        { id: thesis.fundId, label: `${thesis.fundName} Team`, type: 'target_fund' },
-        {
-          id: 'li-bridge',
-          label: coInvestorPath ? regionBridge.thirdPartyCoInvestorRep.split(' (')[0] : regionBridge.bridgePerson.split(' (')[0],
-          type: 'co_investor'
-        },
-        { id: 'li-leader', label: leaderInfo.founder.split(' (')[0], type: 'portfolio' },
-        { id: company.id, label: company.name, type: 'target_startup' },
-        ...peerStartups.slice(0, 2).map((ps) => ({ id: ps.id, label: ps.name, type: 'peer_startup' }))
-      ],
-      links: [
-        { source: thesis.fundId, target: 'li-bridge', label: 'LinkedIn 1st' },
-        { source: 'li-bridge', target: 'li-leader', label: leaderInfo.linkedinDegree.split(' via')[0] },
-        { source: 'li-leader', target: company.id, label: 'leads / founded' },
-        ...peerStartups.slice(0, 2).map((ps) => ({
-          source: company.id,
-          target: ps.id,
-          label: ps.connectionType === 'cala_shared_investor' ? 'shared investor' : 'alumni tie'
-        }))
-      ]
-    };
 
     const nonMegaCount = (hiddenBridgesResult.bridges || []).filter((b) => !b.isMegaHub).length;
     const signalTier = computeSignalTier({
@@ -4435,7 +5652,6 @@ export function scoreAndRankCandidates(thesis, options = {}) {
       coInvestorPath,
       evidenceFolders,
       diligencePacket,
-      linkedinNetwork: linkedinGraph,
       peerStartups,
       similarPortfolio: similarPortfolio.map((p) => ({
         id: p.id,
@@ -4636,7 +5852,7 @@ export function buildStartupBrief(startupId, fundId = null) {
     ...(company.registryInfo
       ? [`Official Registry: ${company.registryInfo.registryName} #${company.registryInfo.registrationNumber} (${company.registryInfo.status})`]
       : []),
-    `HQ: ${company.hqCity || 'Unknown'}, ${company.country} | Sector: ${company.sector} | Employees: ${company.employeeCount ?? 'Not in Cala'} | Founded: ${company.foundingDate || company.foundedYear || 'Unknown'}`,
+    `HQ: ${company.hqCity || 'Not found in Cala'}, ${company.country || 'Not found in Cala'} | Sector: ${company.sector || 'Not found in Cala'} | Employees: ${company.employeeCount ?? 'Not found in Cala'} | Founded: ${company.foundingDate || company.foundedYear || 'Not found in Cala'}`,
     `Data Confidence: ${dataConfidence.grade} (${dataConfidence.topSourceRank})`,
     ``,
     `## Overview`,
@@ -4647,7 +5863,7 @@ export function buildStartupBrief(startupId, fundId = null) {
     ``,
     `## Time-Series & Filing Arbitrage Signals`,
     `- Why Now: ${signals.whyNowTrigger || 'No recent round trigger indexed'}`,
-    `- Headcount Velocity: ${signals.headcountAtLastRound} -> ${signals.currentObservedEmp} employees (+${signals.headcountGrowthPct}% since latest round)`,
+    `- Headcount Velocity: ${Number.isFinite(signals.headcountAtLastRound) && Number.isFinite(signals.currentObservedEmp) ? `${signals.headcountAtLastRound} -> ${signals.currentObservedEmp} employees (${signals.headcountGrowthPct ?? 'Not found in Cala'}% since latest round)` : 'Not found in Cala'}`,
     ...signals.arbitrageSignals.map((sig) => `- [${sig.sourceRank}] ${sig.label}: ${sig.detail} (${sig.date})`),
     ``,
     `## Funding History (Cala Sourced)`,
@@ -4705,7 +5921,7 @@ export function buildStartupBrief(startupId, fundId = null) {
     country: company.country,
     region: company.region,
     foundedYear: company.foundedYear,
-    foundingDate: company.foundingDate || `${company.foundedYear}-02-15`,
+    foundingDate: company.foundingDate || null,
     employeeCount: company.employeeCount,
     headcountAtLastRound: signals.headcountAtLastRound,
     headcountGrowthPct: signals.headcountGrowthPct,
@@ -4814,8 +6030,8 @@ function inferCalaSector(industryRels = [], description = '', name = '', sectorH
     return { sector: 'B2B SaaS', subSectors: ['B2B SaaS', 'Enterprise software'] };
   }
   return {
-    sector: sectorHint || 'B2B SaaS',
-    subSectors: [sectorHint || 'B2B SaaS', 'Cala Indexed']
+    sector: sectorHint || null,
+    subSectors: sectorHint ? [sectorHint] : []
   };
 }
 
@@ -4871,9 +6087,9 @@ function inferCalaGeography(outRels = {}, props = {}, name = '', description = '
     return { country: 'United Kingdom', region: 'UK', hqCity: city };
   }
   if (defaultSlush) {
-    return { country: 'Europe', region: 'Europe', hqCity: 'Slush 2026' };
+    return { country: null, region: null, hqCity: 'Slush 2026' };
   }
-  return { country: 'Global / Unlisted', region: 'Other', hqCity: 'Cala Graph' };
+  return { country: null, region: null, hqCity: null };
 }
 
 function formatCalaMetricLabel(rawMetric) {
@@ -4885,9 +6101,21 @@ function formatCalaMetricLabel(rawMetric) {
 }
 
 function inferCalaOriginRank(origin, defaultRank = 'PRIMARY') {
-  const hay = `${origin?.source || ''} ${origin?.name || ''} ${origin?.url || ''}`;
-  if (/(?:sec|edgar|companies[ _-]?house|prh|ytj|filing|registr|official)/i.test(hay)) {
+  if (!origin) return defaultRank;
+  const hay = `${origin?.source || ''} ${origin?.name || ''} ${origin?.url || ''} ${origin?.document || ''}`;
+  if (/(?:sec\.gov|edgar|fintel\.io|companies[ _-]?house|prh\.fi|ytj|filing|form[ _-]*(?:10-[kq]|8-k|s-1|d)|registr|official)/i.test(hay)) {
     return 'FILING';
+  }
+  if (defaultRank) return defaultRank;
+  if (/(?:tracxn|pitchbook|dealroom|cbinsights|cb insights|gurufocus|seedtable|failory|crunchbase\.com\/organization|cala ai)/i.test(hay)) {
+    return 'AGGREGATOR';
+  }
+  if (/(?:techcrunch|bloomberg|reuters|cnbc|wsj|nytimes|ft\.com|forbes|news\.crunchbase|sifted|yahoo|fortune|businessinsider|theinformation|siliconangle|economictimes|venturebeat|axios|semafor|ground news|thefintechtimes|firstwordpharma|datacenterdynamics|investor database|observer)/i.test(hay)) {
+    return 'PRESS';
+  }
+  if (origin?.source_rank) return String(origin.source_rank).toUpperCase();
+  if (origin?.document || origin?.url || origin?.name) {
+    return 'PRIMARY';
   }
   return defaultRank;
 }
@@ -4905,10 +6133,10 @@ function registerNumericalOriginSource(origin, metricLabel, cleanName, fallbackS
       id: obsSrcId,
       title: origin.name || `${cleanName} - ${metricLabel}`,
       publisher: origin.source || origin.name || 'Cala AI Filing Source',
-      url: origin.url || 'https://cala.ai',
-      date: origin.published_time ? String(origin.published_time).slice(0, 10) : '2026-10-15',
+      url: origin.url || null,
+      date: origin.published_time ? String(origin.published_time).slice(0, 10) : null,
       sourceRank: rank,
-      datePrecision: origin.published_time ? 'day' : 'month',
+      datePrecision: origin.published_time ? 'day' : 'unknown',
       snippet: `${cleanName}: ${metricLabel} reported by ${origin.name || origin.source || 'Cala'}.`
     };
   }
@@ -4940,7 +6168,7 @@ function parseCalaNumericalObservations(numericalObservations = [], cleanName = 
           label,
           cleanName,
           fallbackSrcId,
-          obs.source_rank || obs.sourceRank || 'PRIMARY'
+          obs.source_rank || obs.sourceRank || null
         );
         if (isEmployeeMetric) {
           if (val <= 0) continue;
@@ -4976,7 +6204,7 @@ function parseCalaNumericalObservations(numericalObservations = [], cleanName = 
     const val = Number(obs?.value);
     const dateStr = obs?.date || obs?.time ? String(obs.date || obs.time).slice(0, 10) : null;
     if (!Number.isFinite(val) || !dateStr) continue;
-    const rank = obs.source_rank || obs.sourceRank || 'PRIMARY';
+    const rank = obs.source_rank || obs.sourceRank || null;
     const src = obs.sourceId || fallbackSrcId || null;
     if (isEmployeeMetric) {
       if (val <= 0) continue;
@@ -5017,16 +6245,17 @@ function parseCalaNumericalObservations(numericalObservations = [], cleanName = 
 
 function parseCalaFoundedAndHeadcount(props = {}, description = '', numericalObservations = [], cleanName = '', fallbackSrcId = null) {
   let foundingDate = String(props.founding_date?.value || '').trim();
-  let foundedYear = 2023;
+  let foundedYear = null;
   if (/^\d{4}-\d{2}-\d{2}$/.test(foundingDate)) {
     foundedYear = Number(foundingDate.slice(0, 4));
   } else if (/^\d{4}$/.test(foundingDate)) {
     foundedYear = Number(foundingDate);
-    foundingDate = `${foundingDate}-01-01`;
+    // Cala gives only a year, so retain that precision instead of inventing a day.
+    foundingDate = null;
   } else {
     const ym = String(description || '').match(/\b(201[6-9]|202[0-6])\b/);
     if (ym) foundedYear = Number(ym[1]);
-    foundingDate = `${foundedYear}-05-15`;
+    foundingDate = null;
   }
 
   const { employeeCountSeries, financialMetrics } = parseCalaNumericalObservations(
@@ -5035,7 +6264,7 @@ function parseCalaFoundedAndHeadcount(props = {}, description = '', numericalObs
     fallbackSrcId
   );
 
-  let employeeCount = employeeCountSeries.length ? employeeCountSeries[employeeCountSeries.length - 1].value : 18;
+  let employeeCount = employeeCountSeries.length ? employeeCountSeries[employeeCountSeries.length - 1].value : null;
   const empRange = props.employee_count_range?.value;
   if (!employeeCountSeries.length) {
     if (Array.isArray(empRange) && empRange.length > 0) {
@@ -5045,7 +6274,11 @@ function parseCalaFoundedAndHeadcount(props = {}, description = '', numericalObs
     } else if (typeof empRange === 'number' && empRange > 0) {
       employeeCount = empRange;
     }
-    employeeCount = Math.max(6, Math.min(220, Math.round(employeeCount)));
+    if (Number.isFinite(employeeCount) && employeeCount > 0) {
+      employeeCount = Math.round(employeeCount);
+    } else {
+      employeeCount = null;
+    }
   }
 
   return { foundedYear, foundingDate, employeeCount, employeeCountSeries, financialMetrics };
@@ -5053,10 +6286,12 @@ function parseCalaFoundedAndHeadcount(props = {}, description = '', numericalObs
 
 function mapCalaRoundType(rawStage) {
   const s = String(rawStage || '').toUpperCase();
+  if (!s) return null;
   if (s.includes('PRE_SEED') || s.includes('PRE-SEED')) return 'Pre-Seed';
   if (s.includes('SERIES_B') || s.includes('SERIES B')) return 'Series B';
   if (s.includes('SERIES_A') || s.includes('SERIES A')) return 'Series A';
-  return 'Seed';
+  if (s.includes('SEED')) return 'Seed';
+  return String(rawStage).trim() || null;
 }
 
 function extractCalaDomain(props = {}, outRels = {}, cleanName = '') {
@@ -5065,8 +6300,7 @@ function extractCalaDomain(props = {}, outRels = {}, cleanName = '') {
   if (rawUrl) {
     return String(rawUrl).replace(/^https?:\/\//i, '').replace(/^www\./i, '').split('/')[0];
   }
-  const slug = cleanName.toLowerCase().replace(/[^a-z0-9]/g, '') || 'startup';
-  return `${slug}.com`;
+  return null;
 }
 
 function resolveRegionDefaultInvestor(region) {
@@ -5097,7 +6331,9 @@ function matchCalaInvestors(inRels = {}, context = {}) {
     if (!liveInvestorNames.includes(cleanInv)) liveInvestorNames.push(cleanInv);
   };
 
-  for (const inv of inRels.INVESTED_IN || []) {
+  const incoming = inRels.incoming || inRels;
+  const outgoing = inRels.outgoing || {};
+  for (const inv of [...(incoming.INVESTED_IN || []), ...(outgoing.INVESTED_IN || [])]) {
     if (inv?.entity_type === 'Person') continue;
     registerInvestorName(inv?.name);
   }
@@ -5114,6 +6350,52 @@ function matchCalaInvestors(inRels = {}, context = {}) {
     registerInvestorName(extraInv);
   }
   return { matchedIds, liveInvestorsMap, liveInvestorNames };
+}
+
+const LIVE_CALA_RELATION_TYPES = new Set([
+  'PARTNERED_WITH',
+  'SUPPLIES',
+  'COMPETES_WITH',
+  'ACQUIRED',
+  'IS_SUBSIDIARY_OF',
+  'INVESTED_IN',
+  'FOUNDED',
+  'IS_CEO_OF',
+  'IS_CTO_OF',
+  'IS_BOARD_MEMBER_OF',
+  'WORKS_AT',
+  'PARTICIPATES_IN_FUNDING_ROUND',
+  'HAS_FUNDING_ROUND',
+  'PARTICIPATES_IN_CORPORATE_EVENT',
+  'PARTICIPATES_IN_EVENT'
+]);
+
+function collectLiveCalaRelations(entity, fallbackSourceId = null) {
+  const relationships = entity?.relationships || {};
+  const collected = [];
+  for (const direction of ['outgoing', 'incoming']) {
+    const relationMap = relationships[direction] || {};
+    for (const [relation, targets] of Object.entries(relationMap)) {
+      if (!LIVE_CALA_RELATION_TYPES.has(relation)) continue;
+      for (const target of targets || []) {
+        if (!target?.id || !target?.name) continue;
+        const origin = target.properties?.sources?.[0] || null;
+        collected.push({
+          id: `${direction}:${relation}:${target.id}`,
+          direction,
+          relation,
+          entityId: target.id,
+          name: target.name,
+          entityType: target.entity_type || target.entityType || 'Entity',
+          role: target.properties?.role || null,
+          date: target.properties?.event_date || target.properties?.valid_since || null,
+          sourceId: origin?.id || origin?.source_id || origin?.sourceId || fallbackSourceId,
+          sourceRank: inferCalaOriginRank(origin, origin?.source_rank || null)
+        });
+      }
+    }
+  }
+  return collected;
 }
 
 /**
@@ -5134,8 +6416,10 @@ export function ingestLiveCalaEntities(rawEntities = [], context = {}) {
     const cleanName = String(item?.name || '').trim();
     if (!entityId || !cleanName) continue;
 
-    const eType = item.entity_type || 'Company';
-    if (eType !== 'Company' && !(context.allowOrganizations && eType === 'Organization')) continue;
+    const eType = item.entity_type || item.entityType || 'Company';
+    // Organizations are first-class map entities.  We still keep people as
+    // graph nodes rather than coercing them into a company record.
+    if (eType !== 'Company' && eType !== 'Organization') continue;
     if (existingFundIds.has(entityId) || existingFundNames.has(cleanName.toLowerCase())) continue;
     if (EXCLUDED_FUND_NAME_RE.test(cleanName)) continue;
 
@@ -5147,9 +6431,11 @@ export function ingestLiveCalaEntities(rawEntities = [], context = {}) {
       item.description ||
         props.description?.value ||
         context.descriptionFallback ||
-        `${cleanName} is a technology startup indexed in the Cala AI knowledge graph.`
+        ''
     ).trim();
-    const oneLiner = rawDescription.length > 110 ? `${rawDescription.slice(0, 107)}...` : rawDescription;
+    const oneLiner = rawDescription
+      ? (rawDescription.length > 110 ? `${rawDescription.slice(0, 107)}...` : rawDescription)
+      : 'Not found in Cala';
     const isSlush =
       Boolean(context.slush2026) ||
       (outRels.PARTICIPATES_IN_EVENT || []).some((ev) => ev?.id === CALA_SLUSH_2026_ID || /slush/i.test(ev?.name || ''));
@@ -5174,9 +6460,9 @@ export function ingestLiveCalaEntities(rawEntities = [], context = {}) {
         title: `${cleanName} - Cala AI Graph Verification`,
         publisher: rawSrc?.name || 'Cala AI Knowledge Graph',
         url: rawSrc?.document || `https://cala.ai/entities/${entityId}`,
-        date: rawSrc?.date || '2026-10-15',
-        sourceRank: inferCalaOriginRank(rawSrc, rawSrc?.source_rank || 'PRIMARY'),
-        datePrecision: rawSrc?.date_precision || 'day',
+        date: rawSrc?.date || null,
+        sourceRank: inferCalaOriginRank(rawSrc, rawSrc?.source_rank || null),
+        datePrecision: rawSrc?.date_precision || 'unknown',
         snippet: rawDescription
       };
     }
@@ -5209,7 +6495,6 @@ export function ingestLiveCalaEntities(rawEntities = [], context = {}) {
         /\b(?:publicly[- ]traded|nasdaq|nyse|stock exchange|subsidiary of|division of|merger of|largest suppliers|fortune 500|founded in 19\d\d|founded in 200\d|founded in 201[0-4])\b/i.test(
           rawDescription
         ));
-    if (isLegacyOrPublicCorp && !context.allowGeneralCompanies) continue;
     const entityCategory = isLegacyOrPublicCorp || (eType === 'Organization' && !issuerRoundsRaw.length) ? 'established_corp' : 'startup';
 
     const extraPersonInvMap = context.personInvestorNamesByCompanyId;
@@ -5219,7 +6504,7 @@ export function ingestLiveCalaEntities(rawEntities = [], context = {}) {
         : Array.isArray(extraPersonInvMap?.[entityId])
           ? extraPersonInvMap[entityId]
           : [];
-    const { matchedIds: mappedInvestors, liveInvestorsMap, liveInvestorNames } = matchCalaInvestors(inRels, {
+    const { matchedIds: mappedInvestors, liveInvestorsMap, liveInvestorNames } = matchCalaInvestors({ incoming: inRels, outgoing: outRels }, {
       investorId: context.investorId,
       investorName: context.investorName,
       extraInvestorNames
@@ -5237,7 +6522,7 @@ export function ingestLiveCalaEntities(rawEntities = [], context = {}) {
           const amt = Number.isFinite(valRaw) && valRaw > 0
             ? Math.round((valRaw > 1000 ? valRaw / 1_000_000 : valRaw) * 10) / 10
             : defaultAmount;
-          const rType = /pre/i.test(r.name) ? 'Pre-Seed' : /series\s*a/i.test(r.name) ? 'Series A' : /series\s*b/i.test(r.name) ? 'Series B' : 'Seed';
+          const rType = mapCalaRoundType(r.name || defaultStage) || 'Undisclosed funding round';
           const evDate = r?.properties?.event_date ? String(r.properties.event_date).slice(0, 10) : null;
           return {
             id: `rnd-live-${srcSlug}-${idx + 1}`,
@@ -5252,35 +6537,26 @@ export function ingestLiveCalaEntities(rawEntities = [], context = {}) {
             sourceIds: [srcId]
           };
         })
-      : isLegacyOrPublicCorp || (context.allowUnfundedLive && !defaultStage && defaultAmount === null)
-        ? []
-        : [
-            {
-              id: `rnd-live-${srcSlug}-1`,
-              calaRoundId: `cala_rnd_${srcSlug}_1`,
-              type: defaultStage || 'Seed',
-              date: props.funding_stage?.value || defaultAmount !== null ? null : `${Math.max(foundedYear + 1, 2025)}-04-15`,
-              amountEurM: defaultAmount,
-              valuationEurM: null,
-              leadInvestorId: mappedInvestors[0] || null,
-              investorIds: mappedInvestors,
-              investorNames: liveInvestorNames,
-              sourceIds: [srcId]
-            }
-          ];
+      : [];
 
     const mapPersonRel = (list, relation, fallbackRole) =>
-      (list || []).map((p) => ({
-        relation,
-        name: p?.name,
-        role: p?.properties?.role || fallbackRole,
-        validSince: p?.properties?.valid_since ? String(p.properties.valid_since).slice(0, 10) : null,
-        validUntil: p?.properties?.valid_until ? String(p.properties.valid_until).slice(0, 10) : null,
-        priorCompany: p?.properties?.prior_company || null,
-        priorRole: p?.properties?.prior_role || null,
-        priorValidUntil: p?.properties?.prior_valid_until || null,
-        sourceRank: p?.properties?.sources?.[0]?.source_rank || (relation === 'IS_CONTROL_PERSON_OF' || relation === 'IS_BENEFICIARY_OWNER_OF' ? 'FILING' : 'PRIMARY')
-      }));
+      (list || []).map((p) => {
+        const origin = p?.properties?.sources?.[0] || null;
+        return {
+          relation,
+          name: p?.name,
+          role: p?.properties?.role || fallbackRole,
+          validSince: p?.properties?.valid_since ? String(p.properties.valid_since).slice(0, 10) : null,
+          validUntil: p?.properties?.valid_until ? String(p.properties.valid_until).slice(0, 10) : null,
+          // A prior company is surfaced only when Cala placed it on the
+          // relationship; there is intentionally no display-name fallback.
+          priorCompany: p?.properties?.prior_company || null,
+          priorRole: p?.properties?.prior_role || null,
+          priorValidUntil: p?.properties?.prior_valid_until || null,
+          sourceId: origin?.id || origin?.source_id || origin?.sourceId || null,
+          sourceRank: inferCalaOriginRank(origin, origin?.source_rank || null)
+        };
+      });
 
     const contextRolesMap = context.personRolesByCompanyId;
     const contextRoles =
@@ -5324,8 +6600,8 @@ export function ingestLiveCalaEntities(rawEntities = [], context = {}) {
         priorRole: r.priorRole || null,
         priorValidUntil: r.priorValidUntil || null,
         isMatchedPersonBridge: Boolean(r.isMatchedPersonBridge),
-        sourceRank: r.sourceRank || 'PRIMARY',
-        sourceId: srcId
+        sourceRank: r.sourceRank || null,
+        sourceId: r.sourceId || srcId
       });
     }
     const roles = dedupRoles;
@@ -5337,7 +6613,7 @@ export function ingestLiveCalaEntities(rawEntities = [], context = {}) {
         summary: `${cleanName} participated in ${ev?.name || 'Cala-indexed event'}${ev?.properties?.role ? ` (${ev.properties.role})` : ''}.`,
         eventType: 'PARTICIPATES_IN_EVENT',
         eventDate: ev?.properties?.event_date ? String(ev.properties.event_date).slice(0, 10) : null,
-        sourceRank: inferCalaOriginRank(ev?.properties?.sources?.[0], 'PRIMARY'),
+        sourceRank: inferCalaOriginRank(ev?.properties?.sources?.[0], ev?.properties?.sources?.[0]?.source_rank || null),
         sourceId: srcId,
         unannouncedFiling: false
       })),
@@ -5347,24 +6623,17 @@ export function ingestLiveCalaEntities(rawEntities = [], context = {}) {
         summary: `${cleanName}: ${ev?.name || 'Corporate event'}${ev?.properties?.role ? ` (${ev.properties.role})` : ''}.`,
         eventType: 'PARTICIPATES_IN_CORPORATE_EVENT',
         eventDate: ev?.properties?.event_date ? String(ev.properties.event_date).slice(0, 10) : null,
-        sourceRank: inferCalaOriginRank(ev?.properties?.sources?.[0], 'FILING'),
+        sourceRank: inferCalaOriginRank(ev?.properties?.sources?.[0], ev?.properties?.sources?.[0]?.source_rank || null),
         sourceId: srcId,
         unannouncedFiling: false
-      })),
-      {
-        id: `ev-cala-${idSlug}-${entityId.slice(0, 6)}`,
-        name: 'Cala Knowledge Graph Record',
-        summary: `${cleanName} indexed via Cala (${eType}).`,
-        eventType: 'CALA_INDEX_RECORD',
-        eventDate: foundingDate,
-        sourceRank: 'PRIMARY',
-        sourceId: srcId,
-        unannouncedFiling: false
-      }
+      }))
     ];
 
     const domainHost = extractCalaDomain(props, outRels, cleanName);
-    const domainHistory = [{ domain: domainHost, status: 'ACTIVE', validSince: foundingDate, validUntil: null, sourceRank: 'PRIMARY' }];
+    const domainHistory = domainHost
+      ? [{ domain: domainHost, status: 'ACTIVE', validSince: foundingDate, validUntil: null, sourceRank: null }]
+      : [];
+    const verifiedRelations = collectLiveCalaRelations(item, srcId);
 
     if (existing) {
       let touched = false;
@@ -5408,6 +6677,15 @@ export function ingestLiveCalaEntities(rawEntities = [], context = {}) {
       if (liveInvestorNames.length > 0) {
         existing.liveInvestorNames = [...new Set([...(existing.liveInvestorNames || []), ...liveInvestorNames])];
         existing.liveInvestorsMap = { ...(existing.liveInvestorsMap || {}), ...liveInvestorsMap };
+        touched = true;
+      }
+      if (verifiedRelations.length > 0) {
+        const existingRelations = existing.verifiedRelations || [];
+        const relationKeys = new Set(existingRelations.map((rel) => rel.id));
+        for (const relation of verifiedRelations) {
+          if (!relationKeys.has(relation.id)) existingRelations.push(relation);
+        }
+        existing.verifiedRelations = existingRelations;
         touched = true;
       }
       if (employeeCountSeries.length > (existing.employeeCountSeries?.length || 0)) {
@@ -5463,6 +6741,7 @@ export function ingestLiveCalaEntities(rawEntities = [], context = {}) {
       financialMetrics,
       liveInvestorNames,
       liveInvestorsMap,
+      verifiedRelations,
       corporateEvents: liveEvents,
       domainHistory,
       peopleCoverage: {
@@ -5617,8 +6896,6 @@ function buildCandidateHaystack(item) {
     item.description,
     item.whyNowTrigger,
     item.alumniSpinout?.priorCompany,
-    item.linkedinNetwork?.bridgePerson,
-    item.linkedinNetwork?.targetLeader,
     ...(item.subSectors || []),
     ...(item.liveInvestorNames || []),
     ...(item.corporateEvents || []).map((e) => e.name),
@@ -5911,8 +7188,6 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
     if (itemNorm.includes(t) || (extraCompanyNorm && itemNorm.includes(extraCompanyNorm))) return true;
     if (linkedCompanySet.has(itemNorm)) return true;
     if ((it.peopleCoverage?.roles || []).some((r) => normalizeLookupName(r.name).includes(t))) return true;
-    if (it.linkedinNetwork?.bridgePerson && normalizeLookupName(it.linkedinNetwork.bridgePerson).includes(t)) return true;
-    if (it.linkedinNetwork?.targetLeader && normalizeLookupName(it.linkedinNetwork.targetLeader).includes(t)) return true;
     if ((it.liveInvestorNames || []).some((n) => normalizeLookupName(n).includes(t))) return true;
     if ((it.roundHistory || []).some((r) => (r.investorNames || []).some((n) => normalizeLookupName(n).includes(t)))) return true;
     return false;
@@ -5978,7 +7253,14 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
   };
 
   let filtered = allRanked.filter((item) => {
-    if (effectiveEntityScope !== 'all' && item.entityCategory === 'established_corp' && !hasEstablishedCompanyMatch) return false;
+    const isExplicitEntityMatch = targetCompanyNorm && personOrEntityMatchesQuery(item, targetCompanyNorm);
+    if (
+      effectiveEntityScope !== 'all' &&
+      item.entityCategory === 'established_corp' &&
+      !hasEstablishedCompanyMatch &&
+      !isExplicitEntityMatch &&
+      !item.isLiveCalaDiscovered
+    ) return false;
     if (regionFilter !== 'all' && item.region !== regionFilter) return false;
     if (!matchesStageGroup(item.stage, stageFilter)) return false;
     if (excludeSector !== 'none' && item.sector === excludeSector) return false;
@@ -6157,8 +7439,8 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
     });
   } else if (preferWarm) {
     filtered.sort((a, b) => {
-      const aw = a.linkedinNetwork ? 1 : 0;
-      const bw = b.linkedinNetwork ? 1 : 0;
+      const aw = (a.evidenceFolders?.hiddenBridges?.paths || []).length > 0 ? 1 : 0;
+      const bw = (b.evidenceFolders?.hiddenBridges?.paths || []).length > 0 ? 1 : 0;
       return bw - aw || (b.suitabilityScore || 0) - (a.suitabilityScore || 0);
     });
   } else if (highVelocityOnly || minHeadcountGrowthPct !== null) {
@@ -6273,6 +7555,78 @@ export function refineShortlist(thesis, allRanked, refinement = {}) {
 }
 
 export function runFullAnalysis(input, options = {}) {
+  if (input?.mode === 'entity') {
+    const requestedEntities = Array.isArray(input.entities) && input.entities.length
+      ? input.entities
+      : [input.entity || input.anchorEntity, ...(input.relatedEntities || options.relatedEntities || [])].filter(Boolean);
+    const relatedEntities = input.relatedEntities || options.relatedEntities || [];
+    const bridgeMap = buildEntityBridgeMap(requestedEntities, relatedEntities, { ...options, multiCenter: true });
+    const anchor = bridgeMap.anchor;
+    const entityNodes = bridgeMap.nodes.filter((node) => node.id !== anchor.id);
+    const entitySourceRanks = bridgeMap.edges
+      .map((edge) => edge.topSourceRank)
+      .filter(Boolean)
+      .sort((a, b) => (SOURCE_RANK_PRIORITY[b] || 0) - (SOURCE_RANK_PRIORITY[a] || 0));
+    const thesis = {
+      mode: 'entity',
+      fundId: anchor.id,
+      fundName: anchor.label,
+      calaEntityId: anchor.id,
+      entityType: anchor.entityType,
+      portfolioCompanies: [],
+      portfolioCompanyIds: [],
+      portfolioCompetitorGroups: {},
+      topCoInvestors: [],
+      upstreamFeeders: [],
+      investorTotalDealsMap: {},
+      evalDate: REFERENCE_DATE,
+      dealsAnalyzedCount: bridgeMap.edges.length,
+      portfolioCount: entityNodes.length,
+      weakProfile: bridgeMap.edges.length === 0,
+      weakProfileNote: bridgeMap.edges.length === 0 ? 'No verified Cala relationships are indexed for this entity.' : null
+    };
+    const shortlist = entityNodes.map((node) => ({
+      id: node.id,
+      calaEntityId: node.id,
+      name: node.label,
+      entityType: node.entityType,
+      entityCategory: node.entityCategory,
+      topSourceRank: node.topSourceRank,
+      contributionGroup: node.contributionGroup,
+      description: node.description,
+      verified: true
+    }));
+    const entitySourcesMap = {};
+    for (const edge of bridgeMap.edges) {
+      for (const sId of edge.sourceIds || []) {
+        if (SOURCES[sId] && !entitySourcesMap[sId]) entitySourcesMap[sId] = SOURCES[sId];
+      }
+    }
+    return {
+      mode: 'entity',
+      thesis,
+      timeTravelProfile: null,
+      upstreamFeeders: [],
+      dataConfidence: { grade: 'Entity graph', topSourceRank: entitySourceRanks[0] || null },
+      rankingMode: 'entity',
+      weights: {},
+      totalCandidatesEvaluated: shortlist.length,
+      shortlist,
+      allRanked: shortlist,
+      backtest: null,
+      agentPipeline: [],
+      bridgeMap,
+      sources: entitySourcesMap,
+      calaTelemetry: {
+        entitiesIndexed: bridgeMap.nodes.length,
+        roundsInspected: bridgeMap.edges.filter((edge) => /FUNDING_ROUND/.test(edge.relation || '')).length,
+        verifiedCitationsInShortlist: new Set(bridgeMap.edges.flatMap((edge) => edge.sourceIds || [])).size,
+        registriesIntegrated: [],
+        pipelineMode: 'Live Cala entity graph'
+      }
+    };
+  }
+
   const hideMegaHubs = options.hideMegaHubs !== undefined ? Boolean(options.hideMegaHubs) : true;
   const rawBridgeFamily = String(options.bridgeFamily || 'all').trim().toLowerCase();
   const bridgeFamily = BRIDGE_FAMILY_META[rawBridgeFamily] ? rawBridgeFamily : 'all';
