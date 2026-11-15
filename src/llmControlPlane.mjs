@@ -20,6 +20,7 @@ export const ALLOWED_SECTORS = new Set([
 
 const queryCompilerCache = new Map();
 const briefNarratorCache = new Map();
+const connectionInsightCache = new Map();
 
 function sanitizeShortText(value, maxLen = 80) {
   if (typeof value !== 'string') return null;
@@ -347,9 +348,7 @@ export function extractAllowedGroundings(briefPacket) {
  * Enforces both `enforceFactCitations()` (exact Cala source IDs) and strict
  * numeric + 4-digit year grounding against pre-retrieved Cala JSON facts.
  */
-export function applyCitationAndNumericGate(rawBullets = [], briefPacket) {
-  const { allowedYears, allowedNumbers, allowedSourceIds } = extractAllowedGroundings(briefPacket);
-
+function filterVerifiedBullets(rawBullets = [], { allowedYears, allowedNumbers, allowedSourceIds, useRegistryCheck = true }) {
   const preFiltered = (Array.isArray(rawBullets) ? rawBullets : [])
     .filter((b) => b && typeof b.text === 'string' && b.text.trim())
     .map((b) => ({
@@ -357,14 +356,15 @@ export function applyCitationAndNumericGate(rawBullets = [], briefPacket) {
       sourceIds: [...new Set((b.sourceIds || []).filter((id) => allowedSourceIds.has(id)))]
     }));
 
-  const cited = enforceFactCitations(preFiltered);
+  const cited = useRegistryCheck
+    ? enforceFactCitations(preFiltered)
+    : preFiltered.filter((b) => b.sourceIds.length > 0);
   let droppedCount = (Array.isArray(rawBullets) ? rawBullets.length : 0) - cited.length;
 
   const verified = [];
   for (const item of cited) {
     const bulletYears = item.text.match(/\b(?:19|20)\d{2}\b/g) || [];
-    const hasUngroundedYear = bulletYears.some((y) => !allowedYears.has(y));
-    if (hasUngroundedYear) {
+    if (bulletYears.some((y) => !allowedYears.has(y))) {
       droppedCount += 1;
       continue;
     }
@@ -376,8 +376,7 @@ export function applyCitationAndNumericGate(rawBullets = [], briefPacket) {
       const rawNum = (m[1] || m[2] || '').replace(',', '.');
       if (rawNum) currencyValues.push(Number(rawNum));
     }
-    const hasUngroundedAmount = currencyValues.some((num) => !Number.isFinite(num) || !allowedNumbers.has(num));
-    if (hasUngroundedAmount) {
+    if (currencyValues.some((num) => !Number.isFinite(num) || !allowedNumbers.has(num))) {
       droppedCount += 1;
       continue;
     }
@@ -389,6 +388,10 @@ export function applyCitationAndNumericGate(rawBullets = [], briefPacket) {
     bullets: verified,
     droppedUnverifiedCount: droppedCount
   };
+}
+
+export function applyCitationAndNumericGate(rawBullets = [], briefPacket) {
+  return filterVerifiedBullets(rawBullets, extractAllowedGroundings(briefPacket));
 }
 
 function buildDeterministicBriefBullets(briefPacket) {
@@ -494,6 +497,167 @@ export async function narrateBriefWithCitationGate(briefPacket, options = {}) {
       bullets: buildDeterministicBriefBullets(briefPacket),
       droppedUnverifiedCount: 0,
       coverageGaps: briefPacket.notFoundInCala || []
+    };
+  }
+}
+
+function buildDeterministicConnectionInsight(packet = {}) {
+  const sourceIds = (packet.sources || []).map((s) => s.id).filter(Boolean);
+  const topSourceId = sourceIds[0] || null;
+  const facts = Array.isArray(packet.facts) ? packet.facts : [];
+  const bullets = [];
+
+  for (const f of facts.slice(0, 3)) {
+    const text = String(f?.text || '').trim();
+    const ids = (f?.sourceIds || []).filter(Boolean);
+    const chosen = ids.length ? ids : topSourceId ? [topSourceId] : [];
+    if (text && chosen.length) {
+      bullets.push({ text, sourceIds: chosen });
+    }
+  }
+
+  const gapList = Array.isArray(packet.gaps) ? packet.gaps.filter(Boolean) : [];
+  const question = gapList.length
+    ? `Verify missing Cala coverage (${gapList.slice(0, 2).join(', ')}) during primary diligence.`
+    : `Confirm strategic context and recency of ${packet.title || 'this Cala relationship'} directly with founders or co-investors.`;
+
+  return {
+    summary: String(packet.whyMatters || facts[0]?.text || `${packet.title || 'Relationship'} verified in Cala Knowledge Graph.`).trim(),
+    bullets,
+    question
+  };
+}
+
+/**
+ * Citation-Locked Connection & Entity Analyzer: generates grounded investment
+ * takeaways strictly from verified Cala graph facts, edges, and source IDs.
+ */
+export async function analyzeConnectionWithCitationGate(packet = {}, options = {}) {
+  if (!packet || typeof packet !== 'object') {
+    return {
+      controlPlaneMode: 'deterministic-fallback',
+      summary: 'No verified Cala packet provided.',
+      insights: [],
+      question: '',
+      droppedUnverifiedCount: 0
+    };
+  }
+
+  const cleanSources = (Array.isArray(packet.sources) ? packet.sources : [])
+    .filter((s) => s && s.id)
+    .slice(0, 12)
+    .map((s) => ({
+      id: String(s.id),
+      title: sanitizeShortText(s.title || s.publisher || s.id, 90) || String(s.id),
+      publisher: sanitizeShortText(s.publisher || 'Cala Knowledge Graph', 60) || 'Cala Knowledge Graph',
+      date: s.date ? String(s.date).slice(0, 10) : null,
+      sourceRank: String(s.sourceRank || 'AGGREGATOR')
+    }));
+
+  const groundedPacket = {
+    mode: packet.mode === 'entity' ? 'entity' : 'connection',
+    title: sanitizeShortText(packet.title || '', 120) || 'Cala Relationship',
+    hopType: sanitizeShortText(packet.hopType || '', 60),
+    relation: sanitizeShortText(packet.relation || '', 60),
+    roundSummary: sanitizeShortText(packet.roundSummary || '', 90),
+    date: packet.date ? String(packet.date).slice(0, 10) : null,
+    whyMatters: sanitizeShortText(packet.whyMatters || '', 220),
+    facts: (Array.isArray(packet.facts) ? packet.facts : []).slice(0, 8).map((f) => ({
+      text: String(f?.text || '').slice(0, 220),
+      date: f?.date ? String(f.date).slice(0, 10) : null,
+      tier: f?.tier || null,
+      sourceIds: Array.isArray(f?.sourceIds) ? f.sourceIds.filter(Boolean).slice(0, 4) : []
+    })),
+    syndicatePeers: (Array.isArray(packet.syndicatePeers) ? packet.syndicatePeers : []).slice(0, 8),
+    gaps: (Array.isArray(packet.gaps) ? packet.gaps : []).slice(0, 6),
+    sources: cleanSources
+  };
+
+  const fallback = buildDeterministicConnectionInsight(groundedPacket);
+  const apiKey = options.apiKey ?? process.env.ANTHROPIC_API_KEY ?? '';
+  if (!apiKey || !cleanSources.length) {
+    return {
+      controlPlaneMode: 'deterministic-fallback',
+      summary: fallback.summary,
+      insights: fallback.bullets,
+      question: fallback.question,
+      droppedUnverifiedCount: 0
+    };
+  }
+
+  const cache = options.cache || connectionInsightCache;
+  const cacheKey = `${groundedPacket.mode}:${groundedPacket.title}:${groundedPacket.facts.length}:${cleanSources.map((s) => s.id).join(',')}`;
+  if (cache.has(cacheKey)) {
+    return { ...cache.get(cacheKey), fromCache: true };
+  }
+
+  const jsonStr = JSON.stringify(groundedPacket);
+  const groundings = {
+    allowedYears: new Set(jsonStr.match(/\b(?:19|20)\d{2}\b/g) || []),
+    allowedNumbers: new Set((jsonStr.match(/\b\d+(?:\.\d+)?\b/g) || []).map((n) => Number(n))),
+    allowedSourceIds: new Set(cleanSources.map((s) => s.id)),
+    useRegistryCheck: false
+  };
+
+  const systemPrompt = [
+    'Strict VC investment-diligence analyst grounded ONLY in input JSON.',
+    'Analyze why the connection or entity graph matters for deal access, operator lineage, timing, or competitive caution.',
+    'NEVER invent numbers, round sizes, dates, or entities not present in input JSON.',
+    'Output ONE compact single-line JSON only (no markdown fences):',
+    '{"summary":"20-35 word crisp investment takeaway","insights":[{"text":"1 sharp verified insight","sourceIds":["exact-source-id"]}],"question":"1 concrete next diligence question"}.',
+    'Max 3 insights. Every insight MUST cite at least 1 exact sourceId from input.sources.'
+  ].join('\n');
+
+  try {
+    const rawText = await callAnthropicMessages({
+      apiKey,
+      model: options.model || process.env.ANTHROPIC_MODEL || DEFAULT_ANTHROPIC_MODEL,
+      systemPrompt,
+      userContent: jsonStr,
+      maxTokens: 340,
+      timeoutMs: options.timeoutMs ?? 2800,
+      fetchFn: options.fetchFn || globalThis.fetch
+    });
+    const parsed = JSON.parse(stripJsonCodeFences(rawText));
+    const gated = filterVerifiedBullets(parsed?.insights || [], groundings);
+    if (!gated.bullets.length) {
+      return {
+        controlPlaneMode: 'deterministic-fallback',
+        summary: fallback.summary,
+        insights: fallback.bullets,
+        question: fallback.question,
+        droppedUnverifiedCount: gated.droppedUnverifiedCount
+      };
+    }
+
+    const rawSummary = typeof parsed?.summary === 'string' ? parsed.summary.trim() : '';
+    const summaryYears = rawSummary.match(/\b(?:19|20)\d{2}\b/g) || [];
+    const safeSummary = rawSummary && !summaryYears.some((y) => !groundings.allowedYears.has(y))
+      ? rawSummary.slice(0, 260)
+      : fallback.summary;
+    const rawQuestion = typeof parsed?.question === 'string' ? parsed.question.trim() : '';
+    const safeQuestion = rawQuestion ? rawQuestion.slice(0, 220) : fallback.question;
+
+    const result = {
+      controlPlaneMode: 'anthropic-connection-analyst',
+      summary: safeSummary,
+      insights: gated.bullets.slice(0, 3),
+      question: safeQuestion,
+      droppedUnverifiedCount: gated.droppedUnverifiedCount
+    };
+    if (cache.size > 150) {
+      const firstKey = cache.keys().next().value;
+      cache.delete(firstKey);
+    }
+    cache.set(cacheKey, result);
+    return result;
+  } catch {
+    return {
+      controlPlaneMode: 'deterministic-fallback',
+      summary: fallback.summary,
+      insights: fallback.bullets,
+      question: fallback.question,
+      droppedUnverifiedCount: 0
     };
   }
 }

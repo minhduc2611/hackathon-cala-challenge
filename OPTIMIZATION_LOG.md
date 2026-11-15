@@ -69,3 +69,12 @@
   - Stale async modal race: guarded with monotonic `state.dossierRequestSeq`
   - `npm test`: `47/47` passing (`11,822.4 ms`), `0` UI invariant violations
 - **Decision:** KEEP
+
+### Exp 5 (2026-11-15 02:28) — Optional Citation-Gated Claude AI Connection & Entity Diligence Insights
+- **Goal:** Wire on-demand Claude AI analysis (`analyzeConnectionWithCitationGate` + `POST /api/connection-insight`) into Connection Inspector and Entity Dossier `Overview` with strict sourceId/year/currency gating and instant LRU caching + deterministic fallback.
+- **Files:** `src/llmControlPlane.mjs`, `server.mjs`, `public/app.js`, `public/styles.css`, `test/llmControlPlane.test.mjs`
+- **Before -> After:**
+  - Hover latency impact: `0 ms` (runs on demand only inside inspector/dossier; zero hover token spend)
+  - Grounding gate: `filterVerifiedBullets` drops ungrounded insights/years/currency amounts; supports both `SOURCES` registry and dynamic Cala dossier citations
+  - `npm test`: `48/48` passing (`11,218.7 ms`)
+- **Decision:** KEEP

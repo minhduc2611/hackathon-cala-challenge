@@ -115,6 +115,7 @@ const state = {
   compareSeq: 0,
   dossier: null,
   dossierCache: new Map(),
+  aiInsightCache: new Map(),
   toastTimer: null,
   analysisLoading: false
 };
@@ -3470,6 +3471,148 @@ function clickableChipHtml(label, record, attrName) {
     : `<span class="inline-chip">${escapeHtml(readable)}</span>`;
 }
 
+function dossierAiCacheKey(dossier) {
+  if (!dossier) return "";
+  if (dossier.mode === "connection") return `conn:${dossier.edge?.id || ""}`;
+  return `entity:${dossier.node?.id || idOf(dossier.data) || ""}`;
+}
+
+function buildDossierAiInsightPacket(dossier) {
+  if (!dossier) return null;
+  if (dossier.mode === "connection") {
+    const { edge, ctx } = dossier;
+    const { citations } = collectEdgeCitations(ctx.siblings, { limit: 12 });
+    return {
+      mode: "connection",
+      title: `${ctx.fromName} ${ctx.arrowSymbol} ${ctx.toName}`,
+      hopType: ctx.hopTypeLabel,
+      relation: ctx.rawRelations.join(", "),
+      roundSummary: ctx.roundSummary || "",
+      date: cleanText(edge.date || edge.roundDate),
+      whyMatters: ctx.whyMatters || "",
+      facts: ctx.factRows.slice(0, 8).map((r) => ({
+        text: r.fact,
+        date: r.date || null,
+        tier: r.tier,
+        sourceIds: citations.map((c) => c.id).filter(Boolean).slice(0, 2)
+      })),
+      syndicatePeers: asList(ctx.peers).map((p) => p.name).filter(Boolean).slice(0, 8),
+      gaps: ctx.linkGaps || [],
+      sources: citations.filter((c) => c.id).map((c) => ({
+        id: c.id,
+        title: c.title,
+        publisher: c.publisher,
+        date: c.date || null,
+        sourceRank: c.sourceRank
+      }))
+    };
+  }
+
+  const data = dossier.data || {};
+  const node = dossier.node || {};
+  const remoteConns = connectionRows(data);
+  const mapEdges = mapEdgesForNode(node);
+  const sources = sourcesFor(data).slice(0, 12).map((s, idx) => ({
+    id: cleanText(s.id) || `src-entity-${idx}`,
+    title: cleanText(s.title || s.name || s.publisher),
+    publisher: cleanText(s.publisher || "Cala Knowledge Graph"),
+    date: cleanText(s.date) || null,
+    sourceRank: tierOf(s)
+  }));
+  const defaultSrcIds = sources.slice(0, 2).map((s) => s.id);
+  const facts = [
+    ...remoteConns.slice(0, 4).map((c) => ({
+      text: `${cleanText(c.entityName || c.name)}: ${cleanText(c.relation || c.connectionType)}`,
+      date: cleanText(c.eventDate) || null,
+      tier: tierOf(c),
+      sourceIds: cleanText(c.sourceId) ? [cleanText(c.sourceId)] : defaultSrcIds
+    })),
+    ...mapEdges.slice(0, 4).map((e) => ({
+      text: cleanText(e.detail || e.label),
+      date: cleanText(e.date) || null,
+      tier: tierOf(e),
+      sourceIds: asList(e.sourceIds).filter(Boolean).length ? asList(e.sourceIds).slice(0, 2) : defaultSrcIds
+    }))
+  ].filter((f) => f.text);
+
+  return {
+    mode: "entity",
+    title: formatReadableEntityLabel(nameOf(data), data.date),
+    hopType: "Entity Dossier",
+    relation: typeBadge(data),
+    roundSummary: data.fundingStage || "",
+    date: cleanText(data.foundingDate || data.founded),
+    whyMatters: cleanText(data.description || data.summary).slice(0, 220),
+    facts: facts.slice(0, 8),
+    syndicatePeers: deduplicateEntityList(data.investors).map(nameOf).slice(0, 8),
+    gaps: gapListForDossier(data, node, mapEdges).slice(0, 6),
+    sources
+  };
+}
+
+function renderAiInsightSection(dossier) {
+  const key = dossierAiCacheKey(dossier);
+  if (!key) return "";
+  const entry = state.aiInsightCache.get(key);
+
+  if (entry?.loading) {
+    return `
+      <section class="dossier-section ai-insight-card">
+        <div class="dossier-section-head-row">
+          <h3>AI Diligence Brief</h3>
+          <span class="tip-pill is-hop">Synthesizing verified Cala evidence...</span>
+        </div>
+        <div class="dossier-skeleton" aria-label="Analyzing verified Cala evidence"></div>
+      </section>
+    `;
+  }
+
+  if (entry?.data) {
+    const res = entry.data;
+    const isAi = res.controlPlaneMode === "anthropic-connection-analyst";
+    const badgeLabel = isAi ? "Claude AI · Grounded in Cala" : "Deterministic Cala Brief";
+    const packet = buildDossierAiInsightPacket(dossier);
+    const sourceById = new Map((packet?.sources || []).map((s) => [s.id, s]));
+    const insightsHtml = (res.insights || []).length
+      ? `<ul class="ai-insight-list">${res.insights
+          .map((item) => {
+            const cites = (item.sourceIds || [])
+              .map((sid) => sourceById.get(sid))
+              .filter(Boolean)
+              .slice(0, 2)
+              .map((src) => `<span class="ai-cite-chip" title="${escapeHtml(src.title)}">${escapeHtml(src.publisher)}${src.date ? ` · ${escapeHtml(src.date)}` : ""}</span>`)
+              .join("");
+            return `<li><span>${escapeHtml(item.text)}</span>${cites ? `<div class="ai-cite-row">${cites}</div>` : ""}</li>`;
+          })
+          .join("")}</ul>`
+      : "";
+
+    return `
+      <section class="dossier-section ai-insight-card is-ready">
+        <div class="dossier-section-head-row">
+          <h3>AI Diligence Brief</h3>
+          <span class="tip-pill ${isAi ? "is-hop" : ""}">${escapeHtml(badgeLabel)}</span>
+        </div>
+        ${res.summary ? `<p class="ai-insight-summary">${escapeHtml(res.summary)}</p>` : ""}
+        ${insightsHtml}
+        ${res.question ? `<div class="ai-insight-question"><strong>Next Diligence Check:</strong> ${escapeHtml(res.question)}</div>` : ""}
+      </section>
+    `;
+  }
+
+  return `
+    <section class="dossier-section ai-insight-card">
+      <div class="dossier-section-head-row">
+        <div>
+          <h3>AI Diligence Brief</h3>
+          <div class="cell-muted" style="font-size:12px;margin-top:2px;">Synthesizes verified Cala paths &amp; citations on demand (zero ungrounded claims).</div>
+        </div>
+        <button type="button" class="conn-pivot-btn is-isolate" data-run-ai-insight="${escapeHtml(key)}">Analyze with Claude AI</button>
+      </div>
+    </section>
+  `;
+}
+
 function renderConnectionInspectorBody(dossier) {
   const { edge, ctx } = dossier;
   const {
@@ -3588,6 +3731,7 @@ function renderConnectionInspectorBody(dossier) {
 
   return `
     ${pivotActionsHtml}
+    ${renderAiInsightSection(dossier)}
     <section class="dossier-section">
       <h3>Verified Cala Roles &amp; Facts (${siblings.length})</h3>
       ${rolesHtml}
@@ -3752,6 +3896,7 @@ function renderDossierTabContent(dossier) {
     return `
       ${loading}
       ${kpiHtml}
+      ${renderAiInsightSection(dossier)}
       <section class="dossier-section">
         <div class="dossier-section-head-row">
           <h3>Identity</h3>
@@ -4668,7 +4813,30 @@ function bindDossierEvents() {
     });
   });
 
-  $("#dossierBody")?.addEventListener("click", (e) => {
+  $("#dossierBody")?.addEventListener("click", async (e) => {
+    const aiBtn = e.target.closest("[data-run-ai-insight]");
+    if (aiBtn && state.dossier) {
+      const key = aiBtn.dataset.runAiInsight;
+      const packet = buildDossierAiInsightPacket(state.dossier);
+      if (!packet) return;
+      state.aiInsightCache.set(key, { loading: true });
+      renderDossier();
+      try {
+        const res = await fetchJson("/api/connection-insight", {
+          method: "POST",
+          body: JSON.stringify(packet)
+        });
+        state.aiInsightCache.set(key, { loading: false, data: res });
+      } catch {
+        state.aiInsightCache.delete(key);
+        showToast("Unable to run AI insight right now.", true);
+      }
+      if (state.dossier && dossierAiCacheKey(state.dossier) === key) {
+        renderDossier();
+      }
+      return;
+    }
+
     const switchTabBtn = e.target.closest("[data-switch-dossier-tab]");
     if (switchTabBtn && state.dossier) {
       state.dossier.tab = switchTabBtn.dataset.switchDossierTab;

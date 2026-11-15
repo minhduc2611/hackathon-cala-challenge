@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { COMPANIES, FUNDS, PEER_INVESTORS, REFERENCE_DATE, SOURCES } from './src/data.mjs';
 import { createCalaClient, loadEnvFile } from './src/calaClient.mjs';
 import { createRegistryClient, extractRegistryLookupTerm } from './src/registryClient.mjs';
-import { compileSearchQuery, narrateBriefWithCitationGate } from './src/llmControlPlane.mjs';
+import { analyzeConnectionWithCitationGate, compileSearchQuery, narrateBriefWithCitationGate } from './src/llmControlPlane.mjs';
 import {
   buildStartupBrief,
   ingestLiveCalaEntities,
@@ -1827,6 +1827,20 @@ export function createAppServer(options = {}) {
           return;
         }
         sendJson(res, 200, brief);
+        return;
+      }
+
+      if (req.method === 'POST' && pathname === '/api/connection-insight') {
+        const body = await readJsonBody(req);
+        if (!body || typeof body !== 'object' || (!body.title && !Array.isArray(body.facts))) {
+          sendJson(res, 400, { error: 'Invalid connection insight packet.' });
+          return;
+        }
+        const insight = await analyzeConnectionWithCitationGate(body);
+        sendJson(res, 200, {
+          ...insight,
+          anthropicConfigured: Boolean(process.env.ANTHROPIC_API_KEY)
+        });
         return;
       }
 

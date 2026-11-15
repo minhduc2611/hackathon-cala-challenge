@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  analyzeConnectionWithCitationGate,
   applyCitationAndNumericGate,
   compileSearchQuery,
   narrateBriefWithCitationGate,
@@ -263,4 +264,75 @@ test('compileSearchQuery sets entityScope "all" cleanly for public/general compa
   assert.equal(mockedClaude.filters.entityScope, 'all');
   assert.equal(mockedClaude.filters.companyQuery, 'KFC');
   assert.equal(mockedClaude.filters.countryHint, 'United States');
+});
+
+test('analyzeConnectionWithCitationGate enforces strict sourceIds/year grounding, caches hits, and falls back deterministically', async () => {
+  const samplePacket = {
+    mode: 'connection',
+    title: 'NVIDIA CORPORATION -> Anthropic',
+    hopType: '2-hop via FundingRound',
+    relation: 'INVESTED_IN',
+    roundSummary: 'Series G · $30B · 2026-02',
+    date: '2026-02-12',
+    whyMatters: 'Strategic compute partner also invested in Anthropic.',
+    facts: [
+      {
+        text: "NVIDIA CORPORATION invested in Anthropic's Series G ($30B) on 2026-02-12.",
+        date: '2026-02-12',
+        tier: 'PRESS',
+        sourceIds: ['src-nvda-1']
+      }
+    ],
+    syndicatePeers: ['OpenAI', 'Amazon'],
+    gaps: ['Check size / ownership %'],
+    sources: [
+      {
+        id: 'src-nvda-1',
+        title: 'Anthropic Series G',
+        publisher: 'news.crunchbase.com',
+        date: '2026-05-11',
+        sourceRank: 'PRESS'
+      }
+    ]
+  };
+
+  const fallback = await analyzeConnectionWithCitationGate(samplePacket, { apiKey: '' });
+  assert.equal(fallback.controlPlaneMode, 'deterministic-fallback');
+  assert.equal(fallback.insights.length, 1);
+  assert.equal(fallback.insights[0].sourceIds[0], 'src-nvda-1');
+
+  const cache = new Map();
+  let calls = 0;
+  const fetchFn = async () => {
+    calls += 1;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              summary: 'Nvidia backed Anthropic in 2026-02-12 Series G alongside overlapping ecosystem ties.',
+              insights: [
+                { text: 'NVIDIA CORPORATION participated in Series G on 2026-02-12.', sourceIds: ['src-nvda-1'] },
+                { text: 'Revenue reached $999B in 2099 with secret terms.', sourceIds: ['src-nvda-1'] }
+              ],
+              question: 'Confirm Nvidia allocation and strategic compute commitments.'
+            })
+          }
+        ]
+      })
+    };
+  };
+
+  const aiFirst = await analyzeConnectionWithCitationGate(samplePacket, { apiKey: 'test-key', cache, fetchFn });
+  assert.equal(aiFirst.controlPlaneMode, 'anthropic-connection-analyst');
+  assert.equal(aiFirst.insights.length, 1);
+  assert.equal(aiFirst.droppedUnverifiedCount, 1);
+  assert.equal(calls, 1);
+
+  const aiCached = await analyzeConnectionWithCitationGate(samplePacket, { apiKey: 'test-key', cache, fetchFn });
+  assert.equal(aiCached.fromCache, true);
+  assert.equal(calls, 1);
 });
